@@ -179,8 +179,13 @@ class Handler(BaseHTTPRequestHandler):
             project_id = str(body.get("project_id", "")).strip()
             name = str(body.get("name", "")).strip()
             if not name: raise ValueError("必须填写项目名称")
+            existing = bool(body.get("existing"))
+            if existing != (PROJECTS / project_id).exists():
+                raise ValueError("项目状态已变化，请刷新后重试")
             upload = store_upload(ROOT, project_id, body.get("files", []))
             try:
+                if existing:
+                    raise ValueError("Use generic updater")
                 result = import_package(ROOT, str(upload.relative_to(ROOT / "data")), project_id, name)
                 result["adapter"] = "reproducibility-package"
             except ValueError as error:

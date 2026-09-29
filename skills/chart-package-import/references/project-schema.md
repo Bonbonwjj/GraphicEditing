@@ -16,7 +16,7 @@ Every chart reads inputs below `Path(os.environ["CHART_PROJECT_DIR"]) / "data"` 
 Original uploads stay grouped under:
 
 ```text
-data/uploads/<project-id>/
+data/uploads/<project-id>/<batch-id>/
 ├── code/
 └── csv/
 ```
