@@ -32,7 +32,7 @@ python server.py
 - `studio_style.py`：实际执行的 Matplotlib 统一样式
 - `.git/`：本地统一版本库；每次应用代码或导入数据都提交一次
 
-左侧可创建项目、新建图、导入小于 250 KB 的 CSV。点击“⬆ 上传项目”要求先填写项目名称并同时选择 Python 与 CSV/TSV/JSON 文件；系统会按项目归档原件并自动生成可编辑图表。“◆ Agent”可将 data/ 下包含 code/ 和 csv/ 的可复现绘图包转换为独立可编辑图表。较大的 CSV 直接放进对应项目的 `data/` 文件夹。图表脚本通过 `CHART_PROJECT_DIR` 定位数据，通过 `CHART_OUTPUT` 输出图像。中间可以预览、查看和编辑代码、检查 CSV 列；右侧可恢复历史版本并对话修改。支持导出 SVG/PDF。
+左侧可创建项目、新建图、导入小于 250 KB 的 CSV。点击“⬆ 上传项目”要求先填写项目名称并同时选择 Python 与 CSV/TSV/JSON 文件；系统会按项目归档原件、自动生成可编辑图表，并在本地提交成功后推送到 GitHub 的 origin/main；原始上传目录不会同步。“◆ Agent”可将 data/ 下包含 code/ 和 csv/ 的可复现绘图包转换为独立可编辑图表。较大的 CSV 直接放进对应项目的 `data/` 文件夹。图表脚本通过 `CHART_PROJECT_DIR` 定位数据，通过 `CHART_OUTPUT` 输出图像。中间可以预览、查看和编辑代码、检查 CSV 列；右侧可恢复历史版本并对话修改。支持导出 SVG/PDF。
 
 新建图提供最简模板。请在代码页按 CSV 列编写绘图逻辑，或配置 LLM 后描述想要的图。此项目不自动创建 GitHub 远程仓库；可以在你自己的 GitHub 新建空仓库后执行：
 

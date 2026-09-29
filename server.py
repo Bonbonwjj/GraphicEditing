@@ -187,7 +187,13 @@ class Handler(BaseHTTPRequestHandler):
                 if "Project already exists" in str(error): raise
                 result = import_generic(ROOT, upload, project_id, name)
             git("add", str((PROJECTS / project_id).relative_to(ROOT)))
-            git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Upload project " + project_id)
+            commit = git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Upload project " + project_id)
+            if commit.returncode != 0:
+                raise ValueError("项目已转换，但 Git 提交失败：" + commit.stderr[-500:])
+            pushed = git("push", "origin", "main")
+            result["github_synced"] = pushed.returncode == 0
+            if pushed.returncode != 0:
+                result["github_error"] = pushed.stderr[-700:]
             return self.json_response(result)
         if self.command == "POST" and path == "/api/agent/import":
             body = self.body_json()

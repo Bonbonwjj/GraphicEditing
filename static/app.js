@@ -50,7 +50,8 @@ $('packageFiles').onchange=async e=>{
     const files=await Promise.all(selected.map(async f=>({name:f.name,content:await f.text()})));
     const r=await api('/api/uploads/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...pendingUpload,files})});
     await reloadProjects();
-    bubble(`项目“${pendingUpload.name}”已归档：${r.files} 个数据文件，${r.charts.length} 张图表，适配器 ${r.adapter}。${r.errors?.length?' '+r.errors.length+' 个文件需人工处理。':''}`);
+    const sync=r.github_synced?'已同步到 GitHub':'已保存到本地，但 GitHub 同步失败：'+(r.github_error||'未知错误');
+    bubble(`项目“${pendingUpload.name}”已归档：${r.files} 个数据文件，${r.charts.length} 张图表，适配器 ${r.adapter}。${sync}。${r.errors?.length?' '+r.errors.length+' 个文件需人工处理。':''}`);
     if(r.charts[0])await select(r.project,r.charts[0]);
   }catch(err){bubble(err.message,'error');alertStatus('上传拆分失败');}
   finally{e.target.value='';pendingUpload=null;}
