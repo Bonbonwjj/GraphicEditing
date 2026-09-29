@@ -28,6 +28,33 @@ $('showSkill').onclick=()=>$('skillDialog').showModal();$('closeSkill').onclick=
 async function reloadProjects(){const r=await api('/api/projects');state.projects=r.projects;drawTree();return r;}
 $('newProject').onclick=async()=>{const id=prompt('项目 ID（英文字母、数字、下划线或连字符）：');if(!id)return;const name=prompt('项目显示名称：',id)||id;try{await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name})});await reloadProjects();state.project=id;alertStatus('已创建项目 '+id);}catch(e){alert(e.message);}};
 $('newChart').onclick=async()=>{if(!state.project){alert('请先创建或选中项目。');return;}const name=prompt('新图名称（英文字母、数字或下划线）：');if(!name)return;try{await api(`/api/projects/${state.project}/charts`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await reloadProjects();await select(state.project,name);}catch(e){alert(e.message);}};
+
+let pendingUpload=null;
+$('uploadPackage').onclick=()=>{
+  const name=prompt('项目名称（用于归类本次代码和数据）：');
+  if(!name)return;
+  const suggested=name.trim().replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_+|_+$/g,'')||'uploaded_project';
+  const project_id=prompt('项目 ID（字母、数字、_ 或 -）：',suggested);
+  if(!project_id)return;
+  pendingUpload={name,project_id};
+  $('packageFiles').click();
+};
+$('packageFiles').onchange=async e=>{
+  const selected=[...e.target.files];
+  if(!pendingUpload||!selected.length)return;
+  if(!selected.some(f=>f.name.endsWith('.py'))||!selected.some(f=>/\.(csv|tsv|json)$/i.test(f.name))){
+    alert('请同时选择 Python 代码和数据文件。');e.target.value='';return;
+  }
+  alertStatus('Agent 正在上传、拆分并验证…');
+  try{
+    const files=await Promise.all(selected.map(async f=>({name:f.name,content:await f.text()})));
+    const r=await api('/api/uploads/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...pendingUpload,files})});
+    await reloadProjects();
+    bubble(`项目“${pendingUpload.name}”已归档：${r.files} 个数据文件，${r.charts.length} 张图表，适配器 ${r.adapter}。${r.errors?.length?' '+r.errors.length+' 个文件需人工处理。':''}`);
+    if(r.charts[0])await select(r.project,r.charts[0]);
+  }catch(err){bubble(err.message,'error');alertStatus('上传拆分失败');}
+  finally{e.target.value='';pendingUpload=null;}
+};
 $('agentImport').onclick=async()=>{const source=prompt('data/ 下的目录：','human_data/human_data');if(!source)return;const project_id=prompt('新项目 ID：','human_data');if(!project_id)return;alertStatus('Agent 正在整合…');try{const r=await api('/api/agent/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,project_id,name:'Human Data Figures'})});await reloadProjects();bubble(`导入完成：${r.files} 个数据文件，${r.charts.length} 张图表。`);if(r.charts[0])await select(r.project,r.charts[0]);}catch(e){bubble(e.message,'error');}};
 $('importCsv').onclick=()=>{if(!state.project){alert('请先创建或选中项目。');return;}$('csvFile').click();};
 $('csvFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const content=await f.text();await api(`/api/projects/${state.project}/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:f.name,content})});await reloadProjects();if(state.chart)await select(state.project,state.chart);alertStatus('已导入 '+f.name);}catch(err){alert(err.message);}e.target.value='';};
