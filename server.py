@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+from agent_importer import import_package
 
 ROOT = Path(__file__).resolve().parent
 PROJECTS = ROOT / "projects"
@@ -171,6 +172,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path == "/api/projects":
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
                                        "llm_enabled": bool(os.environ.get("OPENAI_API_KEY"))})
+        if self.command == "POST" and path == "/api/agent/import":
+            body = self.body_json()
+            result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None)
+            git("add", str((PROJECTS / result["project"]).relative_to(ROOT)))
+            git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Agent import " + result["project"])
+            return self.json_response(result)
         if self.command == "POST" and path == "/api/projects":
             body = self.body_json()
             ident = str(body.get("id", "")).strip()
