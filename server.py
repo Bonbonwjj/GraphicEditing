@@ -1,5 +1,6 @@
 """Local-only chart studio. Start with `python server.py`."""
 import ast
+import cgi
 import csv
 import json
 import os
@@ -16,13 +17,14 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 from agent_importer import import_package
 from generic_importer import import_generic
-from upload_importer import store_upload
+from upload_importer import store_upload, store_multipart_upload
 
 ROOT = Path(__file__).resolve().parent
 PROJECTS = ROOT / "projects"
 STATIC = ROOT / "static"
 STYLE = ROOT / "skills" / "plot-style" / "SKILL.md"
 MAX_BODY = 12_000_000
+MAX_UPLOAD_BODY = 550_000_000
 
 
 def project_path(project):
@@ -175,14 +177,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
                                        "llm_enabled": bool(os.environ.get("OPENAI_API_KEY"))})
         if self.command == "POST" and path == "/api/uploads/import":
-            body = self.body_json()
-            project_id = str(body.get("project_id", "")).strip()
-            name = str(body.get("name", "")).strip()
+            if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
+                form = self.body_multipart()
+                project_id = str(form.getfirst("project_id", "")).strip()
+                name = str(form.getfirst("name", "")).strip()
+                existing = str(form.getfirst("existing", "false")).lower() == "true"
+                files_source = store_multipart_upload(ROOT, project_id, form)
+            else:
+                body = self.body_json()
+                project_id = str(body.get("project_id", "")).strip()
+                name = str(body.get("name", "")).strip()
+                existing = bool(body.get("existing"))
+                files_source = None
             if not name: raise ValueError("必须填写项目名称")
-            existing = bool(body.get("existing"))
             if existing != (PROJECTS / project_id).exists():
                 raise ValueError("项目状态已变化，请刷新后重试")
-            upload = store_upload(ROOT, project_id, body.get("files", []))
+            upload = files_source or store_upload(ROOT, project_id, body.get("files", []))
             try:
                 if existing:
                     raise ValueError("Use generic updater")
@@ -313,6 +323,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response({"message": "已保存并记录版本", "revision": revision,
                                                "git": commit.returncode == 0})
         self.json_response({"error": "Route not found"}, 404)
+
+    def body_multipart(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > MAX_UPLOAD_BODY:
+            raise ValueError("上传内容为空或超过 550 MB 请求上限")
+        return cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+            "CONTENT_LENGTH": str(length),
+        })
 
     def body_json(self):
         length = int(self.headers.get("Content-Length", "0"))

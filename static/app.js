@@ -62,10 +62,17 @@ $('startUpload').onclick=async()=>{
   if(!codeFiles.length||!dataFiles.length){alert('请分别选择代码文件夹和数据文件夹。');return;}
   $('startUpload').disabled=true;alertStatus('Agent 正在归档、拆分并验证…');
   try{
-    const code=await Promise.all(codeFiles.filter(f=>f.name.endsWith('.py')).map(async f=>({name:f.name,path:f.webkitRelativePath,kind:'code',content:await f.text()})));
-    const data=await Promise.all(dataFiles.filter(f=>/\.(csv|tsv|json)$/i.test(f.name)).map(async f=>({name:f.name,path:f.webkitRelativePath,kind:'data',content:await f.text()})));
+    const code=codeFiles.filter(f=>f.name.endsWith('.py'));
+    const data=dataFiles.filter(f=>/\.(csv|tsv|json)$/i.test(f.name));
     if(!code.length||!data.length)throw new Error('所选目录中没有可用的 Python 或数据文件。');
-    const r=await api('/api/uploads/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,project_id,existing,files:[...code,...data]})});
+    const totalBytes=[...code,...data].reduce((sum,f)=>sum+f.size,0);
+    if(totalBytes>500_000_000)throw new Error('单次上传总大小不能超过 500 MB。');
+    alertStatus(`正在上传 ${(totalBytes/1024/1024).toFixed(1)} MB 并拆分…`);
+    const form=new FormData();
+    form.append('name',name);form.append('project_id',project_id);form.append('existing',String(existing));
+    code.forEach(f=>form.append('code_files',f,f.name));
+    data.forEach(f=>form.append('data_files',f,f.name));
+    const r=await api('/api/uploads/import',{method:'POST',body:form});
     $('uploadDialog').close();await reloadProjects();state.openProjects.add(r.project);
     const sync=r.github_synced?'已同步到 GitHub':'GitHub 同步失败：'+(r.github_error||'未知错误');
     bubble(`项目“${name}”已处理：${r.files} 个数据文件，${r.charts.length} 张图表；${sync}。`);
