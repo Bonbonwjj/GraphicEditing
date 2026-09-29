@@ -12,5 +12,4 @@ panel=panels[panels.panel_id.eq('02_dis_vs_ndis_06')].iloc[0]
 fig,ax=plt.subplots(figsize=(5.4,4.8))
 renderer.draw_panel(ax,panel,values[values.panel_id.eq(panel.panel_id)])
 ax.set_position([.34,.23,.60,.66])
-plt.subplots_adjust(wspace=0.1)
 finish_figure(fig,os.environ['CHART_OUTPUT'])
