@@ -68,6 +68,6 @@ $('startUpload').onclick=async()=>{
   finally{$('startUpload').disabled=false;}
 };
 
-1000 4 24 27 30 46 120 133 134 1000 1001'importCsv').onclick=()=>{if(!state.project){alert('请先创建或选中项目。');return;}$('csvFile').click();};
+$('importCsv').onclick=()=>{if(!state.project){alert('请先创建或选中项目。');return;}$('csvFile').click();};
 $('csvFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const content=await f.text();await api(`/api/projects/${state.project}/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:f.name,content})});await reloadProjects();if(state.chart)await select(state.project,state.chart);alertStatus('已导入 '+f.name);}catch(err){alert(err.message);}e.target.value='';};
 (async()=>{try{const r=await api('/api/projects');state.projects=r.projects;drawTree();alertStatus(`项目目录：${r.root}`);if(r.projects[0]?.charts[0])await select(r.projects[0].id,r.projects[0].charts[0]);if(!r.llm_enabled)bubble('尚未配置 OPENAI_API_KEY。可以查看图、编辑代码和版本；配置密钥后即可对话改图。');}catch(e){alertStatus(e.message);}})();
