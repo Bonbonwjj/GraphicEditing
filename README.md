@@ -1,4 +1,4 @@
-# Chart Studio · 本地科研改图工作台
+# Plot Forge · 游戏化科研图表工坊
 
 ## 启动
 

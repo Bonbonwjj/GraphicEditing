@@ -1,6 +1,12 @@
 const $ = id => document.getElementById(id);
 const state = {projects: [], project: null, chart: null, detail: null, proposal: null, openProjects: new Set()};
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const savedTheme=localStorage.getItem('plot-forge-theme')||'dark';
+document.documentElement.dataset.theme=savedTheme;
+function updateThemeButton(){const light=document.documentElement.dataset.theme==='light';$('themeToggle').textContent=light?'☾ 深色':'☀ 浅色';}
+$('themeToggle').onclick=()=>{const next=document.documentElement.dataset.theme==='light'?'dark':'light';document.documentElement.dataset.theme=next;localStorage.setItem('plot-forge-theme',next);updateThemeButton();};
+updateThemeButton();
+
 const endpoint = action => `/api/projects/${encodeURIComponent(state.project)}/charts/${encodeURIComponent(state.chart)}/${action}`;
 async function api(url, options) { const r = await fetch(url, options); const data = await r.json(); if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`); return data; }
 function alertStatus(s) { $('status').textContent = s; }
