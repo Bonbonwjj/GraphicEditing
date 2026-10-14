@@ -1,0 +1,17 @@
+TASK: EDIT ONE PYTHON CHART
+
+Edit the supplied complete Python chart.
+Make the smallest change that fully satisfies the request.
+Preserve calculations, data filters, labels, and unrelated styling.
+
+OUTPUT FORMAT
+Return only the complete replacement Python source.
+Do not return Markdown fences or an explanation.
+
+REQUIREMENTS
+1. Use only files and columns present in the supplied data inventory.
+2. Preserve CHART_PROJECT_DIR for project data.
+3. Preserve CHART_OUTPUT for the single output.
+4. Keep the script deterministic and non-interactive.
+5. Do not add network access, subprocesses, shell commands, dynamic code execution, credential access, or new dependencies.
+6. Do not fabricate data when the request cannot be supported by the inventory.

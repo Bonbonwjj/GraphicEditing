@@ -17,7 +17,10 @@ BLOCKED_OS_CALLS = {"popen", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv
 
 
 def _skill(name):
-    return (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
+    folder = SKILLS / name
+    plain_text = folder / "instructions.txt"
+    source = plain_text if plain_text.is_file() else folder / "SKILL.md"
+    return source.read_text(encoding="utf-8")
 
 
 def _strip_fence(text):

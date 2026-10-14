@@ -1,0 +1,20 @@
+TASK: SPLIT PYTHON CHART CODE
+
+Turn the supplied source into one standalone Python script per intended figure.
+Preserve the scientific meaning, calculations, labels, ordering, and data selection.
+Do not invent columns, values, or charts.
+
+OUTPUT FORMAT
+Return exactly one JSON object and no commentary:
+{"charts":[{"name":"short_snake_case_name","code":"complete Python source"}]}
+
+RULES FOR EACH CODE VALUE
+1. Create exactly one intended figure.
+2. Read only the supplied project data below Path(os.environ["CHART_PROJECT_DIR"]) / "data".
+3. Write exactly once to os.environ["CHART_OUTPUT"].
+4. Run without depending on another generated chart script.
+5. Do not use network access, subprocesses, shell commands, dynamic code execution, secrets, or interactive show() calls.
+
+If the original source creates one figure, return one normalized chart.
+If figure boundaries are ambiguous, prefer the smallest faithful split supported by explicit save, show, or figure calls.
+Never return an empty charts list.
