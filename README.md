@@ -33,8 +33,7 @@ python server.py
 - `projects/<id>/charts/*.py`：绘图源代码
 - `projects/<id>/history/`：逐图快照与修改说明
 - `skills/plot-style/SKILL.md`：统一绘图规范，包含 8 pt 字体规则
-- `skills/chart-code-*/instructions.txt`：实际发送给较弱模型的纯文本拆图、修改和纠错协议
-- `skills/chart-code-*/SKILL.md`：保留用于 skill 发现的标准入口
+- `skills/chart-code-*/SKILL.md`：面向较弱模型的拆图、修改和纠错协议
 - `llm_client.py`：可替换的 OpenAI-compatible API 适配层
 - `llm_workflows.py`：skill 注入、结构化解析、校验与纠错重试
 - `studio_style.py`：实际执行的 Matplotlib 统一样式

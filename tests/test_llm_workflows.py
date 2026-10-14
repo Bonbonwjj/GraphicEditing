@@ -19,9 +19,6 @@ fig.savefig(os.environ["CHART_OUTPUT"])
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_model_skills_are_loaded_from_txt(self):
-        self.assertTrue(llm_workflows._skill("chart-code-edit").startswith("TASK: EDIT ONE PYTHON CHART"))
-
     def test_validate_chart_source_blocks_subprocess(self):
         with self.assertRaisesRegex(ValueError, "not allowed"):
             llm_workflows.validate_chart_source(VALID_CODE.replace("import os", "import os\nimport subprocess"))
