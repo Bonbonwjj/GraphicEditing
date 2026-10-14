@@ -8,8 +8,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +15,8 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 from agent_importer import import_package
 from generic_importer import import_generic
+import llm_client
+from llm_workflows import edit_chart
 from upload_importer import store_upload, store_multipart_upload
 
 ROOT = Path(__file__).resolve().parent
@@ -104,41 +104,8 @@ def csv_preview(p):
     return out
 
 
-def llm_proposal(prompt, source, data):
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise ValueError("Set OPENAI_API_KEY in your terminal to enable chat editing")
-    url = os.environ.get("LLM_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
-    if urlparse(url).scheme != "https":
-        raise ValueError("LLM_API_URL must use HTTPS")
-    instruction = ("You edit one Python Matplotlib chart script. Return only the complete Python source, "
-                   "without markdown fences. Follow the plot-style skill. Use only the listed CSV columns, "
-                   "preserve CHART_PROJECT_DIR and CHART_OUTPUT, and never include network, shell, or secret access. "
-                   "The user will review before applying.\n\n" + STYLE.read_text(encoding="utf-8"))
-    payload = {"model": os.environ.get("LLM_MODEL", "Qwen/Qwen3.5-4B"),
-               "messages": [{"role": "system", "content": instruction},
-                            {"role": "user", "content": json.dumps({
-                                "request": prompt, "csv_files": data, "current_code": source}, ensure_ascii=False)}],
-               "temperature": 0.2}
-    request = urllib.request.Request(url, data=json.dumps(payload).encode(),
-                                     headers={"Authorization": "Bearer " + key,
-                                              "Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            message = json.load(response)["choices"][0]["message"]["content"]
-    except (urllib.error.HTTPError, urllib.error.URLError) as e:
-        detail = e.read().decode(errors="replace")[:700] if isinstance(e, urllib.error.HTTPError) else str(e)
-        raise ValueError("LLM request failed: " + detail)
-    proposed = message.strip()
-    if proposed.startswith("```"):
-        proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    try:
-        ast.parse(proposed)
-    except SyntaxError as e:
-        raise ValueError(f"Model returned invalid Python: {e}")
-    if len(proposed) > 100_000:
-        raise ValueError("Model returned an oversized script")
-    return proposed + "\n"
+def llm_proposal(prompt, source, data, validator=None):
+    return edit_chart(prompt, source, data, validator=validator)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -175,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/api/projects":
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
-                                       "llm_enabled": bool(os.environ.get("OPENAI_API_KEY"))})
+                                       "llm_enabled": llm_client.is_configured()})
         if self.command == "POST" and path == "/api/uploads/import":
             if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
                 form = self.body_multipart()
@@ -287,7 +254,9 @@ class Handler(BaseHTTPRequestHandler):
                         prompt = str(body.get("prompt", "")).strip()
                         if not prompt or len(prompt) > 5000:
                             raise ValueError("Enter an instruction under 5000 characters")
-                        code = llm_proposal(prompt, f.read_text(encoding="utf-8"), csv_preview(p))
+                        validator = (lambda candidate: render(p, candidate)) if os.environ.get(
+                            "LLM_VALIDATE_RENDER", "").lower() in {"1", "true", "yes"} else None
+                        code = llm_proposal(prompt, f.read_text(encoding="utf-8"), csv_preview(p), validator)
                         return self.json_response({"code": code, "reply": "代码已生成。检查后点击“应用修改”以渲染和保存。"})
                     if action == "restore":
                         history = read_history(p, chart)
