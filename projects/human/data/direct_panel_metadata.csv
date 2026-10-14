@@ -1,4 +1,4 @@
-panel_id,collection,order,title,ylabel,p_value,left_label,right_label,left_color,right_color
+﻿panel_id,collection,order,title,ylabel,p_value,left_label,right_label,left_color,right_color
 01_obs_vs_disd_01,01_obs_vs_disd,1,Dimensions Viewed,"Gaze-covered
 dimensions count",0.0252294700158939,Obs,DIS-D,#E67E28,#8657BE
 01_obs_vs_disd_02,01_obs_vs_disd,2,Images Seen,Gaze-covered images count,0.0219060054005532,Obs,DIS-D,#E67E28,#8657BE

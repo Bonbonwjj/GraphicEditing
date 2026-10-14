@@ -1,4 +1,5 @@
 {
   "name": "human",
-  "description": "Agent imported 31 editable charts from uploads/human/20260929T084129205276Z."
+  "description": "Updated with 2 chart candidates.",
+  "non_chart_scripts": ["export_plot_inputs", "render_figures_from_csv"]
 }
