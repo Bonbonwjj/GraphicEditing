@@ -1,0 +1,56 @@
+{
+  "request_id": "req_00000000-0000-4000-8000-000000000008",
+  "edit_session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "turn_id": "trn_00000000-0000-4000-8000-000000000008",
+  "project_id": "prj_00000000-0000-4000-8000-000000000001",
+  "chart_id": "cht_00000000-0000-4000-8000-000000000002",
+  "base_revision": "rev_00000000-0000-4000-8000-000000000001",
+  "parent_draft_id": null,
+  "user_message": "把图宽设为 1 英寸，X 轴刻度显示五个组名：Group Alpha、Group Beta、Group Gamma、Group Delta、Group Epsilon，字号固定 20，水平显示，不允许改文字，其他不变。",
+  "target_display_name": "Time (s)_Score",
+  "source_files": [
+    {
+      "path": "charts/b.py",
+      "content": "import os\nfrom pathlib import Path\nimport pandas as pd\nimport matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\nfrom shared_draw import draw_series\nproject = Path(os.environ['CHART_PROJECT_DIR'])\ndata = pd.read_csv(project / 'data' / 'plot.csv')\nfig, ax = plt.subplots(figsize=(6, 4))\ndraw_series(ax, data, 'Obs', '#336699')\ndraw_series(ax, data, 'Control', '#cc6600')\nax.set_xlabel('Time (s)', fontsize=12)\nax.set_ylabel('Score', fontsize=12)\nax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=10)\nfig.subplots_adjust(right=0.72, left=0.14, bottom=0.18)\nfig.savefig(os.environ['CHART_OUTPUT'], dpi=120)\nplt.close(fig)\n",
+      "sha256": "sha256:36aed7191d5b0b26215369ea8a9cf4d0332bdf392e205e20c4c9e768c76cc38c",
+      "writable": true
+    },
+    {
+      "path": "shared_draw.py",
+      "content": "def draw_series(ax, data, group, color):\n    rows = data[data['group'] == group]\n    return ax.plot(rows['x'], rows['mean'], label=group, color=color, linewidth=1.5, marker='o')\n",
+      "sha256": "sha256:b2d81ed1ceb2f8f523bee418510d38a4efdf7fd02844c574f1ff0e1dade91ce0",
+      "writable": false
+    }
+  ],
+  "plot_data": [
+    {
+      "path": "data/plot.csv",
+      "content": "group,x,mean,sem\nObs,0,1,0.1\nObs,1,2,0.2\nObs,2,1.6,0.15\nControl,0,1.3,0.1\nControl,1,1.4,0.2\nControl,2,2.1,0.15\n",
+      "sha256": "sha256:553e52a175ded1cce3e7b9d52e2347127651eaeb824b9cbb9c1f456f9dc5aa64",
+      "writable": false
+    }
+  ],
+  "allowed_write_paths": [
+    "charts/b.py"
+  ],
+  "reference_charts": [],
+  "conversation_context": {
+    "decisions": []
+  },
+  "constraints": [
+    "CSV read-only",
+    "Shared helper and other charts read-only",
+    "Preserve chart type and existing styles except requested properties",
+    "No chart title"
+  ],
+  "layout_exception": null,
+  "harness_layout_feedback": {
+    "warning_id": "layout-w1",
+    "chart_id": "cht_00000000-0000-4000-8000-000000000002",
+    "elements": [
+      "x tick labels"
+    ],
+    "constraint": "figure width 1 inch, fixed font 20, horizontal ticks, fixed literal long labels",
+    "message": "五个长刻度标签在 1 英寸宽度下重叠；固定字号 20、文字和水平角度后无法消除。可以增宽或允许重叠。"
+  }
+}
