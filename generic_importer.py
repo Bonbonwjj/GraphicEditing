@@ -71,5 +71,7 @@ def import_generic(root, upload, project_id, name):
     meta_file=target/"project.json"
     old=json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
     meta={"name":old.get("name",name) if updating else name,"description":f"{'Updated' if updating else 'Uploaded'} with {len(charts)} chart candidates."}
+    if old.get("non_chart_scripts"):
+        meta["non_chart_scripts"] = old["non_chart_scripts"]
     meta_file.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     return {"project":project_id,"charts":charts,"files":len(data_names),"errors":errors,"adapter":"generic-update" if updating else "generic"}

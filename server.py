@@ -2,29 +2,47 @@
 import ast
 import cgi
 import csv
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 from agent_importer import import_package
 from generic_importer import import_generic
 import llm_client
 from llm_workflows import edit_chart
 from upload_importer import store_upload, store_multipart_upload
+from agent_http import post_json
+from chart_naming import RenderedImage
+from chat_harness import ChatHarness, lock as workflow_lock
+from model_config import public as public_model_config, save as save_model_config, clear as clear_model_config, test_connection as test_model_connection, effective as effective_model_config
 
 ROOT = Path(__file__).resolve().parent
 PROJECTS = ROOT / "projects"
 STATIC = ROOT / "static"
 STYLE = ROOT / "skills" / "plot-style" / "SKILL.md"
+NORMALIZATION_SKILL = ROOT / "skills" / "chart-normalization" / "SKILL.md"
+NORMALIZATION_PROFILE = NORMALIZATION_SKILL.parent / "assets" / "style-profile.v1.json"
+SKILL_CATALOG = ROOT / "skills" / "normalization-catalog"
+PREVIEW_POOL = ThreadPoolExecutor(max_workers=2)
+PREVIEW_LOCKS = {}
+PREVIEW_LOCKS_GUARD = threading.Lock()
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
 MAX_BODY = 12_000_000
 MAX_UPLOAD_BODY = 550_000_000
+
+
+def source_revision(source):
+    return "sha256:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def project_path(project):
@@ -51,10 +69,176 @@ def read_history(p, chart):
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
 
 
+def history_view(p, chart):
+    entries = read_history(p, chart)
+    allowed_code = {item["id"] for item in (entries[:1] + entries[-2:-1])}
+    for entry in entries:
+        old_source = (p / "history" / (entry["id"] + ".py")).is_file()
+        entry["code_available"] = entry["id"] in allowed_code and old_source
+        entry["image_available"] = old_source or any((p / "history" / (entry["id"] + ext)).is_file() for ext in IMAGE_TYPES)
+    return entries
+
+
 def write_history(p, chart, entries):
     (p / "history").mkdir(exist_ok=True)
     (p / "history" / (chart + ".json")).write_text(
         json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def skill_catalog():
+    hidden_file = SKILL_CATALOG / ".hidden.json"
+    hidden = json.loads(hidden_file.read_text(encoding="utf-8")) if hidden_file.exists() else []
+    skills = []
+    if "chart-normalization" not in hidden:
+        skills.append({"id": "chart-normalization", "name": "统一绘图规范", "built_in": True})
+    if SKILL_CATALOG.exists():
+        for folder in sorted(SKILL_CATALOG.iterdir()):
+            if folder.is_dir() and (folder / "SKILL.md").is_file():
+                meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+                skills.append({"id": folder.name, "name": meta["name"], "built_in": False})
+    return skills
+
+
+def skill_files(skill_id):
+    if skill_id == "chart-normalization":
+        folder = NORMALIZATION_SKILL.parent
+    elif skill_id and skill_id.replace("_", "").replace("-", "").isalnum():
+        folder = SKILL_CATALOG / skill_id
+    else:
+        raise ValueError("Invalid skill ID")
+    if skill_id not in {item["id"] for item in skill_catalog()}:
+        raise ValueError("Skill not found")
+    skill = folder / "SKILL.md"
+    profile = folder / "assets" / "style-profile.v1.json"
+    return skill.read_text(encoding="utf-8"), json.loads(profile.read_text(encoding="utf-8")) if profile.exists() else {}
+
+
+def preview_signature(p, source):
+    files = [*p.glob('*.py'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
+    dependencies=[]
+    for f in sorted(set(files)):
+        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json') and '__pycache__' not in f.parts:
+            if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):raise ValueError('External project dependency')
+            dependencies.append((f.relative_to(p).as_posix(),hashlib.sha256(f.read_bytes()).hexdigest()))
+    for f in (ROOT/'studio_style.py',NORMALIZATION_PROFILE):
+        dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
+    return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
+
+
+def preview_lock(p, chart):
+    key = (str(p), chart)
+    with PREVIEW_LOCKS_GUARD:
+        return PREVIEW_LOCKS.setdefault(key, threading.RLock())
+
+
+def save_preview(p, chart, source, data, suffix=".png"):
+    with preview_lock(p, chart):
+        entry=p/'charts'/(chart+'.py')
+        if entry.is_file() and entry.read_text(encoding='utf-8')!=source:
+            raise ValueError('Chart changed before saving the preview; retry with its current version')
+        folder = p / "previews"
+        folder.mkdir(exist_ok=True)
+        for old in folder.glob(chart + ".*"):
+            if old.suffix in IMAGE_TYPES and old.suffix != suffix:
+                old.unlink()
+        target = folder / (chart + suffix)
+        temp = folder / (chart + ".tmp")
+        temp.write_bytes(data)
+        temp.replace(target)
+        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix}), encoding="utf-8")
+        if getattr(data, "naming", None) is not None:
+            save_naming(p, chart, source, data.naming)
+        return data, IMAGE_TYPES[suffix]
+
+
+def preview_asset(p, chart, source):
+    folder = p / "previews"
+    meta_file = folder / (chart + ".json")
+    with preview_lock(p, chart):
+        entry=p/'charts'/(chart+'.py')
+        if entry.is_file() and entry.read_text(encoding='utf-8')!=source:
+            # Historical snapshots must never overwrite the current chart preview.
+            return render(p,source),'image/png'
+        signature=preview_signature(p,source)
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                target = folder / (chart + meta["suffix"])
+                if meta["signature"] == signature and target.is_file():
+                    return target.read_bytes(), IMAGE_TYPES[meta["suffix"]]
+            except (KeyError, ValueError):
+                pass
+        rendered=render(p,source)
+        if signature!=preview_signature(p,source):raise ValueError('Chart dependencies changed during rendering; retry')
+        return save_preview(p, chart, source, rendered)
+
+
+def snapshot_image(p, chart, revision, source, data=None):
+    data, mime = (data, "image/png") if data is not None else preview_asset(p, chart, source)
+    suffix = next(ext for ext, kind in IMAGE_TYPES.items() if kind == mime)
+    (p / "history").mkdir(exist_ok=True)
+    (p / "history" / (revision + suffix)).write_bytes(data)
+    return suffix
+
+
+def save_naming(p, chart, source, naming):
+    folder = p / "chart_metadata"
+    folder.mkdir(exist_ok=True)
+    target = folder / (chart + ".json")
+    temp = folder / (chart + "." + uuid.uuid4().hex + ".tmp")
+    temp.write_text(json.dumps({"signature": preview_signature(p, source), **naming}, ensure_ascii=False), encoding="utf-8")
+    temp.replace(target)
+
+
+def chart_naming(p, chart):
+    source = (p / "charts" / (chart + ".py")).read_text(encoding="utf-8")
+    try:
+        info = json.loads((p / "chart_metadata" / (chart + ".json")).read_text(encoding="utf-8"))
+        if info.get("signature") == preview_signature(p, source):
+            return {"display_name": chart, **info}
+    except (OSError, ValueError):
+        pass
+    return {"display_name": chart, "status": "pending"}
+
+
+def warm_project_previews(project_id):
+    p = project_path(project_id)
+    meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
+    excluded = set(meta.get("non_chart_scripts", []))
+    for f in sorted((p / "charts").glob("*.py")):
+        if f.stem in excluded:
+            continue
+        try:
+            source = f.read_text(encoding="utf-8")
+            preview_asset(p, f.stem, source)
+            if chart_naming(p, f.stem)["status"] == "pending":
+                rendered = render(p, source)
+                if f.read_text(encoding="utf-8") == source:
+                    save_naming(p, f.stem, source, rendered.naming or {"status": "fallback"})
+        except Exception as error:
+            print(f"Preview {project_id}/{f.stem}: {error}", flush=True)
+
+
+def copy_uploaded_images(upload, p):
+    source = upload / "images"
+    if not source.is_dir():
+        return 0
+    original = p / "images" / "original"
+    original.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for image in source.iterdir():
+        if not image.is_file() or image.suffix.lower() not in IMAGE_TYPES:
+            continue
+        shutil.copy2(image, original / image.name)
+        chart = image.stem
+        if not (p / "charts" / (chart + ".py")).is_file():
+            import re
+            chart = re.sub(r"[^A-Za-z0-9_]+", "_", chart).strip("_")
+        target = p / "charts" / (chart + ".py")
+        if target.is_file():
+            save_preview(p, chart, target.read_text(encoding="utf-8"), image.read_bytes(), image.suffix.lower())
+        count += 1
+    return count
 
 
 def render(p, source, suffix=".png"):
@@ -63,19 +247,28 @@ def render(p, source, suffix=".png"):
         script = temp / "chart.py"
         output = temp / ("figure" + suffix)
         script.write_text(source, encoding="utf-8")
+        metadata = temp / "naming.json"
+        runner = temp / "runner.py"
+        runner.write_text("from chart_naming import install_capture\nimport runpy\n"
+                          + f"install_capture({str(output)!r}, {str(metadata)!r})\n"
+                          + f"runpy.run_path({str(script)!r}, run_name='__main__')\n", encoding="utf-8")
         env = os.environ.copy()
         env["CHART_PROJECT_DIR"] = str(p)
         env["CHART_OUTPUT"] = str(output)
         env["PYTHONPATH"] = str(ROOT)
-        env["MPLCONFIGDIR"] = str(temp / "mpl")
+        mpl_cache = ROOT / ".mplconfig"
+        mpl_cache.mkdir(exist_ok=True)
+        env["MPLCONFIGDIR"] = str(mpl_cache)
         try:
-            result = subprocess.run([sys.executable, str(script)], cwd=p, env=env,
+            result = subprocess.run([sys.executable, str(runner)], cwd=p, env=env,
                                     capture_output=True, text=True, timeout=20)
         except subprocess.TimeoutExpired:
             raise ValueError("Render timed out after 20 seconds")
         if result.returncode or not output.is_file():
             raise ValueError("Render failed: " + (result.stderr[-3500:] or "No output file"))
-        return output.read_bytes()
+        image = RenderedImage(output.read_bytes())
+        image.naming = json.loads(metadata.read_text(encoding="utf-8")) if metadata.exists() else {"status": "fallback", "reason": "未捕获到绘图轴信息"}
+        return image
 
 
 def git(*args):
@@ -87,8 +280,10 @@ def list_projects():
     for p in sorted(PROJECTS.iterdir()):
         if (p / "project.json").is_file():
             meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
-            result.append({"id": p.name, **meta,
-                           "charts": [f.stem for f in sorted((p / "charts").glob("*.py"))],
+            excluded = set(meta.get("non_chart_scripts", []))
+            charts = [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded]
+            result.append({"id": p.name, **meta, "chart_metadata": {c: chart_naming(p, c) for c in charts},
+                           "charts": [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded],
                            "data": [f.name for f in sorted((p / "data").glob("*.csv"))]})
     return result
 
@@ -104,6 +299,8 @@ def csv_preview(p):
     return out
 
 
+CHAT = ChatHarness(sys.modules[__name__])
+
 def llm_proposal(prompt, source, data, validator=None):
     return edit_chart(prompt, source, data, validator=validator)
 
@@ -117,6 +314,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -140,9 +338,96 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "app.css").read_bytes(), "text/css; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == '/api/model-config' or path == '/api/model-config/test':
+            if self.command == 'GET' and path == '/api/model-config':
+                return self.json_response(public_model_config())
+            if ((self.command == 'POST' and path in ('/api/model-config', '/api/model-config/test'))
+                    or (self.command == 'DELETE' and path == '/api/model-config')):
+                origin = self.headers.get('Origin')
+                port = int(os.environ.get('CHART_STUDIO_PORT', '8765'))
+                if origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+                    raise ValueError('配置请求必须来自当前工作台')
+                if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
+                    raise ValueError('配置请求需要 application/json')
+                if self.command == 'DELETE':
+                    return self.json_response(clear_model_config())
+                if path.endswith('/test'):
+                    self.body_json()
+                    return self.json_response(test_model_connection())
+                return self.json_response(save_model_config(self.body_json()))
+            return self.json_response({'error': 'Model config route not found'}, 404)
         if self.command == "GET" and path == "/api/projects":
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
-                                       "llm_enabled": llm_client.is_configured()})
+                                       "llm_enabled": bool(effective_model_config()['api_key']) or llm_client.is_configured()})
+        if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "history"] and self.command == "GET":
+            project_path(parts[2])
+            return self.json_response({"sessions": CHAT.history(parts[2])})
+        if len(parts) >= 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "sessions"]:
+            project = parts[2]
+            project_path(project)
+            if len(parts) == 5:
+                if self.command == "GET":
+                    query = parse_qs(parsed.query)
+                    charts = query.get("charts", [None])[0]
+                    return self.json_response({"sessions": CHAT.list(project, charts.split(",") if charts else None)})
+                if self.command == "POST":
+                    body = self.body_json()
+                    return self.json_response(CHAT.create(project, body.get("charts"), body.get("reference_charts", [])))
+            if len(parts) == 6 and self.command == "GET":
+                return self.json_response(CHAT.get(project, parts[5]))
+            if len(parts) == 7 and self.command == "POST" and parts[6] in ("turns", "normalize"):
+                return self.json_response(CHAT.turn(project, parts[5], self.body_json(), normalize=parts[6] == "normalize"))
+            if len(parts) == 9 and parts[6] == "drafts":
+                sid, did, action = parts[5], parts[7], parts[8]
+                if self.command == "GET" and action in ("image", "baseline-image"):
+                    session = CHAT.load(project, sid)
+                    draft = next((d for d in session["drafts"] if d["id"] == did), None)
+                    image_key = "image_path" if action == "image" else "baseline_image_path"
+                    if not draft or not draft.get(image_key):
+                        raise ValueError("该版本的图片尚未生成")
+                    image = Path(draft[image_key])
+                    if not image.resolve().is_relative_to(CHAT.path(project, sid).parent.resolve()):
+                        raise ValueError("Invalid draft image path")
+                    return self.bytes_response(image.read_bytes(), "image/png")
+                if self.command == "POST" and action in ("apply", "activate", "discard"):
+                    self.body_json()
+                    return self.json_response(CHAT.draft_action(project, sid, did, action))
+            return self.json_response({"error": "Chat route not found"}, 404)
+        if path == "/api/normalization-skills":
+            if self.command == "GET":
+                return self.json_response({"skills": skill_catalog()})
+            if self.command == "POST":
+                body = self.body_json()
+                ident, name = str(body.get("id", "")).strip(), str(body.get("name", "")).strip()
+                content = body.get("content", "")
+                profile = body.get("profile", {})
+                if not ident or not ident.replace("_", "").replace("-", "").isalnum() or ident == "chart-normalization":
+                    raise ValueError("Skill ID must contain letters, numbers, _ or - and be unique")
+                if not name or len(name) > 80 or not isinstance(content, str) or not content.strip() or len(content) > 100_000:
+                    raise ValueError("Invalid Skill name or SKILL.md content")
+                if not isinstance(profile, dict):
+                    raise ValueError("Style profile must be a JSON object")
+                folder = SKILL_CATALOG / ident
+                if folder.exists():
+                    raise ValueError("Skill ID already exists")
+                (folder / "assets").mkdir(parents=True)
+                (folder / "SKILL.md").write_text(content, encoding="utf-8")
+                (folder / "assets" / "style-profile.v1.json").write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+                (folder / "meta.json").write_text(json.dumps({"name": name}, ensure_ascii=False), encoding="utf-8")
+                return self.json_response({"id": ident, "name": name})
+        if len(parts) == 3 and parts[:2] == ["api", "normalization-skills"]:
+            skill_id = parts[2]
+            if self.command == "GET":
+                content, profile = skill_files(skill_id)
+                return self.json_response({"id": skill_id, "content": content, "profile": profile})
+            if self.command == "DELETE":
+                skill_files(skill_id)
+                if skill_id == "chart-normalization":
+                    SKILL_CATALOG.mkdir(exist_ok=True)
+                    (SKILL_CATALOG / ".hidden.json").write_text('["chart-normalization"]', encoding="utf-8")
+                else:
+                    shutil.rmtree(SKILL_CATALOG / skill_id)
+                return self.json_response({"deleted": skill_id})
         if self.command == "POST" and path == "/api/uploads/import":
             if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
                 form = self.body_multipart()
@@ -168,6 +453,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 if "Project already exists" in str(error): raise
                 result = import_generic(ROOT, upload, project_id, name)
+            result["images"] = copy_uploaded_images(upload, PROJECTS / project_id)
             git("add", str((PROJECTS / project_id).relative_to(ROOT)))
             commit = git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Upload project " + project_id)
             if commit.returncode != 0:
@@ -176,12 +462,14 @@ class Handler(BaseHTTPRequestHandler):
             result["github_synced"] = pushed.returncode == 0
             if pushed.returncode != 0:
                 result["github_error"] = pushed.stderr[-700:]
+            PREVIEW_POOL.submit(warm_project_previews, project_id)
             return self.json_response(result)
         if self.command == "POST" and path == "/api/agent/import":
             body = self.body_json()
             result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None)
             git("add", str((PROJECTS / result["project"]).relative_to(ROOT)))
             git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Agent import " + result["project"])
+            PREVIEW_POOL.submit(warm_project_previews, result["project"])
             return self.json_response(result)
         if self.command == "POST" and path == "/api/projects":
             body = self.body_json()
@@ -233,23 +521,55 @@ class Handler(BaseHTTPRequestHandler):
                 f.write_text(source, encoding="utf-8")
                 git("add", str(f.relative_to(ROOT)))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create chart {parts[2]}/{name}")
+                PREVIEW_POOL.submit(warm_project_previews, parts[2])
                 return self.json_response({"chart": name})
             if self.command == "GET" and len(parts) == 4 and parts[3] == "data":
                 return self.json_response({"data": csv_preview(p)})
+            if self.command == "GET" and len(parts) == 8 and parts[3] == "charts" and parts[5] == "history" and parts[7] == "image":
+                p, _ = chart_path(parts[2], parts[4])
+                entry = next((x for x in read_history(p, parts[4]) if x["id"] == parts[6]), None)
+                if entry is None:
+                    raise ValueError("History entry not found")
+                for suffix, mime in IMAGE_TYPES.items():
+                    image = p / "history" / (entry["id"] + suffix)
+                    if image.is_file():
+                        return self.bytes_response(image.read_bytes(), mime)
+                old_code = p / "history" / (entry["id"] + ".py")
+                if old_code.is_file():
+                    suffix = snapshot_image(p, parts[4], entry["id"], old_code.read_text(encoding="utf-8"),
+                                            render(p, old_code.read_text(encoding="utf-8")))
+                    entries = read_history(p, parts[4])
+                    allowed_code = {item["id"] for item in (entries[:1] + entries[-2:-1])}
+                    if entry["id"] not in allowed_code:
+                        old_code.unlink(missing_ok=True)
+                    return self.bytes_response((p / "history" / (entry["id"] + suffix)).read_bytes(), IMAGE_TYPES[suffix])
+                raise ValueError("This older version has no saved image")
             if len(parts) == 6 and parts[3] == "charts":
                 project, chart, action = parts[2], parts[4], parts[5]
                 p, f = chart_path(project, chart)
                 if self.command == "GET" and action == "detail":
-                    return self.json_response({"code": f.read_text(encoding="utf-8"),
-                                               "history": read_history(p, chart),
-                                               "data": csv_preview(p), "style": STYLE.read_text(encoding="utf-8")})
+                    current_code = f.read_text(encoding="utf-8")
+                    return self.json_response({"code": current_code, "revision": source_revision(current_code),
+                                               "history": history_view(p, chart),
+                                               "data": csv_preview(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
                 if self.command == "GET" and action in ("preview", "svg", "pdf"):
                     suffix = {"preview": ".png", "svg": ".svg", "pdf": ".pdf"}[action]
-                    data = render(p, f.read_text(encoding="utf-8"), suffix)
-                    mime = {".png": "image/png", ".svg": "image/svg+xml", ".pdf": "application/pdf"}[suffix]
+                    source = f.read_text(encoding="utf-8")
+                    if action == "preview":
+                        data, mime = save_preview(p, chart, source, render(p, source)) if "force=1" in parsed.query.split("&") else preview_asset(p, chart, source)
+                    else:
+                        data, mime = render(p, source, suffix), {".svg": "image/svg+xml", ".pdf": "application/pdf"}[suffix]
                     return self.bytes_response(data, mime, f"{chart}{suffix}" if action != "preview" else None)
-                if self.command == "POST" and action in ("propose", "apply", "restore"):
+                if self.command == "POST" and action in ("propose", "normalize", "apply", "restore", "finalize"):
                     body = self.body_json()
+                    current_code = f.read_text(encoding="utf-8")
+                    if action == "finalize":
+                        return self.json_response(CHAT.finalize(project,chart))
+                    if action == "normalize":
+                        session = CHAT.create(project, [chart])
+                        return self.json_response(CHAT.turn(project, session["id"],
+                            {"user_message": body.get("prompt", ""), "skill_id": body.get("skill_id", "chart-normalization")},
+                            normalize=True))
                     if action == "propose":
                         prompt = str(body.get("prompt", "")).strip()
                         if not prompt or len(prompt) > 5000:
@@ -263,6 +583,9 @@ class Handler(BaseHTTPRequestHandler):
                         entry = next((x for x in history if x["id"] == body.get("id")), None)
                         if entry is None:
                             raise ValueError("History entry not found")
+                        allowed_code = {item["id"] for item in (history[:1] + history[-2:-1])}
+                        if entry["id"] not in allowed_code:
+                            raise ValueError("此版本只保留图片；代码仅能恢复最早版或上一轮版")
                         new_code = (p / "history" / (entry["id"] + ".py")).read_text(encoding="utf-8")
                         note = "恢复版本：" + entry["id"]
                     else:
@@ -270,9 +593,14 @@ class Handler(BaseHTTPRequestHandler):
                         note = str(body.get("note", "手动修改"))[:300]
                         if not isinstance(new_code, str) or len(new_code) > 100_000:
                             raise ValueError("Invalid source")
+                    expected_revision = body.get("base_revision")
+                    if expected_revision and expected_revision != source_revision(current_code):
+                        raise ValueError("Chart changed since normalization started; refresh before applying")
                     ast.parse(new_code)
-                    render(p, new_code)  # Validate before replacing the working chart.
+                    rendered = render(p, new_code)  # Validate before replacing the working chart.
                     old_code = f.read_text(encoding="utf-8")
+                    if old_code != current_code:
+                        raise ValueError("Chart changed during rendering; refresh before applying")
                     if old_code == new_code:
                         return self.json_response({"message": "代码没有变化"})
                     stamp = datetime.now(timezone.utc).isoformat()
@@ -281,12 +609,32 @@ class Handler(BaseHTTPRequestHandler):
                     if not history:
                         base_id = uuid.uuid4().hex[:12]
                         (p / "history" / (base_id + ".py")).write_text(old_code, encoding="utf-8")
+                        try:
+                            snapshot_image(p, chart, base_id, old_code)
+                        except ValueError:
+                            pass
                         history.append({"id": base_id, "time": stamp, "note": "初始版本"})
-                    (p / "history" / (revision + ".py")).write_text(new_code, encoding="utf-8")
+                    else:
+                        prior_id = history[-1]["id"]
+                        (p / "history" / (prior_id + ".py")).write_text(old_code, encoding="utf-8")
+                        if not any((p / "history" / (prior_id + ext)).exists() for ext in IMAGE_TYPES):
+                            try:
+                                snapshot_image(p, chart, prior_id, old_code)
+                            except ValueError:
+                                pass
                     f.write_text(new_code, encoding="utf-8")
+                    save_preview(p, chart, new_code, rendered)
+                    snapshot_image(p, chart, revision, new_code, rendered)
                     history.append({"id": revision, "time": stamp, "note": note})
+                    keep_code = {history[0]["id"], history[-2]["id"]}
+                    for entry in history:
+                        old_snapshot = p / "history" / (entry["id"] + ".py")
+                        if old_snapshot.is_file() and not any((p / "history" / (entry["id"] + ext)).is_file() for ext in IMAGE_TYPES):
+                            keep_code.add(entry["id"])
+                        if entry["id"] not in keep_code:
+                            old_snapshot.unlink(missing_ok=True)
                     write_history(p, chart, history)
-                    git("add", str(f.relative_to(ROOT)), str((p / "history").relative_to(ROOT)))
+                    git("add", "-A", str(f.relative_to(ROOT)), str((p / "history").relative_to(ROOT)), str((p / "previews").relative_to(ROOT)))
                     commit = git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost",
                                  "commit", "-m", f"Update {project}/{chart}: {note[:80]}")
                     return self.json_response({"message": "已保存并记录版本", "revision": revision,
@@ -317,6 +665,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            parts=[p for p in unquote(urlparse(self.path).path).split('/') if p]
+            if len(parts)>=4 and parts[:2]==['api','projects'] and parts[3]!='chat' and parts[-1]!='finalize':
+                with workflow_lock(project_path(parts[2])):self.route()
+            else:self.route()
+        except Exception as e:
+            self.json_response({"error": str(e)}, 400)
+
+    def do_DELETE(self):
+        try:
             self.route()
         except Exception as e:
             self.json_response({"error": str(e)}, 400)
@@ -325,4 +682,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("CHART_STUDIO_PORT", "8765"))
     print(f"Chart Studio: http://127.0.0.1:{port}\nProject folder: {ROOT}", flush=True)
+    for existing in list_projects():
+        PREVIEW_POOL.submit(warm_project_previews, existing["id"])
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
