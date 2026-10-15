@@ -1,8 +1,22 @@
 """Validate and group browser uploads by project and batch."""
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import shutil
 ALLOWED={".py",".csv",".tsv",".json"}
 MAX_UPLOAD_BYTES=500_000_000
+
+
+def safe_upload_path(filename):
+    """Return a portable relative upload path and reject traversal/drive names."""
+    raw = str(filename or "").replace("\\", "/")
+    path = PurePosixPath(raw)
+    if (
+        not raw
+        or path.is_absolute()
+        or any(part in ("", ".", "..") or ":" in part for part in path.parts)
+    ):
+        raise ValueError("不安全的上传文件路径")
+    return Path(*path.parts)
 
 def _target(root, project_id):
     if not project_id or not project_id.replace("_","").replace("-","").isalnum():
@@ -16,7 +30,7 @@ def store_multipart_upload(root, project_id, fields):
     for item in items:
         if item.name not in ("code_files","data_files") or not item.filename: continue
         kind="code" if item.name=="code_files" else "data"
-        name=Path(item.filename).name; suffix=Path(name).suffix.lower()
+        name=safe_upload_path(item.filename); suffix=name.suffix.lower()
         if suffix not in ALLOWED or (kind=="code" and suffix!=".py") or (kind=="data" and suffix==".py"):
             continue
         folder="code" if kind=="code" else "csv"; out=target/folder/name
@@ -36,13 +50,49 @@ def store_multipart_upload(root, project_id, fields):
 def store_upload(root, project_id, files):
     target=_target(root,project_id); total=0; counts={"code":0,"data":0}
     for item in files:
-        name=Path(str(item.get("name",""))).name; content=item.get("content",""); kind=item.get("kind")
+        name=safe_upload_path(item.get("name", "")); content=item.get("content",""); kind=item.get("kind")
         if kind not in counts: raise ValueError("上传文件缺少代码/数据分类")
         suffix=Path(name).suffix.lower()
-        if not name or suffix not in ALLOWED or not isinstance(content,str): raise ValueError("仅支持 .py、.csv、.tsv、.json")
+        if suffix not in ALLOWED or not isinstance(content,str): raise ValueError("仅支持 .py、.csv、.tsv、.json")
         total+=len(content.encode("utf-8"))
         if total>MAX_UPLOAD_BYTES: raise ValueError("单次上传总大小不能超过 500 MB")
         folder="code" if kind=="code" else "csv"; out=target/folder/name
         out.parent.mkdir(parents=True,exist_ok=True); out.write_text(content,encoding="utf-8"); counts[kind]+=1
     if not counts["code"] or not counts["data"]: raise ValueError("必须分别上传代码文件夹和数据文件夹")
     return target
+
+
+def store_bundle_multipart(root, project_id, fields):
+    """Store a small browser-uploaded Plot Bundle without flattening its tree."""
+    target = _target(root, project_id) / "bundle_upload"
+    total = 0
+    count = 0
+    try:
+        for item in fields.list or []:
+            if item.name != "bundle_files" or not item.filename:
+                continue
+            relative = safe_upload_path(item.filename)
+            if relative.suffix.lower() not in (".json", ".gz"):
+                raise ValueError("Plot Bundle 上传仅支持 .json 和 .gz 文件")
+            output = target / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("wb") as stream:
+                while True:
+                    chunk = item.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise ValueError("单次上传总大小不能超过 500 MB")
+                    stream.write(chunk)
+            count += 1
+        if not count:
+            raise ValueError("没有收到 Plot Bundle 文件")
+        manifests = list(target.rglob("manifest.json"))
+        if len(manifests) != 1:
+            raise ValueError("Plot Bundle 必须且只能包含一个 manifest.json")
+        return manifests[0].parent
+    except Exception:
+        if target.exists():
+            shutil.rmtree(target)
+        raise

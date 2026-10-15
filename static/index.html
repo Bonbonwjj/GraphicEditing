@@ -4,10 +4,10 @@
 <body>
 <header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
-  <aside class="left"><div class="paneHead"><span>项目资源</span><button class="mini" id="newProject" title="新建项目">＋</button></div><div id="tree"></div><div class="leftFoot"><div class="resourceActions"><button id="newChart">＋ 绘图</button><button id="uploadPackage">⬆ 上传项目</button><button id="importCsv">↑ CSV</button><input type="file" id="csvFile" accept=".csv,text/csv" hidden></div><strong>统一绘图规范</strong><p>字体 8 pt · CSV 数据源 · 可复现输出</p><button id="showSkill">查看绘图 Skill ↗</button></div></aside>
+  <aside class="left"><div class="paneHead"><span>项目资源</span><button class="mini" id="newProject" title="新建项目">＋</button></div><div id="tree"></div><div class="leftFoot"><div class="resourceActions"><button id="newChart">＋ 绘图</button><button id="uploadPackage">⬆ 导入数据源</button><button id="importCsv">↑ 表格</button><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></div><strong>统一绘图规范</strong><p>字体 8 pt · 多种数据源 · 可复现输出</p><button id="showSkill">查看绘图 Skill ↗</button></div></aside>
   <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHART</div><h1 id="chartTitle">请选择一张图</h1><p id="description">从左侧项目目录中打开绘图文件。</p></div><div class="actions"><button id="refresh" disabled>重新渲染</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
-    <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">CSV 数据</button></div>
-    <div id="figurePane" class="content"><div class="figureWrap"><div id="empty">选择左侧的一张图开始</div><img id="figure" alt="图像预览" hidden></div><p class="hint" id="figureHint">图像由项目中的 Python 脚本和 CSV 数据实时生成。</p></div>
+    <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">数据源</button></div>
+    <div id="figurePane" class="content"><div id="validationControls" class="validationControls" hidden><label>代表图<select id="validationChart"></select></label><span>保存共享模块前只验证这张图；引用它的其他图会在下次打开时使用新版本。</span></div><div class="figureWrap"><div id="empty">选择左侧的一张图开始</div><img id="figure" alt="图像预览" hidden></div><p class="hint" id="figureHint">图像由项目中的 Python 脚本和只读数据源实时生成。</p></div>
     <div id="codePane" class="content hide"><div class="codeBar"><span id="filename">chart.py</span><span>Python · Matplotlib</span></div><textarea id="editor" spellcheck="false" aria-label="绘图代码"></textarea><div class="editorActions"><span>修改代码后可直接验证并保存</span><button class="primary" id="saveCode">保存代码</button></div></div>
     <div id="dataPane" class="content hide"><div id="dataInfo"></div></div>
   </main>
@@ -17,18 +17,28 @@
 </div>
 
 <dialog id="uploadDialog" class="uploadDialog">
-  <div class="dialogHead"><strong>上传代码与数据</strong><button id="closeUpload" type="button">关闭</button></div>
-  <label>归类方式<select id="uploadProjectMode"><option value="__new__">＋ 新建项目</option></select></label>
+  <div class="dialogHead"><strong>导入代码与数据源</strong><button id="closeUpload" type="button">关闭</button></div>
+  <label>数据源类型<select id="importSourceType"><option value="tabular">CSV / TSV / JSON + Python</option><option value="plot_bundle">Plot Bundle</option></select></label>
+  <label id="projectModeLabel">归类方式<select id="uploadProjectMode"><option value="__new__">＋ 新建项目</option></select></label>
   <div id="newProjectFields">
     <label>项目名称<input id="uploadProjectName" placeholder="例如：行为实验图表"></label>
     <label>项目 ID<input id="uploadProjectId" placeholder="例如：behavior_experiment"></label>
   </div>
-  <div class="folderPickers">
-    <label class="folderPicker"><strong>代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
-    <label class="folderPicker"><strong>数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
+  <div id="tabularImportFields">
+    <div class="folderPickers">
+      <label class="folderPicker"><strong>代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
+      <label class="folderPicker"><strong>数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
+    </div>
+    <p class="hint">保留现有工作流：上传 Python 绘图代码以及 CSV、TSV 或 JSON 数据。</p>
   </div>
-  <p class="hint">代码与数据会按项目归档；转换成功后自动同步 GitHub。</p>
-  <button class="primary" id="startUpload" type="button">开始拆分并上传</button>
+  <div id="bundleImportFields" hidden>
+    <label>Bundle 来源<select id="bundleSourceMode"><option value="server_path">共享目录路径（适合大型 Bundle）</option><option value="upload">浏览器上传（最多 500 MB）</option></select></label>
+    <div id="bundleServerFields"><label>服务器上的 Bundle 目录<input id="bundleServerPath" placeholder="例如：X:\behavior\group_plot_bundle"></label><p class="hint">路径必须位于管理员配置的共享目录白名单内，源数据不会被修改或复制。</p></div>
+    <div id="bundleUploadFields" hidden><label class="folderPicker"><strong>Plot Bundle 文件夹</strong><span id="bundleFolderStatus">尚未选择</span><input type="file" id="bundleFolder" accept=".json,.gz" webkitdirectory directory multiple></label></div>
+    <label class="checkLabel"><input type="checkbox" id="bundleTrusted">我确认该 Bundle 来自受信任来源（其中包含 pickle 数据）</label>
+  </div>
+  <p class="hint">没有 Git 仓库时仍可正常导入和改图；平台不会自动推送到远端。</p>
+  <button class="primary" id="startUpload" type="button">开始导入</button>
 </dialog>
 <dialog id="skillDialog"><div class="dialogHead"><strong>统一绘图 Skill</strong><button id="closeSkill">关闭</button></div><pre id="skillText"></pre></dialog>
 <script src="/static/app.js"></script></body></html>

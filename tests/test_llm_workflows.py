@@ -54,8 +54,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result[0]["name"], "Figure_1")
         self.assertEqual(result[0]["code"], VALID_CODE)
 
-    @mock.patch("generic_importer.llm_client.is_configured", return_value=False)
-    def test_generic_importer_keeps_deterministic_fallback_without_api(self, _configured):
+    def test_generic_importer_keeps_deterministic_fallback_without_api(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             upload = root / "upload"
