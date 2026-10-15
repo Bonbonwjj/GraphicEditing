@@ -1,4 +1,4 @@
-﻿plot_id,subject_id,group_label,color,legend_label,stage_order,stage_label,value
+plot_id,subject_id,group_label,color,legend_label,stage_order,stage_label,value
 03_obs_vs_nobs_score_relevance,26050701,Obs,#E67E28,Obs (*),1,Initial,5.0
 03_obs_vs_nobs_score_relevance,26050702,Obs,#E67E28,Obs (*),1,Initial,9.0
 03_obs_vs_nobs_score_relevance,26050801,Obs,#E67E28,Obs (*),1,Initial,2.0
