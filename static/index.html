@@ -1,24 +1,19 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=13"></head>
+<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
-<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
+<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
-  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="uploadPackage" type="button">⬆ 上传项目</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,text/csv" hidden></aside>
-  <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHARTS</div><h1 id="chartTitle">请选择一个项目</h1><p id="description">从左侧项目目录打开项目，预览其中的全部图表。</p></div><div class="actions"><button id="refresh" disabled>重新渲染当前图</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
+  <aside class="left"><div class="paneHead"><span>项目资源</span><button class="mini" id="newProject" title="新建项目">＋</button></div><div id="tree"></div><div class="leftFoot"><div class="resourceActions"><button id="newChart">＋ 绘图</button><button id="uploadPackage">⬆ 上传项目</button><button id="importCsv">↑ CSV</button><input type="file" id="csvFile" accept=".csv,text/csv" hidden></div><strong>统一绘图规范</strong><p>字体 8 pt · CSV 数据源 · 可复现输出</p><button id="showSkill">查看绘图 Skill ↗</button></div></aside>
+  <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHART</div><h1 id="chartTitle">请选择一张图</h1><p id="description">从左侧项目目录中打开绘图文件。</p></div><div class="actions"><button id="refresh" disabled>重新渲染</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">CSV 数据</button></div>
-    <div id="figurePane" class="content"><div class="galleryToolbar"><div><strong id="galleryTitle">项目图集</strong><span id="galleryCount" class="dim">0 张图</span></div><div class="galleryActions"><label class="selectAllLabel"><input id="selectAllCharts" type="checkbox"> 全选</label><span id="selectedCount" class="dim">已选 0 张</span><button id="batchNormalize" type="button" class="primary" disabled>批量标准化</button><button id="batchEdit" type="button" class="primary" disabled>批量对话修改</button></div></div><div id="gallery" class="gallery"><div class="galleryEmpty">选择左侧的项目，查看全部图表。</div></div><p class="hint" id="figureHint">勾选一张或多张图后可标准化；点击图卡下方按钮可查看代码与 CSV 数据。</p></div>
+    <div id="figurePane" class="content"><div class="figureWrap"><div id="empty">选择左侧的一张图开始</div><img id="figure" alt="图像预览" hidden></div><p class="hint" id="figureHint">图像由项目中的 Python 脚本和 CSV 数据实时生成。</p></div>
     <div id="codePane" class="content hide"><div class="codeBar"><span id="filename">chart.py</span><span>Python · Matplotlib</span></div><textarea id="editor" spellcheck="false" aria-label="绘图代码"></textarea><div class="editorActions"><span>修改代码后可直接验证并保存</span><button class="primary" id="saveCode">保存代码</button></div></div>
     <div id="dataPane" class="content hide"><div id="dataInfo"></div></div>
   </main>
-  <aside class="right"><div class="chat">
-    <div class="chatHead"><span class="spark">✦</span><strong>对话改图</strong><span class="dim" id="chatState">候选预览</span></div>
-    <div id="chatTargets" class="chatTargets">尚未选择图表</div>
-    <div class="chatContextBar"><label for="chatSessionPicker">当前目标会话</label><select id="chatSessionPicker" aria-label="选择当前目标的修改会话"><option value="">新会话</option></select><button id="newChatSession" type="button">新建</button></div>
-    <details class="chatReferences"><summary id="chatReferenceSummary">参照图 · 只读（0）</summary><div id="chatReferenceChoices"></div><p class="hint">选择参照图后，在消息中说明参照哪些外观属性。参照图本身不会被修改。</p></details>
-    <div id="messages" aria-live="polite"><div class="bubble assistant">选中要修改的图，输入要求。新图先显示在这里；点击“应用此版”后才会更新中央图集。</div></div>
-    <form id="chatForm"><textarea id="prompt" placeholder="输入改图需求，可继续修改上一候选…" rows="3" aria-label="改图需求"></textarea><div class="sendRow"><span id="chatSendHint">Enter 发送 · Shift + Enter 换行</span><button id="sendChat" class="primary" type="submit">生成候选 ↗</button></div></form>
-  </div></aside>
+  <aside class="right"><div class="paneHead"><span>修改历史</span><span class="dim" id="historyCount">0 条</span></div><div id="history" class="history"><div class="placeholder">选择图表后查看版本记录</div></div>
+    <div class="chat"><div class="chatHead"><span class="spark">✦</span><strong>对话修改代码</strong><span class="dim">LLM</span></div><div id="messages"><div class="bubble assistant">描述你想修改的图形，例如“把图例移到右上角，并将目标轨迹改为虚线”。生成结果会先进入代码预览。</div></div><div id="proposal" hidden><div class="proposalTitle">待审核的代码修改</div><button id="inspect">查看代码</button><button class="primary" id="apply">应用修改</button></div><form id="chatForm"><textarea id="prompt" placeholder="输入改图需求…" rows="3"></textarea><div class="sendRow"><span>Ctrl + Enter 发送</span><button class="primary" type="submit">发送 ↗</button></div></form></div>
+  </aside>
 </div>
 
 <dialog id="uploadDialog" class="uploadDialog">
@@ -31,28 +26,9 @@
   <div class="folderPickers">
     <label class="folderPicker"><strong>代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
     <label class="folderPicker"><strong>数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
-    <label class="folderPicker"><strong>原图文件夹（可选）</strong><span id="imageFolderStatus">尚未选择</span><input type="file" id="imageFolder" accept=".png,.jpg,.jpeg,.svg" webkitdirectory directory multiple></label>
   </div>
-  <p class="hint">同名原图会直接用于图集预览；其他图会在后台生成并保存预览。代码、数据和图片按项目归档。</p>
+  <p class="hint">代码与数据会按项目归档；转换成功后自动同步 GitHub。</p>
   <button class="primary" id="startUpload" type="button">开始拆分并上传</button>
 </dialog>
-<dialog id="skillDialog"><div class="dialogHead"><strong>绘图标准化 Skills</strong><button id="closeSkill">关闭</button></div><div id="skillList"></div><hr><strong>上传新 Skill</strong><label>显示名称<input id="skillName" placeholder="例如：期刊图表规范"></label><label>Skill ID<input id="skillId" placeholder="例如：journal-style"></label><label>SKILL.md<input id="skillFile" type="file" accept=".md,text/markdown"></label><label>样式配置 JSON（可选）<input id="skillProfileFile" type="file" accept=".json,application/json"></label><button id="uploadSkill" class="primary" type="button">上传 Skill</button><details><summary>查看选中 Skill 内容</summary><pre id="skillText"></pre></details></dialog>
-<dialog id="chooseSkillDialog"><div class="dialogHead"><strong>选择标准化 Skill</strong><button id="closeChooseSkill" type="button">关闭</button></div><p id="chooseSkillTarget" class="hint"></p><div id="chooseSkillList"></div></dialog>
-<dialog id="historyDialog"><div class="dialogHead"><strong id="historyTitle">图片历史</strong><button id="closeHistory" type="button">关闭</button></div><p class="hint">保存所有图片版本；代码仅保留最早版本、上一轮版本和当前文件。</p><div id="history"></div><button id="finalizeHistory" type="button" class="dangerAction">修改完成，清理旧历史</button></dialog>
-<dialog id="modelConfigDialog" aria-labelledby="modelConfigTitle">
-  <div class="dialogHead"><strong id="modelConfigTitle">模型 API 配置</strong><button id="closeModelConfig" type="button">关闭</button></div>
-  <p class="modelConfigHelp">规范化 Agent 和 Chat 改图 Agent 使用同一份配置。密钥保存在这台 Mac 的钥匙串中，页面只显示配置状态。</p>
-  <button id="useCdscPreset" type="button" class="modelPreset">使用本机内网模型预设</button>
-  <form id="modelConfigForm">
-    <label for="modelApiUrl">API 地址<input id="modelApiUrl" type="url" required autocomplete="url" placeholder="https://…/v1/chat/completions"></label>
-    <label for="modelName">模型名称<input id="modelName" required autocomplete="off" placeholder="例如：deepseek-v4.1-flash"></label>
-    <label for="modelMaxOutputTokens">Chat 改图最大输出 token<input id="modelMaxOutputTokens" type="number" min="1024" max="65536" step="1" required value="16384"></label>
-    <label for="modelApiKey">API Key<input id="modelApiKey" type="password" autocomplete="new-password" placeholder="首次配置请输入；留空则保留现有密钥"></label>
-    <label class="modelVision"><input id="modelVision" type="checkbox"> 改图时将当前图和参照图传给支持视觉的模型</label>
-    <p id="modelConfigState" role="status" aria-live="polite"></p>
-    <div class="modelConfigActions"><button id="saveModelConfig" class="primary" type="submit">保存配置</button><button id="testModelConfig" type="button">测试已保存配置</button><button id="clearModelConfig" type="button">清除配置</button></div>
-  </form>
-  <p class="modelConfigHelp">“Chat 改图最大输出 token”请按模型实际支持值填写。选用 deepseek-v4.1-flash 时，平台最多请求 16,384 token，并控制输入预算；服务端仍可能设置更低上限。CDSC 预设使用其文档指定的内网 HTTP 地址，需已开通机房 VPN 或二期有线直连。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
-</dialog>
-
-<script src="/static/app.js?v=16"></script></body></html>
+<dialog id="skillDialog"><div class="dialogHead"><strong>统一绘图 Skill</strong><button id="closeSkill">关闭</button></div><pre id="skillText"></pre></dialog>
+<script src="/static/app.js"></script></body></html>
