@@ -1,0 +1,367 @@
+{
+  "schema_version": "1.0",
+  "style_profile_version": "1.1",
+  "status_vocabulary": [
+    "满足",
+    "未满足",
+    "不适用",
+    "待人工确认"
+  ],
+  "baseline_note": "original.png is the uploaded baseline, not a normalized or approved target image",
+  "cases": {
+    "box_dataset_a": {
+      "template": "two_group_box",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "G-04",
+        "AX-01",
+        "AX-02",
+        "AX-03",
+        "AX-04",
+        "TX-01",
+        "DIST-01",
+        "DIST-02"
+      ],
+      "expected_px": [
+        1620,
+        1440
+      ],
+      "preserve": [
+        "A/B order",
+        "raw observations",
+        "box-and-whisker statistic"
+      ],
+      "pair_with": "box_dataset_b"
+    },
+    "box_dataset_b": {
+      "template": "two_group_box",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "G-04",
+        "AX-01",
+        "AX-02",
+        "AX-03",
+        "AX-04",
+        "TX-01",
+        "DIST-01",
+        "DIST-02"
+      ],
+      "expected_px": [
+        1620,
+        1440
+      ],
+      "preserve": [
+        "A/B order",
+        "raw observations",
+        "box-and-whisker statistic"
+      ],
+      "pair_with": "box_dataset_a"
+    },
+    "p_boundaries": {
+      "template": null,
+      "must_satisfy": [
+        "G-01",
+        "SIG-01",
+        "SIG-02"
+      ],
+      "not_applicable_missing_template": [
+        "G-03",
+        "G-04",
+        "DIST-01",
+        "DIST-03"
+      ],
+      "expected_annotations": {
+        "lt_001": "***",
+        "eq_001": "**",
+        "eq_01": "*",
+        "eq_05": "n.s."
+      },
+      "preserve": [
+        "four comparison pairs",
+        "p values",
+        "bar heights"
+      ]
+    },
+    "line_explicit_error": {
+      "template": "line",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "AX-04",
+        "TX-01",
+        "SER-01",
+        "SER-02"
+      ],
+      "expected_px": [
+        2160,
+        1440
+      ],
+      "expected_error": {
+        "source": "sem column",
+        "meaning": "SEM",
+        "x_positions": 4
+      },
+      "preserve": [
+        "x and mean values",
+        "one series"
+      ]
+    },
+    "line_replicates": {
+      "template": "line",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "AX-04",
+        "TX-01",
+        "TX-02",
+        "SER-01"
+      ],
+      "expected_px": [
+        2160,
+        1440
+      ],
+      "preserve": [
+        "A/B series",
+        "mean values",
+        "x order"
+      ],
+      "expected_unmet": {
+        "SER-02": "legacy plotting observations do not authorize default SEM; missing explicit uncertainty meaning/aggregate mapping"
+      },
+      "note": "Legacy negative case: preserve original existing mean calculation, but do not add a new statistical calculation."
+    },
+    "line_missing_error": {
+      "template": "line",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "SER-01"
+      ],
+      "expected_px": [
+        2160,
+        1440
+      ],
+      "expected_unmet": {
+        "SER-02": "CSV has x and mean only; no uncertainty column, defined aggregate conversion or uncertainty meaning"
+      },
+      "preserve": [
+        "line",
+        "x and mean values",
+        "rendered preview"
+      ]
+    },
+    "scatter_existing_fit": {
+      "template": "scatter",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "TX-01",
+        "SER-03",
+        "SER-04"
+      ],
+      "expected_px": [
+        1620,
+        1440
+      ],
+      "preserve": [
+        "six point coordinates",
+        "existing linear model",
+        "existing fit coefficients",
+        "fit range"
+      ]
+    },
+    "scatter_without_fit": {
+      "template": "scatter",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "TX-01",
+        "SER-03"
+      ],
+      "not_applicable": [
+        "SER-04"
+      ],
+      "expected_fit_lines": 0,
+      "preserve": [
+        "six point coordinates",
+        "no fit model"
+      ]
+    },
+    "violin_quartiles": {
+      "template": "two_group_violin",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "TX-01",
+        "DIST-01",
+        "DIST-04"
+      ],
+      "expected_px": [
+        1620,
+        1440
+      ],
+      "expected_inner": {
+        "horizontal_quantiles": [
+          0.25,
+          0.5,
+          0.75
+        ],
+        "vertical_connector": "q25 to q75",
+        "outer_to_median_length_ratio": 0.5
+      },
+      "preserve": [
+        "raw values",
+        "two violin density bodies",
+        "original extrema marks"
+      ]
+    },
+    "heatmap_7x4": {
+      "template": "heatmap",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "HM-01",
+        "HM-02",
+        "HM-03",
+        "SIG-01",
+        "SIG-03"
+      ],
+      "expected_px": [
+        2520,
+        2340
+      ],
+      "expected_annotations": {
+        "row_0_col_5": "***",
+        "row_2_col_1": "*"
+      },
+      "preserve": [
+        "4x7 matrix",
+        "viridis colormap",
+        "color limits",
+        "row and column order"
+      ]
+    },
+    "composite_paired": {
+      "template": null,
+      "must_satisfy": [
+        "G-01",
+        "AX-01",
+        "TX-01",
+        "DIST-02",
+        "SER-03"
+      ],
+      "not_applicable_missing_template": [
+        "G-03",
+        "G-04",
+        "DIST-01"
+      ],
+      "preserve": [
+        "five paired connections",
+        "ten scatter points",
+        "two box bodies",
+        "layer order"
+      ]
+    },
+    "unknown_polar": {
+      "template": null,
+      "must_satisfy": [
+        "G-01"
+      ],
+      "not_applicable_missing_template": [
+        "G-03",
+        "G-04",
+        "AX-01",
+        "AX-02",
+        "AX-03",
+        "AX-04"
+      ],
+      "preserve": [
+        "polar projection",
+        "theta and radius coordinates",
+        "line and point order"
+      ]
+    },
+    "shared_helper": {
+      "template": "line",
+      "must_satisfy": [
+        "G-01",
+        "SER-01"
+      ],
+      "expected_report": "shared_draw.draw_series is read-only and affects both source.py and companion.py; use target-local adjustment; never modify unselected companion",
+      "affected_shared_sources": [
+        "shared_draw.py:draw_series"
+      ],
+      "affected_previews": [
+        "original.png",
+        "companion_original.png"
+      ],
+      "expected_unmet": {
+        "SER-02": "CSV has no uncertainty column or defined aggregate conversion"
+      },
+      "preserve": [
+        "A and B series values",
+        "two chart outputs"
+      ]
+    },
+    "line_aggregate_sem": {
+      "template": "line",
+      "must_satisfy": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "AX-01",
+        "AX-02",
+        "TX-01",
+        "SER-01",
+        "SER-02"
+      ],
+      "expected_px": [
+        2160,
+        1440
+      ],
+      "expected_error": {
+        "source": "supplied sd,n columns; error_kind explicitly SEM",
+        "meaning": "SEM",
+        "n_per_x_and_series": 9,
+        "formula": "supplied sample SD / sqrt(supplied n)",
+        "value": 0.2
+      },
+      "preserve": [
+        "supplied means",
+        "A/B series",
+        "x order",
+        "CSV contents"
+      ]
+    }
+  },
+  "cross_case_assertions": [
+    "box_dataset_a and box_dataset_b have identical fixed style properties and rendered dimensions",
+    "data heights, axis numeric labels and text may differ",
+    "a missing scatter fit is not an error",
+    "a missing line error bar from insufficient data is reported while the chart still renders",
+    "heatmap source colormap remains viridis"
+  ]
+}

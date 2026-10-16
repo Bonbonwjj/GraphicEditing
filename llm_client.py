@@ -3,28 +3,26 @@ import json
 import os
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 
 
-DEFAULT_URL = "https://api.siliconflow.cn/v1/chat/completions"
-DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
+from model_config import DEFAULT_URL, DEFAULT_MODEL
 
 
 def is_configured():
-    return bool(os.environ.get("LLM_API_URL") or os.environ.get("LLM_API_KEY") or
-                os.environ.get("OPENAI_API_KEY"))
+    if os.environ.get("LLM_API_URL") or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+        return True
+    from model_config import effective
+    return bool(effective()["api_key"])
 
 
 def _settings():
-    url = os.environ.get("LLM_API_URL", DEFAULT_URL).strip()
-    parsed = urlparse(url)
-    local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-    if parsed.scheme != "https" and not local_http:
-        raise ValueError("LLM_API_URL must use HTTPS, except for a loopback local API")
+    from model_config import effective, validate_url
+    saved = effective()
+    url = validate_url(os.environ.get("LLM_API_URL") or saved["api_url"])
     return {
         "url": url,
-        "key": os.environ.get("LLM_API_KEY", os.environ.get("OPENAI_API_KEY", "")).strip(),
-        "model": os.environ.get("LLM_MODEL", DEFAULT_MODEL).strip(),
+        "key": (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or saved["api_key"]).strip(),
+        "model": (os.environ.get("LLM_MODEL") or saved["model"]).strip(),
         "timeout": float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
     }
 

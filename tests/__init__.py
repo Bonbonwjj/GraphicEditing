@@ -1,0 +1,1 @@
+"""GraphicEditing test suite."""
