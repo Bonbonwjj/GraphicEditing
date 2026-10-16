@@ -1,0 +1,1 @@
+{"signature": "a0109d38f1284139c76de6b85133f33c23ce0d7ac85f0d4f36cefb40be189fd7", "status": "ready", "display_name": "DIS&NDIS_Gaze scanpath length (px)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Gaze scanpath length (px)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

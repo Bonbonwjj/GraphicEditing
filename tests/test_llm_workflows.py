@@ -61,9 +61,9 @@ class WorkflowTests(unittest.TestCase):
             upload = root / "upload"
             (upload / "code").mkdir(parents=True)
             (upload / "csv").mkdir()
-            (upload / "csv" / "points.csv").write_text("x,y\n1,2\n", encoding="utf-8")
+            (upload / "csv" / "points.csv").write_text("x,y\n1,2\n", encoding="utf-8", newline="\n")
             (upload / "code" / "plot.py").write_text(
-                "import matplotlib.pyplot as plt\nplt.plot([1], [2])\nplt.show()\n", encoding="utf-8")
+                "import matplotlib.pyplot as plt\nplt.plot([1], [2])\nplt.show()\n", encoding="utf-8", newline="\n")
             result = generic_importer.import_generic(root, upload, "demo", "Demo")
             generated = (root / "projects" / "demo" / "charts" / "plot.py").read_text(encoding="utf-8")
         self.assertEqual(result["charts"], ["plot"])

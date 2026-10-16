@@ -1,0 +1,406 @@
+{
+  "id": "human-data-fixed-style",
+  "version": "1.3",
+  "status": "confirmed",
+  "preserve_uploaded_chart_type_and_artist_composition": true,
+  "artist_addition_exception": "may add missing line error bars only from explicitly defined stored uncertainty or a justified conversion of supplied aggregate summaries; may add violin quartile marks from stored q25/q50/q75 or explicitly provided plotting observations; never add a missing scatter fit",
+  "coordinate_system": "matplotlib; pt for physical lengths, inch for canvas, normalized categorical x for two-group geometry",
+  "global": {
+    "font_family": "STHeiti",
+    "font_fallback": null,
+    "ink": "#111111",
+    "background": "#FFFFFF",
+    "png_dpi": 300,
+    "save_bbox_inches": null,
+    "axis_spine_width_pt": 3.4,
+    "x_axis_down_offset_pt": 12,
+    "y_spine_bounds": "first_to_last_visible_major_tick",
+    "x_spine_bounds_default": "first_to_last_visible_major_tick",
+    "x_spine_bounds_bar": "full_axis_baseline",
+    "tick_line_width_pt": 2.8,
+    "tick_length_pt": 6,
+    "numeric_tick_font_size_pt": 19.5,
+    "category_tick_font_size_pt": 16.25,
+    "axis_title_font_size_pt": 17.5,
+    "axis_title_font_weight": "black",
+    "axis_title_padding_pt": 9,
+    "multi_panel_min_gap_label_axis_multiple": 2,
+    "figure_title_visible": false,
+    "grid_visible": false,
+    "axes_facecolor": "#FFFFFF",
+    "tick_direction": "out",
+    "max_numeric_y_major_tick_labels": 5,
+    "visual_tokens": {
+      "line_width_pt": 3.2,
+      "line_style": "solid",
+      "line_cap_style": "round",
+      "marker_shape": "o",
+      "marker_area_pt2": 400,
+      "marker_edge_width_pt": 0,
+      "marker_alpha": 1.0,
+      "errorbar_line_width_pt": 3.2,
+      "errorbar_cap_size_pt": 8,
+      "errorbar_cap_width_pt": 3.2,
+      "bar_outline_width_pt": 3.2,
+      "box_outline_width_pt": 3.2,
+      "box_whisker_width_pt": 3.2,
+      "box_cap_width_pt": 3.2,
+      "box_median_width_pt": 3.1,
+      "violin_outline_width_pt": 3.2,
+      "histogram_outline_width_pt": 1.5,
+      "annotation_color": "#111111"
+    },
+    "significance": {
+      "thresholds": [
+        [
+          0.001,
+          "***"
+        ],
+        [
+          0.01,
+          "**"
+        ],
+        [
+          0.05,
+          "*"
+        ],
+        [
+          null,
+          "n.s."
+        ]
+      ],
+      "bracket_line_width_pt": 2.6,
+      "annotation_font_size_pt": 17,
+      "annotation_font_weight": "bold"
+    },
+    "axis_gap_definition": "bottom spine, x ticks and x label displaced downward by x_axis_down_offset_pt relative to the plotting rectangle; left spine stays at the plotting rectangle, no fixed endpoint-distance constraint"
+  },
+  "chart_types": {
+    "two_group_box": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.34,
+        0.23,
+        0.6,
+        0.66
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "group_centers_x": [
+        0.82,
+        1.18
+      ],
+      "box_width_x": 0.1333333333,
+      "box_outline_width_pt": 3.2,
+      "median_line_width_pt": 3.1,
+      "visible_box_gap_x": 0.2266666667,
+      "legend": "none"
+    },
+    "two_group_bar": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.34,
+        0.23,
+        0.6,
+        0.66
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "group_centers_x": [
+        0.82,
+        1.18
+      ],
+      "bar_width_x": 0.1333333333,
+      "bar_outline_width_pt": 3.2,
+      "visible_bar_gap_x": 0.2266666667,
+      "legend": "none"
+    },
+    "grouped_bar": {
+      "canvas_in": [
+        7.2,
+        4.8
+      ],
+      "axes_rect": [
+        0.22,
+        0.23,
+        0.72,
+        0.59
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "bar_width_x": 0.1333333333,
+      "bar_outline_width_pt": 3.2,
+      "within_group_edge_gap_x": 0.2266666667,
+      "between_group_edge_gap_x": 0.5,
+      "legend": {
+        "location": "upper center",
+        "anchor_axes_fraction": [
+          0.5,
+          1.18
+        ],
+        "columns": 2,
+        "frame": false,
+        "font_size_pt": 16
+      }
+    },
+    "line": {
+      "canvas_in": [
+        7.2,
+        4.8
+      ],
+      "axes_rect": [
+        0.22,
+        0.23,
+        0.72,
+        0.59
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "line_width_pt": 3.2,
+      "line_style": "solid",
+      "marker_shape": "o",
+      "marker_area_pt2": 400,
+      "missing_errorbar": {
+        "apply_when": "stored_CSV_has_explicit_uncertainty_values_and_meaning_or_sufficient_aggregate_summaries_for_an_explicitly_defined_conversion",
+        "allowed_derived_example": "SEM = supplied sample SD / sqrt(supplied n), only when SEM is explicitly requested or defined by the project and n describes the same plotted aggregate",
+        "default_error_meaning": null,
+        "raw_replicate_inference": "do_not_treat_plotting_rows_as_independent_replicates_or_recompute_statistics",
+        "on_insufficient_data": "render_without_the_missing_errorbars_and_report_exact_missing_columns_meaning_or_group_mapping"
+      },
+      "legend": {
+        "location": "upper center",
+        "anchor_axes_fraction": [
+          0.5,
+          1.18
+        ],
+        "columns": 2,
+        "frame": false,
+        "font_size_pt": 16
+      }
+    },
+    "scatter": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.22,
+        0.23,
+        0.72,
+        0.59
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "marker_shape": "o",
+      "marker_area_pt2": 100,
+      "marker_alpha": 1.0,
+      "marker_edge_width_pt": 0,
+      "fit": {
+        "apply_when": "source_already_contains_fit",
+        "method": "preserve_existing_model_coefficients_groups_and_range",
+        "line_width_pt": 3.2,
+        "line_style": "dashed",
+        "line_color": "match_group",
+        "draw_range": "preserve_source_range",
+        "when_absent": "do_not_add_or_report_as_missing_data"
+      },
+      "legend": {
+        "location": "upper center",
+        "anchor_axes_fraction": [
+          0.5,
+          1.18
+        ],
+        "columns": 2,
+        "frame": false,
+        "font_size_pt": 16
+      }
+    },
+    "two_group_violin": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.34,
+        0.23,
+        0.6,
+        0.66
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "group_centers_x": [
+        0.82,
+        1.18
+      ],
+      "violin_width_x": 0.1333333333,
+      "violin_outline_width_pt": 3.2,
+      "visible_violin_gap_x": 0.2266666667,
+      "inner_quantile_levels": [
+        0.25,
+        0.5,
+        0.75
+      ],
+      "inner_quartile_line_width_pt": 2.4,
+      "inner_median_line_width_pt": 3.1,
+      "inner_iqr_connector_line_width_pt": 2.4,
+      "inner_median_max_length_x": 0.0666666667,
+      "inner_quartile_to_median_length_ratio": 0.5,
+      "inner_line_color": "#111111",
+      "legend": "none"
+    },
+    "histogram": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.22,
+        0.23,
+        0.72,
+        0.59
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "bar_relative_width": 1.0,
+      "outline_width_pt": 1.5,
+      "alpha": 1.0,
+      "legend": "none"
+    },
+    "two_group_mean_sem": {
+      "canvas_in": [
+        5.4,
+        4.8
+      ],
+      "axes_rect": [
+        0.34,
+        0.23,
+        0.6,
+        0.66
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "group_centers_x": [
+        0.82,
+        1.18
+      ],
+      "marker_area_pt2": 400,
+      "errorbar_width_pt": 3.2,
+      "errorbar_cap_size_pt": 8,
+      "legend": "none"
+    },
+    "timecourse_mean_sem": {
+      "canvas_in": [
+        7.2,
+        4.8
+      ],
+      "axes_rect": [
+        0.22,
+        0.23,
+        0.72,
+        0.59
+      ],
+      "spines_visible": [
+        "left",
+        "bottom"
+      ],
+      "line_width_pt": 3.2,
+      "marker_area_pt2": 400,
+      "errorbar_width_pt": 3.2,
+      "errorbar_cap_size_pt": 8,
+      "legend": {
+        "location": "upper center",
+        "anchor_axes_fraction": [
+          0.5,
+          1.18
+        ],
+        "columns": 2,
+        "frame": false,
+        "font_size_pt": 16
+      },
+      "significance_font_size_pt": 21
+    },
+    "heatmap": {
+      "canvas_in": [
+        8.4,
+        7.8
+      ],
+      "axes_rect": [
+        0.28,
+        0.3,
+        0.54,
+        0.62
+      ],
+      "spines_visible": [
+        "left",
+        "bottom",
+        "top",
+        "right"
+      ],
+      "axis_frame": "closed_border_on_matrix_outer_edges",
+      "x_axis_down_offset_pt": 0,
+      "spine_bounds": "full_matrix_extent",
+      "axis_title_font_size_pt": 22,
+      "axis_title_font_weight": "bold",
+      "category_tick_font_size_pt": 19.5,
+      "x_tick_rotation_deg": 25,
+      "colormap": "preserve_source",
+      "color_limits_and_direction": "preserve_source",
+      "cell_outline_width_pt": 3.2,
+      "significance_font_size_pt": 30,
+      "non_significant_font_size_pt": 18,
+      "star_visual_center_offset_pt": -7,
+      "colorbar": {
+        "side": "right",
+        "height_match": "rendered_matrix_height",
+        "fraction": 0.046,
+        "pad_axes_fraction": 0.04,
+        "title_font_size_pt": 17,
+        "tick_font_size_pt": 15
+      }
+    }
+  },
+  "semantic_color_mapping": {
+    "Obs": "#E67E28",
+    "DIS": "#8657BE",
+    "NObs": "#F7BA00",
+    "NDIS": "#8657BE"
+  },
+  "unmapped_group_colors": {
+    "palette": [
+      "#2855A5",
+      "#D66B30",
+      "#23866E",
+      "#9B70AE",
+      "#C0A13A"
+    ],
+    "assignment": "sort stable group identifiers, then assign palette colors in order; require a larger palette or explicit mapping when groups exceed five"
+  },
+  "value_sources": {
+    "from_existing_human_data_code": "axis widths, typography, figure sizes, box geometry, line/marker sizes, heatmap and colorbar style, semantic colors, export dpi",
+    "confirmed_to_unify_existing_variants": "x_axis_down_offset_pt=12; this is an axis translation, not shortest distance between visible spine endpoints; one timecourse size and legend anchor, fixed canvas output without tight bounding-box crop",
+    "confirmed_for_new_bar_chart": "bar width, outline width, spacing and canvas reuse the two-group box template",
+    "confirmed_for_other_chart_types": "grouped bar, standalone line, scatter, violin and histogram templates are fixed values; never convert the uploaded chart type; binning, data transforms and baselines are outside visual normalization"
+  }
+}

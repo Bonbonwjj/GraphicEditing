@@ -1,0 +1,1 @@
+{"signature": "f8b69ab0b7e4e3649b5930faa190d8b9b004e11baa304bb49ed3f42c7b76f8d7", "status": "ready", "display_name": "DIS&NDIS_Corrected gaze-switch destination entropy", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Corrected gaze-switch destination entropy", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

@@ -1,0 +1,40 @@
+name: Desktop Apps
+on:
+  workflow_dispatch:
+  push:
+    tags: ['desktop-v*']
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: plot-forge-desktop
+          environment-file: desktop-environment.yml
+          miniforge-version: latest
+          use-mamba: true
+      - run: python build_desktop.py
+      - name: Verify bundled runtime with no system Python or Git
+        run: |
+          export PLOT_FORGE_HOME="$RUNNER_TEMP/Plot Forge smoke 中文"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            "dist/Plot Forge/Plot Forge.exe" --smoke-report "$RUNNER_TEMP/desktop-smoke.json"
+          else
+            "dist/Plot Forge.app/Contents/MacOS/Plot Forge" --smoke-report "$RUNNER_TEMP/desktop-smoke.json"
+          fi
+          python -c "import json,os; assert json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'desktop-smoke.json')))['ok']"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Plot-Forge-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            ${{ runner.temp }}/desktop-smoke.json
+          if-no-files-found: error

@@ -1,0 +1,1 @@
+{"signature": "226eec9292edce7385ede54cd2883a2986a6248fea185fe7264e43f5b709bf96", "status": "ready", "display_name": "Obs&DIS-D_Gaze-covered images count", "x_groups": ["Obs", "DIS-D"], "x_label": "", "y_label": "Gaze-covered images count", "group_key": "[\"categories\", [\"Obs\", \"DIS-D\"]]"}

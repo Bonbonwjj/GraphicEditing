@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "fixtures": {
+    "box_dataset_a": {
+      "data.csv": "904bd60108f8998de79d8d024e8c929226b468bf7c044794db41be3bb628eb9b",
+      "original.png": "0a8e5510949c5c358d201400c01ad93fa38f9bcd408f30e6ded4be9f482ed80e",
+      "source.py": "a2a3720ef11943b71ac837cafe8deb394516aa3698ef955179c86ce5a0158e25"
+    },
+    "box_dataset_b": {
+      "data.csv": "dd84cf891d7ab4ed69a2f513fed15a96a144ce7a8e6d31b5cb86bf24032e8eb8",
+      "original.png": "395c84d02a948f33b1d2db5391cbde63991732df6fa2a79162eb8a0be2384a62",
+      "source.py": "a2a3720ef11943b71ac837cafe8deb394516aa3698ef955179c86ce5a0158e25"
+    },
+    "composite_paired": {
+      "data.csv": "e0edd2c6e34780813e0cf5264981c42a2a2ec7d9f12298c6698f1851525092d6",
+      "original.png": "e8736459e83e6e7e89df9b5b5706ec595d89118ae77e0657dfe83784d957a6f7",
+      "source.py": "06c4dac1d9d7a618a0183c58f5e461f58512de5acb414781df28fa093de3425e"
+    },
+    "heatmap_7x4": {
+      "data.csv": "d7925bd36d155f9b0510d93244bc2fc73188e33ccdfbe492664c6796120b440a",
+      "original.png": "132c0245f1e70cc12bc338981c73f095a0d1c07b7afe3192f76c4488c7c23748",
+      "source.py": "8d6a5e289b5a6ca1313dc6f4fc2e8ae53b52efb5189079dab0f77b4165c76724"
+    },
+    "line_aggregate_sem": {
+      "data.csv": "503804c01a706874bb9d72d0172d5189744dcf71d1c26f06a58f1f4cc7e4c855",
+      "original.png": "01ef66d3b19881edd4ce3d18c038443a2873d0abc22a59b738a055dee79e68d9",
+      "source.py": "5d0eb49cf3d1b70c5e38a228691f5d72848c5d1c995e0a10ab4999f8e33b6e67"
+    },
+    "line_explicit_error": {
+      "data.csv": "5a52821cac2351ca70632f3bbe9013af264943669d337d706f61b53214c22946",
+      "original.png": "bb7e69adc616973fdd0b08b709392897c6d8467816171ee75c5d665a027733b5",
+      "source.py": "e29acef3407cec7e7b56278ab7b3327b2a8e43ec428ed1b05d05c11f757ad6fd"
+    },
+    "line_missing_error": {
+      "data.csv": "c06873f2469ddb7a221c070208cc97d257d541fc35d62d6ad0874c1b35e23c5b",
+      "original.png": "aed9fdb7dc53f9481c9fa5ffdd20a9e54f63efeb5d02d6d394cc0a5c87dea219",
+      "source.py": "b80271983701ec19d3ed74c915b1d2552f04ee27beb437a8ee00a638a7186a13"
+    },
+    "line_replicates": {
+      "data.csv": "99a8f09b8829ab772d900a448750f9d1ffe0888f3375bef6b2bc33009981f0ab",
+      "original.png": "948edbfdb541364cfdee25699b010db32f777045515684a6589d91b8cd2f060c",
+      "source.py": "0a081af3affbca3ee88c417ee174cd799e0a40561405dfe1c72ca25b86a8a2a1"
+    },
+    "p_boundaries": {
+      "data.csv": "0c637f379db5c479fc1cfd045639a681d8f8b4c2be7513a50ff0495f2104fc40",
+      "original.png": "b4caa2963c86a32a917e8a957929ae6761a3d9e89a75d329144e7d534821f7eb",
+      "source.py": "3070fb3d813c9539aa1f41acc81ffdf3458138f12c66cf81f69916afb081eeaf"
+    },
+    "scatter_existing_fit": {
+      "data.csv": "af2529281fda5d30f4c7e3dcccbee5b13570eb8e715f418d763ed65a3fa30199",
+      "original.png": "dd8955d95b00a4d28b086fa415fe6dc5557fbd8628e6b9ec907e4faecb57ff90",
+      "source.py": "3a708c73e2e05f6937bc43854cd95e402695fb31a9647d371303986096c1ba7b"
+    },
+    "scatter_without_fit": {
+      "data.csv": "af2529281fda5d30f4c7e3dcccbee5b13570eb8e715f418d763ed65a3fa30199",
+      "original.png": "6187c78394570f29405c2f32afef567d8bb3483405c072c7043f8f38c19b75ac",
+      "source.py": "bc08c9bd7b73c4bbf0daa99a07339f24313e6230222cf7477474aab66d1ff6e4"
+    },
+    "shared_helper": {
+      "companion.py": "6ea493e12b0126e0cf32ba5085d95267fbd246a1502f73d1984c4f91870f9e83",
+      "companion_original.png": "f20f223f15368bb89f056b790aa17286ecec3e404aef9daf0d71f248e588200a",
+      "data.csv": "1ab87486a5d6951f947aa00a7099fe1aa3be09277ea350bf1d5e31c391e61732",
+      "original.png": "5c139a4121741ddcdf8f9fc74e652cee638ed932c0f9ee74b8bdaa3cbbe8c2ea",
+      "shared_draw.py": "b315013f14fd111625fc09ee6d3d45c02623cde42e59a99742637501b8754a07",
+      "source.py": "fb9e07f91b7ea75d989d262236878c5308f314532a5b6eaf40c015ab3c041177"
+    },
+    "unknown_polar": {
+      "data.csv": "01821d140a8718bc6a126b3f6117d6b57c85bc30dc19c3d5626c577a47783e29",
+      "original.png": "de0e039c09f4df35a252f0378d8995bbfed6533a3984f86b42597a2f8aa246a7",
+      "source.py": "933da081c4e6a86e1f74dbaa49dc05e34ba44e069414ddd1452d30fdde48baca"
+    },
+    "violin_quartiles": {
+      "data.csv": "dc4ee3f5eebea000f26d3e6a2c43ee3d200f5c22e890dd9c8e22279d89d33eb4",
+      "original.png": "edfa5b9ce89ad68e5b5b07b55a427f8f9c4a908d2a6e082edeab6d381f0f2bd8",
+      "source.py": "a7f358d9354748458fbdb7d407d76feace6e625c2ec8f7e3cfd0e339ca0c8280"
+    }
+  }
+}

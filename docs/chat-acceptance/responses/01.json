@@ -1,0 +1,12 @@
+{
+  "status": "candidate",
+  "summary": "Adjust the selected chart while preserving its data and other charts.",
+  "interpreted_request": {"operations": []},
+  "intent_check": {"status": "consistent", "unresolved_items": []},
+  "proposed_files": [],
+  "read_data_refs": [],
+  "affected_chart_ids": [],
+  "expected_effects": [{"observable_change": "The requested visual property changes."}],
+  "warnings": [],
+  "layout_policy": {"mode": "avoid_overlap"}
+}

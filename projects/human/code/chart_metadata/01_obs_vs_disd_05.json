@@ -1,0 +1,1 @@
+{"signature": "df5b40e35dab18d9ef4d2d2ae50fbbb05860ab6c32cce71d6b543917a4d54699", "status": "ready", "display_name": "Obs&DIS-D_Gaze-coverage area (deg²)", "x_groups": ["Obs", "DIS-D"], "x_label": "", "y_label": "Gaze-coverage area (deg²)", "group_key": "[\"categories\", [\"Obs\", \"DIS-D\"]]"}
