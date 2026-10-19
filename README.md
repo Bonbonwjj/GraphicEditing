@@ -2,7 +2,7 @@
 
 团队通过 GitHub 共享绘图代码、数据、图片和正式修改历史；每位成员使用本机 Python 执行绘图，在本地网页中上传、查看、修改、预览和发布。默认不需要 Docker。
 
-## 桌面 App（同事使用）
+## 桌面 App
 
 打包版已内置 Python、绘图库和 Git，无需另行安装。完整解压 Windows 安装包后打开 `Plot Forge.exe`；macOS 打开对应芯片版本的 `Plot Forge.app`。首次打开自动初始化环境并打开本地网页，之后双击即可使用。个人 API Key 和 GitHub 账号权限仍由各自配置，公司模型需要 VPN。
 
