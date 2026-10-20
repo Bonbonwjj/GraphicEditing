@@ -1,106 +1,108 @@
-# Plot Forge · 科研图表工坊
+# Plot Forge · 共享科研图表工坊
 
-上传绘图代码、已整理的绘图 CSV 和已有图片，在项目图廊中选择目标，使用规范化 Skill 或 Chat 修改。新图先作为候选显示在 Chat，明确应用某版后才更新正式代码和中央图廊。
+团队通过 GitHub 共享绘图代码、数据、图片和正式修改历史；每位成员使用本机 Python 执行绘图，在本地网页中上传、查看、修改、预览和发布。默认不需要 Docker。
 
-此整合版以 2026-10-14 的仓库版本为基础，保留原有的上传、拆图、单图代码建议和应用接口；新图廊与候选版 Chat 在首页使用。原单图页面仍可通过 [旧版工作台](http://127.0.0.1:8765/legacy) 打开，原版说明保存在 [docs/original-workflow.zh-CN.md](docs/original-workflow.zh-CN.md)。两版能力的取舍记录见 [docs/version-integration.zh-CN.md](docs/version-integration.zh-CN.md)。
+首次使用或查阅操作步骤，请看 [用户使用说明（v0.1.2）](docs/USER_GUIDE.zh-CN.md)，包含安装、API 配置、对话改图、候选应用、标准化、导出及团队发布流程。
 
-## 启动
+当前本地源码的改图调度、检查和单图/共享模块边界，见 [对话改图 Harness 与优化说明](docs/CHAT_HARNESS.zh-CN.md)。此说明包含后续源码优化，已发布安装包不会自动更新。
 
-当前候选渲染使用 **macOS Seatbelt（`sandbox-exec`）**，需要 macOS 和能够启动该沙箱的本机终端。Python 3.10+、Matplotlib、NumPy、`keyring`（系统钥匙串接口）为基础依赖；绘图代码使用 Pandas、SciPy 等库时，也需要在同一 Python 环境中安装它们。当前环境可使用 `/opt/anaconda3/bin/python`。
+## 桌面 App（同事使用）
 
-默认只需启动工作台。两个 Agent 在进程内调用，仍分别加载自己的 Skill：
+打包版已内置 Python、绘图库和 Git，无需另行安装。完整解压 Windows 安装包后打开 `Plot Forge.exe`；macOS 打开对应芯片版本的 `Plot Forge.app`。首次打开自动初始化环境并打开本地网页，之后双击即可使用。个人 API Key 和 GitHub 账号权限仍由各自配置，公司模型需要 VPN。
 
-```bash
-cd /path/to/GraphicEditing
-/opt/anaconda3/bin/python server.py
-```
+正式项目、候选和配置保存在用户目录，更新 App 时保留。构建方式与验收说明见 `docs/DESKTOP_APP.md`；下方 Python/Git 安装步骤仅适用于直接运行源码。
 
-浏览器打开 [本地工作台](http://127.0.0.1:8765/)，点击右上角 **“⚙ API 配置”**，填写 Chat Completions 兼容的 API 地址、模型名称和 API Key，然后点击“保存配置”。可再点击“测试已保存配置”；测试只发送一条简短消息，不发送项目代码或 CSV。保存后两个 Agent 立即使用新配置，无需重启。服务只绑定本机回环地址。
+## 双击启动
 
-API Key 保存在这台 Mac 的系统钥匙串中；项目目录下的 `.model-api.json` 只保存地址、模型名称和视觉开关，并被 Git 忽略。页面只能查看“已配置”状态，不能读回完整密钥。API 地址需使用 HTTPS；本机模型服务允许 `http://127.0.0.1` 或 `http://localhost`。如需保留原有终端方式，仍可使用 `OPENAI_API_KEY`、`LLM_API_URL` 和 `LLM_MODEL` 环境变量。
+首次需要安装 Python 3.10+ 和 Git，并下载本应用到一个可写目录。首次运行会自动创建 `.venv` 并安装绘图库，需要联网；后续启动复用环境，仅依赖清单变化时更新。
 
-### 机构内网模型
+- **Windows**：双击 `Start-Plot-Forge.cmd`。
+- **macOS**：双击 `Start-Plot-Forge.command`。若系统没有执行权限，首次在终端执行 `chmod +x Start-Plot-Forge.command`。
+- 也可以在应用目录运行 `python launch.py`（macOS 使用 `python3`）。
 
-内网 HTTP API 地址不写入仓库。使用机构提供的地址时，在启动工作台的本机终端设置 `PLOT_FORGE_INTRANET_API_URL` 为完整的 Chat Completions 地址，必要时设置 `PLOT_FORGE_INTRANET_MODEL`，再启动服务。页面的 **“使用本机内网模型预设”** 按钮会填入这两个本机环境变量。请在页面输入 API Key、保存后点击连接测试；不要把密钥或内网地址提交到 Git。
+启动器自动启动本地后台、打开浏览器，并复用已启动的同一工作区。默认地址为 `http://127.0.0.1:8765/`；端口被其他程序占用时自动选择其他端口。后台日志为 `local-server.log` 和 `local-server-error.log`。若希望使用特定 Python，启动前设置 `PLOT_FORGE_PYTHON` 为解释器路径。
 
-内网 HTTP 连接会传输 API Key，请遵循本机构的网络与模型使用要求。页面的视觉选项可将当前图和只读参照图发给支持视觉的模型；关闭后只发送文本上下文。连接测试只发送短句，不发送项目文件。
+每位成员分别保存一份本地应用和工作区，不要将 `.venv` 放进网盘共享文件夹。
 
-Chat 提供目标图代码与相关绘图 CSV 的必要行；无关 CSV 只提供列名，过长的数据会截断并标明范围。Harness 仍完整保存只读数据快照以供版本与渲染检查。可在页面勾选视觉选项，向支持图片输入的模型同时提供可用的固定版本目标图、父候选图和参照图；没有图片时会标明视觉上下文缺失。未通过页面保存视觉选项时，仍可使用原有的 `CHAT_MODEL_VISION=1` 环境变量。密钥只在模型调用请求中使用，不写进候选代码或项目，也不传入候选 Python 的运行环境。
+## 连接团队项目库
 
-### 可选：分成三个端口
+1. 平台通过随应用分发的 `team_collaboration.json` 固定同步到 `Bonbonwjj/GraphicEditing` 的 `main` 分支，正式项目位于 `projects/`。成员需要相应读取/写入权限。用户无需选择仓库或分支；首次发布应用时需确保远端已有 `main` 分支。
+2. 在本机完成 GitHub 的 Git 登录或 SSH 配置。应用使用 Git 的凭据管理，不在网页存储 GitHub 密钥；请勿在仓库地址中嵌入令牌。
+3. 打开网页右上角 **团队协作**，只填写姓名和 Git 提交邮箱，点击 **保存协作者身份**。邮箱可以使用 GitHub 隐私邮箱；仓库和分支不由个人选择。
+4. 打开或刷新网页时，自动连接固定团队位置并获取最新项目，无需先填写修改人信息；顶部显示同步结果。网络失败或冲突时保留本机版本，处理后刷新重试。
+5. 打开本地平台即允许使用本机 Python 运行团队项目，无需再勾选信任。上传或同步后可直接生成预览和修改候选。
 
-可将两个 Agent 部署为独立本机服务。Agent 启动后，仍通过工作台页面填写同一份模型配置：
+连接只保存到本地 `.collaboration/`；同步使用其中独立的 Git 检出目录，应用自身未提交的代码不会被一同发布。默认将本机 `projects/` 下所有项目的已保存修改发布到指定共享分支；请检查项目列表，不要在该目录存放不打算共享的文件。一个工作区绑定一个仓库/分支，其他团队使用另一份本地工作区。
 
-```bash
-/opt/anaconda3/bin/python normalizer_agent.py
-```
+## 上传与协作修改
 
-```bash
-/opt/anaconda3/bin/python chat_agent.py
-```
+- 左上角 **＋ → 上传项目**，选择绘图 Python、已整理的 CSV/TSV/JSON 和可选原图。文件先保存到本机；上传者信息记入项目。上传后可直接运行。
+- 成员可以查看和修改任意已拉取的图。Chat、批量标准化和手动代码修改沿用现有流程。
+- Chat 候选留在修改者本机；继续对话可以基于候选修改。点击 **应用此版** 后才更新正式代码、图片和历史。
+- 每张图、每轮 Chat 改图最多调用模型 3 次，格式修正、补充参照上下文和自动修图共用这个额度；成功或需要用户补充信息时提前停止。批量图表逐张处理，不因每次仅有一个可写目标而要求用户重新选择第二张图。
+- 仅因布局重叠或裁切未通过的候选会作为下一轮起点，可直接在 Chat 中要求基于此版修复，也可选择旧候选继续。布局问题解决或明确接受后才能应用；数据变化、渲染失败和版本冲突仍会阻止继续使用该候选。
+- 明确要求转换为箱线图或小提琴图时，不再要求新旧绘图元素逐一相同：对可自动核对的单子图 CSV 分组，检查实际传入绘图接口的完整样本、组标签、单位与统计标注。通过后允许继续修改和应用；漏样本、改值、调换组别、篡改生成后的统计线条仍被阻止。不能核对的输入或多子图会说明原因，不报告已验证。隐藏箱线离群点时明确提示。旧的检查失败候选可点击“重新检查此版”，仅重新出图和检查，不调用模型。
+- 在 **团队协作** 中填写修改说明，点击 **将全部项目修改合并到团队版本**。提交记录包含协作者姓名和邮箱；已应用候选的图表历史也记录修改者。
+- 其他成员打开或刷新页面时自动获取结果。同步后可直接使用。
 
-再在运行工作台的终端设置：
+同步采用文件级三方比较：修改不同文件时可自动合并；双方修改同一文件、或一方删除而另一方修改时会停止，显示冲突路径，保留本地文件。当前不提供网页逐行合并编辑器，需协调后手动处理文件，再重试。发布使用普通 Git push，不会强制覆盖远端；若发布期间远端再次更新，提交会保留在 `.collaboration/repository`，需要先处理 Git 分歧。
 
-```bash
-export NORMALIZER_AGENT_URL='http://127.0.0.1:8766'
-export CHAT_AGENT_URL='http://127.0.0.1:8767'
-/opt/anaconda3/bin/python server.py
-```
+GitHub 不负责执行 Python。代码在每位成员自己的电脑运行；需要的额外绘图库也需安装到本机 `.venv`。共享项目应使用相对路径，通过 `CHART_PROJECT_DIR` 读取数据，通过 `CHART_OUTPUT` 输出目标图。单文件限制 95 MiB，共享项目总量限制 2 GiB；本版不集成 Git LFS。
 
-| 端口 | 角色 | 接口 |
-| --- | --- | --- |
-| 8765 | 页面、项目服务与 Harness | `/api/projects/.../chat/sessions/...` |
-| 8766 | 规范化 Agent | `POST /v1/normalize` |
-| 8767 | Chat 改图 Agent | `POST /v1/chat-edit` |
+## 共享范围与本机执行
 
-未设置相应 URL 时使用进程内 Agent。独立 Agent 只返回结构化方案，Harness 保存候选、检查和渲染；Agent 之间不直接覆盖项目文件。端口分别可通过 `NORMALIZER_AGENT_PORT`、`CHAT_AGENT_PORT` 调整。
+| 内容 | 保存位置 / 是否共享 |
+| --- | --- |
+| 正式代码、数据、原图、预览和历史 | `projects/`，发布后共享到 GitHub |
+| 对话、未应用候选 | `projects/<id>/.chat/`，不参与同步 |
+| 模型 API Key | 系统凭据库，不参与同步 |
+| 模型地址、个人 Git 配置、同步基线 | 本机配置，不参与同步 |
 
-只启动 8766/8767 并不会让工作台自动改用它们；启动 8765 时必须设置上面的两个 URL。模型连接测试只发送极短消息，不能代表完整绘图请求的延迟或输出质量。规范化会优先要求模型返回精确代码替换，并只在同一正式版本、同一 Skill 与配置下复用已通过检查的候选。
+默认 `local` 渲染使用本机 Python 子进程，有超时、基础导入检查和候选数据比较，**没有操作系统沙箱**。打开平台即允许运行团队项目及模型候选，重启或同步后无需重复确认。Python 代码以当前用户权限运行。
 
-工作台在请求时将当前配置交给所选 Agent，密钥不会写入候选代码或发给候选 Python 进程。页面更换 API Key、模型或地址后，下一轮调用自动使用新配置。
+需要 OS 隔离时仍可选：macOS 设置 `PLOT_FORGE_RENDER_BACKEND=seatbelt`，或安装 Docker 后设置为 `docker`。Docker 镜像可用 `docker build -f Dockerfile.renderer -t plot-forge-renderer:local .` 构建；这些是可选高级模式。
 
-分进程且使用图片输入时，在页面勾选视觉选项即可：工作台准备固定版本图片，Chat Agent 将它们传给支持视觉输入的模型。
+## 模型配置
 
-## 改图流程
+右上角 **API 配置** 默认填入 `http://10.254.1.138:8080/api/v1/chat/completions` 和 `glm-5.3`，可自行更改；需在可访问该内网服务的网络中使用。已保存的个人配置优先，也可点击“使用默认模型与地址”重新填入。API Key 由每位成员自行填写，不内置、不共享。可按需配置图片输入。测试连接只发送简短消息；正式改图按设置发送必要的代码、绘图数据及图片。模型 Key 保存在 Windows Credential Manager / macOS Keychain。也可使用 `OPENAI_API_KEY`、`LLM_API_URL`、`LLM_MODEL` 环境变量。每位成员使用自己的模型配置。本机和内网 IP 的 HTTP 接口可直接在页面保存，无需环境变量预设；HTTP 连接会传输 Key 和请求内容，请使用可信服务。
 
-1. 在图廊选择一张或多张图，Chat 顶部显示固定目标；需要参照其他图时另外选择只读参照。
-2. 输入修改要求，或点击批量标准化并选择 Skill。
-3. Agent 返回原话、结构化修改意图和候选代码；Harness 检查目标、版本、允许路径与实际出图结果。
-4. Chat 展示候选图、摘要、代码和检查报告。继续对话默认基于当前成功候选，失败保留之前的成功候选。
-5. 点击“应用此版”后，复核正式代码和依赖是否仍为生成时的版本，再同时保存代码、图片和历史。
+## 验证
 
-规范化也使用同一候选流程，**不会因为渲染成功自动保存为正式版**。每张批量目标独立保存结果；一张失败不会替另一张报告成功。检测到布局冲突时展示诊断图，用户明确接受已显示的冲突后可保留例外；布局或正式版本变化后，旧例外不能自动复用。
+Windows：
 
-## 项目与代码结构
-
-- `projects/<id>/charts/*.py`：正式绘图入口，脚本通过 `CHART_PROJECT_DIR` 读取项目数据，通过 `CHART_OUTPUT` 输出图。
-- `projects/<id>/data/`：已保存均值、SD/SEM、p 值、分位数、坐标等绘图用数据。
-- `projects/<id>/lib/`：共用函数，候选阶段只读。
-- `projects/<id>/images/original/`、`previews/`：上传图片与正式预览缓存。
-- `projects/<id>/history/`：逐图正式历史；当前代码保存在入口文件，历史代码保留最早版和上一轮版，图片保留所有版本。
-- `projects/<id>/.chat/`：稳定身份映射、会话、原话、候选代码与图片、检查结果和固定参照图片；已从 Git 默认跟踪中排除。
-- `chat_agent.py`：加载英文 Chat Skill，调用模型并核对结构化响应。
-- `chat_harness.py`：会话、父候选、参照、上下文、状态、应用与冲突检查。
-- `chat_runner.py`：macOS 隔离渲染、绘图对象比较、布局诊断。
-- `normalizer_agent.py`：加载选择的规范化 Skill 和样式包。
-- `studio_style.py`：规范化几何、导出与绘图数据辅助函数。
-- `skills/chart-chat-edit/`、`skills/chart-normalization/`：英文执行规则；规范化样式包当前为 1.1。
-- `llm_client.py`、`llm_workflows.py`、`skills/chart-code-*/`：合作者新增的兼容流程，用于项目导入时的拆图和旧版单图代码建议接口；新版 Chat 候选仍走 Harness 会话接口。
-
-图片显示名称使用 `X轴组别1&X轴组别2_Y轴标题`，同一组别及顺序的图连续排列；连续数值 X 轴使用 `X轴标题_Y轴标题`。显示名称与后台图 ID 分开，图内部不新增顶部标题。
-
-左上角“＋”新建或上传项目。标准化 Skill 可在左侧查看、上传和删除。图卡提供代码/数据、修改历史与“完成并清理”；清理保留当前图与代码，删除该图历史和 Chat 候选并结束相关会话，已有 Git 提交不受影响。项目上传仍保留本地 Git 记录；整合审阅期间默认不推送到 GitHub。确认发布后可在启动服务前明确设置 `PLOT_FORGE_PUSH_UPLOADS=1`，恢复原有的 `origin/main` 推送行为。新 Chat 候选不会自动推送。
-
-## 检查与当前边界
-
-[完整实施状态](docs/implementation-status.zh-CN.md)记录已接入内容、接口和限制。复查命令：
-
-```bash
-/opt/anaconda3/bin/python -m unittest discover -s tests -p 'test_chat_*.py' -v
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 node tests/test_chat_frontend.js
-MPLCONFIGDIR=/tmp/plot-forge-mpl /opt/anaconda3/bin/python docs/acceptance/verify_style.py
 ```
 
-真实渲染测试应在普通本机终端执行。嵌套在 Codex 外层沙箱中时，Seatbelt 可能无法启动；这时工作流明确拒绝执行候选，不退回无隔离运行。操作系统不支持时同样报告原因。
+macOS 使用 `.venv/bin/python` 执行相同 Python 测试。Git 同步测试使用临时 bare 仓库和两个独立成员工作区，不会发布到真实 GitHub。候选流程测试使用模拟模型响应和真实本机 Python 出图；它们不代表真实模型的输出质量。OS 沙箱的外部读写阻断测试在 local 模式下明确跳过。
 
-目前是单机协作原型，尚无多用户登录、权限认证、跨进程锁或生产部署保障。新 Chat/规范化候选路径使用隔离渲染；上传转换、已有预览和手动代码编辑仍有旧渲染路径，不能把全站宣称为沙箱执行。布局和数据检查覆盖常见 Matplotlib 元素，无法证明任意绘图脚本的科学语义完全正确，用户仍需审阅。当前自动化联调用模拟模型输出，尚未完成实际配置模型的端到端验收。
+当前为基于 Git 的异步协作版本，不是多人同时编辑同一画布，也没有中央用户管理或网页版冲突合并。GitHub 控制仓库访问权限；图表科学含义和改图结果仍需人工审阅。macOS 的实际运行需在 Mac 上复验。
+
+原流程和详细检查机制可参阅 `docs/original-workflow.zh-CN.md`、`docs/implementation-status.zh-CN.md`；旧文档可能描述之前的 macOS 专用渲染，当前启动与协作方式以本 README 为准。
+
+## LY 功能合入（2026-10-15）
+
+以 LY `05227e0` 的数据源与共享绘图模块实现为基础，保留当前模型配置、GitHub 协作、双击启动和候选检查流程。
+
+- CSV / TSV / JSON + Python 原入口继续保留，并支持嵌套数据目录、显式 `charts/` 与 `lib/`。
+- 新增“＋ → 导入 Border / Group Bundle”。支持浏览器上传，或从本机目录复制到项目中。数据与代码默认都保存在项目里，再通过团队协作发布到 GitHub；不要求 NAS。
+- 首次导入需指定含 `behavior_analysis/` 的运行时代码目录。此目录只用于复制绘图依赖，原始代码不被改动。Bundle 包含 pickle，需要确认来源可信；导入后绘图直接使用本机 Python。
+- Bundle 来源在项目中使用相对路径，可随 GitHub 项目在其他电脑使用。既有 LY 外部路径引用提供兼容接口，但不是默认协作方式。
+- 共享绘图模块出现在项目树中，打开后可以手动编辑或让模型提出建议。同一共用函数或同一模块变量的修改默认验证代表图；检测到多个函数或多个模块变量的独立修改时验证全部项目图表，也可主动勾选全量验证。此判断偏保守，不代表自动理解了所有代码语义。
+- 验证通过只生成本机候选，展示验证图与影响范围；可以继续修改。勾选已检查并点击应用后才修改正式文件。输入数据或正式模块变化后旧候选会被拒绝。共享模块历史可以取回编辑器，再验证并确认应用。
+- Bundle 的渲染结果通过输出观察器衔接已有候选数据与布局检查；不是所有自定义渲染器都可捕获 Matplotlib 对象，无法捕获时明确报错，不报告虚假的数据检查成功。
+- Bundle 导出的 SVG/PDF 在原 renderer 只提供 PNG 时仍属于位图封装。已有 CSV/Matplotlib 原生矢量导出保留。
+
+**GitHub 大文件范围**：本轮仍使用普通 Git。浏览器单次上传上限 500 MB；从本机复制不受该上传限制。共享项目总量上限提高到 2 GiB；单文件超过 95 MiB 会阻止发布并列出文件，数据仍保留本机。Git LFS 尚未接入，遇到超限文件需要另行确定 LFS 或数据拆分方案，不会自动改用外部共享目录。
+
+合入前的代码副本保存在本机 `.merge-backups/`，不参与 GitHub 发布。验证包含 LY 单元测试、现有回归、真实 Python 合成 Border/Group 出图与跨目录移动、共享模块候选确认/连续修改/冲突拒绝。尚未使用同事真实的大型实验 Bundle 或在 macOS 真机运行。
+
+
+## GitHub 项目目录
+
+每个项目统一发布到 `projects/<项目ID>/data/` 与 `projects/<项目ID>/code/`。原始数据和 Bundle 保存在 data；绘图入口在 code/charts，共用模块在 code/lib，项目配置及正式版本记录也归 code。上传时分别选择代码文件夹与数据文件夹，平台会归档到对应项目，不需要手动定位 GitHub 目录。
+
+旧版 charts/lib/project.json 结构仍兼容拉取，下次经平台提交时统一转换为 data/code；原始 Bundle 字节保持不变。新旧位置出现不同内容时会停止并提示，避免覆盖。渲染器内部保留兼容路径，已有绘图脚本与候选不因共享目录整理而失效。
+
+如要自行上传 main，可运行 `python export_shared_projects.py`，生成 `dist/github-projects/projects`，将这一份 projects 放入 GitHub。导出不连接或推送 GitHub，不包含私有候选、配置或密钥；输出目录已有文件时会停止，以免覆盖。桌面 App 也支持从新目录结构的仓库生成安装包。

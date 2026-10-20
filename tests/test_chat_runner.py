@@ -30,6 +30,42 @@ finish_figure(fig, os.environ['CHART_OUTPUT'])
 
 
 class RunnerUnitTests(unittest.TestCase):
+    def test_horizontal_bar_values_detected_but_thickness_is_style(self):
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        bars=ax.barh([0,1],[2,3],height=.6)
+        fig.canvas.draw(); before=_capture(fig,fig.canvas.get_renderer())
+        for bar in bars:
+            center=bar.get_y()+bar.get_height()/2
+            bar.set_height(.3);bar.set_y(center-.15)
+        fig.canvas.draw(); styled=_capture(fig,fig.canvas.get_renderer())
+        self.assertEqual(compare_reports(before,styled)['changed'],[])
+        bars[0].set_width(99)
+        fig.canvas.draw(); changed=_capture(fig,fig.canvas.get_renderer())
+        self.assertTrue(compare_reports(before,changed)['changed'])
+        plt.close(fig)
+
+    def test_scatter_color_data_detected_but_cmap_is_style(self):
+        import numpy as np
+        import matplotlib.pyplot as plt
+        fig,ax=plt.subplots(); points=ax.scatter([0,1],[1,2],c=[3,4])
+        fig.canvas.draw();before=_capture(fig,fig.canvas.get_renderer())
+        points.set_cmap('plasma')
+        fig.canvas.draw();styled=_capture(fig,fig.canvas.get_renderer())
+        self.assertEqual(compare_reports(before,styled)['changed'],[])
+        points.set_array(np.array([3,99]))
+        fig.canvas.draw();changed=_capture(fig,fig.canvas.get_renderer())
+        self.assertTrue(compare_reports(before,changed)['changed'])
+        plt.close(fig)
+
+    def test_heatmap_grid_change_detected_with_identical_cell_values(self):
+        import matplotlib.pyplot as plt
+        reports=[]
+        for x in ([0,1,2],[0,1,3]):
+            fig,ax=plt.subplots();ax.pcolormesh(x,[0,1,2],[[1,2],[3,4]])
+            fig.canvas.draw();reports.append(_capture(fig,fig.canvas.get_renderer()));plt.close(fig)
+        self.assertTrue(compare_reports(*reports)['changed'])
+
     def test_scope_and_process_rejections(self):
         for path, source in (("../secret.py", "pass"), ("lib/helper.py", "pass"),
                              ("charts/b.py", "pass"), ("charts/a.py", "import socket"),
@@ -42,7 +78,10 @@ class RunnerUnitTests(unittest.TestCase):
             root = Path(temporary)
             project = root / "project"
             (project / "data").mkdir(parents=True)
-            (project / "data" / "secret.csv").symlink_to("/etc/passwd")
+            try:
+                (project / "data" / "secret.csv").symlink_to("/etc/passwd")
+            except OSError as exc:
+                self.skipTest("Symlink creation unavailable: " + str(exc))
             with self.assertRaises(CandidateRenderError):
                 _snapshot(project, root / "snapshot", {})
 
@@ -190,10 +229,12 @@ class RunnerIsolationTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='chat-runner-test-')
         self.root = Path(self.temporary.name).resolve()
         self.project = self.root / 'synthetic'
+        from local_execution import approve
+        approve(self.project)
         (self.project / 'charts').mkdir(parents=True)
         (self.project / 'data').mkdir()
-        (self.project / 'charts/a.py').write_text(SOURCE)
-        (self.project / 'data/values.csv').write_text('x,y\n0,2\n1,3\n2,4\n')
+        (self.project / 'charts/a.py').write_text(SOURCE, encoding="utf-8", newline="\n")
+        (self.project / 'data/values.csv').write_text('x,y\n0,2\n1,3\n2,4\n', encoding="utf-8", newline="\n")
         self.original = (self.project / 'data/values.csv').read_bytes()
 
     def tearDown(self):
@@ -237,16 +278,19 @@ class RunnerIsolationTests(unittest.TestCase):
             self.render(SOURCE + attack)
 
     def test_external_read_denied(self):
+        from chat_runner import isolation_backend
+        if isolation_backend() == "local-python":
+            self.skipTest("Local Python explicitly has no OS filesystem sandbox")
         secret = self.root / 'synthetic-secret.txt'
-        secret.write_text('must not be readable')
-        attack = '\nPath(' + repr(str(secret)) + ').read_text()\n'
+        secret.write_text('must not be readable', encoding="utf-8", newline="\n")
+        attack = '\nPath(' + repr(str(secret)) + ').read_text(encoding="utf-8")\n'
         with self.assertRaises(CandidateRenderError):
             self.render(SOURCE + attack)
 
     def test_uninherited_environment(self):
         with patch.dict(os.environ, {'CHAT_RUNNER_TEST_SECRET': 'must-not-inherit'}):
             result = self.render(SOURCE + "\nassert 'CHAT_RUNNER_TEST_SECRET' not in os.environ\n")
-        self.assertEqual(result['isolation']['network'], 'denied')
+        self.assertIn(result['isolation']['network'], ('denied', 'python-audit-hook'))
 
     def test_geometry_changes_reported(self):
         result = self.render(SOURCE.replace('frame.x, frame.y', 'frame.x, frame.y * 2'))
@@ -254,22 +298,25 @@ class RunnerIsolationTests(unittest.TestCase):
         self.assertTrue(result['data_report']['changed'])
 
     def test_root_helper_import_works(self):
-        (self.project / 'shared_draw.py').write_text("def identity(value):\n    return value\n")
+        (self.project / 'shared_draw.py').write_text("def identity(value):\n    return value\n", encoding="utf-8", newline="\n")
         result = self.render('from shared_draw import identity\n' + SOURCE.replace('frame.y, label=', 'identity(frame.y), label='))
         self.assertEqual(result['data_report']['status'], 'unchanged')
 
     def test_sibling_chart_cannot_be_hidden_dependency(self):
-        (self.project / 'charts' / 'other.py').write_text('value=3\n')
+        (self.project / 'charts' / 'other.py').write_text('value=3\n', encoding="utf-8", newline="\n")
         with self.assertRaises(CandidateRenderError) as error:
             self.render('import other\n' + SOURCE)
         self.assertIn('ModuleNotFoundError', str(error.exception))
 
     def test_external_write_denied(self):
+        from chat_runner import isolation_backend
+        if isolation_backend() == "local-python":
+            self.skipTest("Local Python explicitly has no OS filesystem sandbox")
         protected = self.root / 'protected.txt'
-        protected.write_text('original')
+        protected.write_text('original', encoding="utf-8", newline="\n")
         with self.assertRaises(CandidateRenderError):
             self.render(SOURCE + '\nPath(' + repr(str(protected)) + ').write_text("modified")\n')
-        self.assertEqual(protected.read_text(), 'original')
+        self.assertEqual(protected.read_text(encoding="utf-8"), 'original')
 
     def test_scientific_dependency_imports(self):
         result = self.render('from scipy.stats import linregress\n' + SOURCE)

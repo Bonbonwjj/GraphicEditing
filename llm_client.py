@@ -5,8 +5,7 @@ import urllib.error
 import urllib.request
 
 
-DEFAULT_URL = "https://api.siliconflow.cn/v1/chat/completions"
-DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
+from model_config import DEFAULT_URL, DEFAULT_MODEL
 
 
 def is_configured():

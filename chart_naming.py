@@ -39,14 +39,16 @@ def figure_naming(fig):
 
 def install_capture(output, metadata):
     from matplotlib.figure import Figure
+    # Preview workers export files and never open interactive figure windows.
+    Figure.show = lambda self, *args, **kwargs: None
     original = Figure.savefig
     def savefig(fig, fname, *args, **kwargs):
         result = original(fig, fname, *args, **kwargs)
         try:
             if isinstance(fname, (str, os.PathLike)) and Path(fname).resolve() == Path(output).resolve():
-                Path(metadata).write_text(json.dumps(figure_naming(fig), ensure_ascii=False), encoding='utf-8')
+                Path(metadata).write_text(json.dumps(figure_naming(fig), ensure_ascii=False), encoding='utf-8', newline="\n")
         except Exception:
             # Naming must never prevent a successful figure export.
-            Path(metadata).write_text('{"status":"fallback","reason":"无法读取轴信息"}', encoding='utf-8')
+            Path(metadata).write_text('{"status":"fallback","reason":"无法读取轴信息"}', encoding='utf-8', newline="\n")
         return result
     Figure.savefig = savefig

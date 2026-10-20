@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-20",
+  "scope": "local source optimization after v0.1.1",
+  "files": [
+    {
+      "path": "chat_agent.py",
+      "sha256": "f87461d731d49a36b75b22689ebb1ca0e9d690790679ef8e43612ee51d2599ac"
+    },
+    {
+      "path": "chat_harness.py",
+      "sha256": "2edf5398ce620b33273c54b2e59770d2f9850e68944ccd3663d1a4676bf21626"
+    },
+    {
+      "path": "chat_runner.py",
+      "sha256": "9f467dda251453d3f996fd8b7745e5b709796cc698436312c204cb874ca423b8"
+    },
+    {
+      "path": "chat_parameters.py",
+      "sha256": "c94227d6adb243f66c48de43892a04a9c4de23ae466a288799ed98d7d296f722"
+    },
+    {
+      "path": "chart_transform.py",
+      "sha256": "8c295051f454224cac8788c842c03b9121d2c415ba685a514d49c3615fe0c5e2"
+    },
+    {
+      "path": "chat_diagnostics.py",
+      "sha256": "9bf695f5cb08ed7404883778d30c1ee9708d2bb2028907721315b8fbcf15ec42"
+    },
+    {
+      "path": "chart_overrides.py",
+      "sha256": "6e573a956f3573af25be2a1f976c08bf1572fa11a26fde5fcc2cf15d1b4c9f29"
+    },
+    {
+      "path": "chat_module_route.py",
+      "sha256": "f091075b5023fe348b958795300e70739a5ce25df7913f43547bcddacc7c6da3"
+    },
+    {
+      "path": "module_workflow.py",
+      "sha256": "51408b907b7cb716a65467115492a6d21d02438cc2a4cb2197dc5cebb7be34b9"
+    },
+    {
+      "path": "ly_api.py",
+      "sha256": "766f7ab3a5c84317920bc967cc1d3cf1b48159eff8b2bcb81941c6173bb3fd2b"
+    },
+    {
+      "path": "server.py",
+      "sha256": "559016ee897db861fb1b513467a92d3f628443d67c20150453979a50a0d07078"
+    },
+    {
+      "path": "static/app.js",
+      "sha256": "0cfcb8cfb8756eb5e236159d6e4b87f5fc22b03aed6a9001aaf99101a6ed1cf5"
+    },
+    {
+      "path": "static/index.html",
+      "sha256": "707fbecce58391a36a3134049b907515bbbefc3aa05d5212319602c0432546c5"
+    },
+    {
+      "path": "static/ly_features.js",
+      "sha256": "fccb88f9707551df6cf135cdd1247fd4624db4bfc6bcaf255623a2ccff92b8b4"
+    }
+  ]
+}

@@ -26,10 +26,10 @@ function environment() {
     fetch() { throw Error('Unexpected network'); }, setInterval() {},
   };
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-  const init = source.indexOf('(async()=>{try{const [r]');
+  const init = source.indexOf('(async()=>{try{if(window.syncTeamOnOpen)');
   assert(init > 0, 'Locate automatic page initialization');
   source = source.slice(0, init);
-  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats };';
+  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, renderModuleHandoff, renderTurnMetrics };';
   vm.runInNewContext(source, sandbox);
   const app = sandbox.app;
   app.state.project = 'project';
@@ -97,7 +97,38 @@ function testCards() {
   assert(!app.renderDraft(draft, { ...current, status: 'closed' }, context).includes('data-draft-action'));
   const diagnostic = { ...draft, status: 'needs_clarification', layout: { issues: [{ id: 'warn_1', message: 'tick overlap' }] } };
   assert(app.renderDraft(diagnostic, current, context).includes('仍按要求执行'));
+  const layoutDraft = app.renderDraft({ ...diagnostic, can_continue: true }, current, context);
+  assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(layoutDraft));
+  assert(/data-draft-action="apply"[^>]*data-blocked="true"/.test(layoutDraft));
+  assert(layoutDraft.includes('此版可作为下一轮修改起点'));
   assert(!app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('data-layout-override'));
+  assert(app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('重新检查此版'));
+  const explained=app.renderDraft({ ...draft, status:'validation_failed', diagnostics:[{
+    title:'图型转换尚无法核对',reason:'缺少 <sample>',next_action:'请核对完整样本',
+    evidence:[{label:'移除对象',count:1,objects:['axes_0.line_0']}]}],
+    check_history:[{status:'validation_failed',diagnostics:[{title:'初次失败',reason:'样本缺失'}]}]},current,context);
+  assert(explained.includes('图型转换尚无法核对'));
+  assert(explained.includes('请核对完整样本'));
+  assert(explained.includes('axes_0.line_0'));
+  assert(explained.includes('本轮出图检查记录'));
+  assert(explained.includes('&lt;sample&gt;'));
+  assert(!explained.includes('<sample>'));
+  const handoff=app.renderModuleHandoff({module_handoff:{path:'draw.py',module_id:'m1',chart:'B',
+    prompt:'change <font>',notice:'共享修改需审阅',affected_charts:['A','B']}},'project',true);
+  assert(handoff.includes('可能受影响的图（2）'));
+  assert(handoff.includes('验证全部图'));
+  assert(handoff.includes('change &lt;font&gt;'));
+  assert(!app.renderModuleHandoff({module_handoff:{affected_charts:[]}},'project',false).includes('<button'));
+  assert(app.renderTurnMetrics({model_attempts:0,elapsed_seconds:1}).includes('未调用模型'));
+  assert(app.renderTurnMetrics({model_attempts:2,model_calls:[{total_tokens:130}]}).includes('130 token（部分调用）'));
+  assert(app.renderTurnMetrics({model_attempts:1}).includes('服务端未报告实际 token'));
+  const normalizationUsage=app.renderTurnMetrics({model_attempts:0,model_usage_scope:'normalization'});
+  assert(normalizationUsage.includes('暂未报告'));
+  assert(!normalizationUsage.includes('未调用模型'));
+  const converted=app.renderDraft({ ...draft, chart_transform: { status:'pass', reason:'完整样本核对通过', matches:[{
+    path:'data/values.csv',group_column:'group',value_column:'value',groups:[{label:'A',count:37}]}] } },current,context);
+  assert(converted.includes('图型转换数据核对'));
+  assert(converted.includes('37 个样本'));
   assert(!app.renderDraft({ ...diagnostic, layout: { issues: [{ message: 'no stable ID' }] } }, current, context).includes('data-layout-override'));
   assert.equal(app.warningList({ warnings: null }).length, 0);
   assert.equal(app.warningList({ warnings: 'one warning' }).length, 1);
@@ -138,6 +169,11 @@ function testClarificationQuestion() {
   current.turns[0].results[0].reason = 'Use SD or SEM?';
   app.renderChat(); html = elements.get('messages').innerHTML;
   assert.equal(html.split('Use SD or SEM?').length - 1, 1);
+  current.turns[0].results=[{chart:'B',status:'cannot_complete',reason:'模型调用失败：429',
+    diagnostics:[{title:'模型服务限流',next_action:'稍后重试 <service>'}]}];
+  app.renderChat();html=elements.get('messages').innerHTML;
+  assert(html.includes('模型服务限流'));
+  assert(html.includes('稍后重试 &lt;service&gt;'));
 }
 
 async function testFinalizeRefresh() {

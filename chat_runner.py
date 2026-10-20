@@ -1,6 +1,6 @@
-"""Render Chat candidates in a read-only project snapshot under macOS Seatbelt.
+"""Render trusted candidates locally, or use optional Seatbelt/Docker isolation.
 
-The OS sandbox, not Python syntax checks, protects files/network. The metadata
+Local Python runs with user permissions. Only Seatbelt/Docker provide OS isolation. The metadata
 checks are conservative diagnostics, not a proof of scientific equivalence or a
 security boundary against a malicious Python program falsifying its own artists.
 """
@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 
 ROOT = Path(__file__).resolve().parent
 TIMEOUT_SECONDS = 45
@@ -104,7 +105,7 @@ def _validate_sources(entry, files):
             tree = ast.parse(source, filename=path)
         except SyntaxError as exc:
             raise CandidateRenderError("Invalid Python: " + str(exc)) from exc
-        # Early feedback only. Imports may conceal behavior; Seatbelt is mandatory.
+        # Early feedback only. These checks are not an OS isolation boundary.
         forbidden = {"subprocess", "socket", "requests", "urllib", "http", "ftplib", "ctypes", "multiprocessing"}
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -120,13 +121,13 @@ def _validate_sources(entry, files):
 def _snapshot(project, destination, overrides, entry=None):
     total = 0
     hashes = {}
-    for dirname, suffixes in (("", {".py"}), ("charts", {".py"}), ("lib", {".py"}), ("data", {".csv", ".tsv", ".json"})):
+    for dirname, suffixes in (("", {".py", ".json"}), ("charts", {".py"}), ("lib", {".py"}), ("data", {".csv", ".tsv", ".json"})):
         source_root = project / dirname
         if source_root.is_symlink():
             raise CandidateRenderError("Symlinked project directories are not allowed", "scope_rejected")
         if not source_root.exists():
             continue
-        candidates = source_root.glob("*.py") if dirname == "" else source_root.rglob("*")
+        candidates = source_root.glob("*") if dirname == "" else source_root.rglob("*")
         for source in sorted(candidates):
             if source.is_symlink():
                 raise CandidateRenderError("Symlinked project files are not allowed", "scope_rejected")
@@ -147,7 +148,7 @@ def _snapshot(project, destination, overrides, entry=None):
     for relative, content in overrides.items():
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text(content, encoding="utf-8", newline="\n")
     return hashes
 
 
@@ -177,7 +178,45 @@ def _sandbox_profile(work, writable):
     ])
 
 
+
+def isolation_backend():
+    requested = os.environ.get("PLOT_FORGE_RENDER_BACKEND", "auto")
+    if requested == "auto":
+        requested = "local"
+    if requested == "local" and sys.platform in {"win32", "darwin", "linux"}:
+        return "local-python"
+    if requested == "seatbelt" and sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        return "macos-seatbelt"
+    if requested == "docker" and sys.platform in {"win32", "darwin", "linux"} and shutil.which("docker"):
+        return "docker"
+    raise CandidateRenderError("No supported renderer. On Windows install/start Docker Desktop (Linux containers) and build the renderer image; on macOS use Seatbelt or Docker.", "sandbox_unavailable")
+
+
+def _docker_command(work, snapshot, environment, name):
+    # Only the disposable snapshot is readable; only runtime output is writable.
+    command = ["docker", "run", "--rm", "--pull=never", "--name", name,
+               "--network=none", "--read-only", "--cap-drop=ALL",
+               "--security-opt=no-new-privileges", "--memory=1g", "--memory-swap=1g",
+               "--cpus=2", "--pids-limit=64", "--log-driver=none",
+               "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+               "--mount", f"type=bind,source={work},target=/work,readonly",
+               "--mount", f"type=bind,source={work / 'runtime'},target=/work/runtime",
+               "--workdir", "/work/" + snapshot.relative_to(work).as_posix()]
+    for key, value in environment.items():
+        command += ["--env", key + "=" + value]
+    return command + [os.environ.get("PLOT_FORGE_RENDER_IMAGE", "plot-forge-renderer:local"),
+                      "python", "-s", "-B", "/work/worker.py", "--worker", "/work/config.json"]
+
+
 def _one_render(project, entry, files, directory):
+    backend = isolation_backend()
+    if backend == "local-python":
+        from local_execution import require_trust
+        require_trust(project)
+    from bundle_bindings import signature as bundle_signature
+    bundle_revision = bundle_signature(project)
+    if bundle_revision and backend != "local-python":
+        raise CandidateRenderError("Bundle 候选目前需要本机 Python 模式；外部目录尚未接入 OS 沙箱", "scope_rejected")
     work = directory.resolve()
     snapshot = work / "packages" / "projects" / project.name
     snapshot.mkdir(parents=True)
@@ -188,7 +227,7 @@ def _one_render(project, entry, files, directory):
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py"):
+    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "chart_overrides.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
     profile_relative = Path("skills/chart-normalization/assets/style-profile.v1.json")
     target = package_root / profile_relative
@@ -203,11 +242,17 @@ def _one_render(project, entry, files, directory):
     panel_gap_multiple = float(profile_data["global"]["multi_panel_min_gap_label_axis_multiple"])
     config = {"project": str(snapshot), "entry": entry, "package_root": str(package_root),
               "output": str(writable / "figure.png"), "metadata": str(writable / "metadata.json"),
-              "input_hashes": input_hashes, "panel_gap_multiple": panel_gap_multiple}
+              "input_hashes": input_hashes, "panel_gap_multiple": panel_gap_multiple,
+              "bundle": (project / "data_sources.json").is_file() and any(item.get("kind") == "plot_bundle" for item in json.loads((project / "data_sources.json").read_text(encoding="utf-8")).get("sources", []))}
     config_path = work / "config.json"
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
+    if backend == "docker":
+        for key in ("project", "package_root", "output", "metadata"):
+            config[key] = "/work/" + Path(config[key]).relative_to(work).as_posix()
+        config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
     profile = work / "sandbox.sb"
-    profile.write_text(_sandbox_profile(work, writable), encoding="utf-8")
+    if backend == "macos-seatbelt":
+        profile.write_text(_sandbox_profile(work, writable), encoding="utf-8", newline="\n")
     environment = {"PATH": "/usr/bin:/bin", "HOME": str(writable), "TMPDIR": str(writable),
                    "MPLCONFIGDIR": str(writable / "mpl"), "MPLBACKEND": "Agg", "PYTHONHASHSEED": "0",
                    "PYTHONDONTWRITEBYTECODE": "1", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
@@ -217,34 +262,66 @@ def _one_render(project, entry, files, directory):
     # -I would additionally ignore our deterministic PYTHONHASHSEED. The script
     # directory contains only trusted worker/config files, not project modules.
     command = ["/usr/bin/sandbox-exec", "-f", str(profile), sys.executable, "-s", "-B", str(runner), "--worker", str(config_path)]
+    container_name = "plot-forge-" + uuid.uuid4().hex if backend == "docker" else None
+    if backend == "docker":
+        environment.update(HOME="/work/runtime", TMPDIR="/tmp", MPLCONFIGDIR="/work/runtime/mpl",
+                           CHART_PROJECT_DIR=config["project"], CHART_OUTPUT=config["output"])
+        environment.pop("PATH", None)
+        command = _docker_command(work, snapshot, environment, container_name)
+    if backend == "local-python":
+        command = [sys.executable, "-s", "-B", str(runner), "--worker", str(config_path)]
+        environment["PATH"] = os.environ.get("PATH", "")
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONUTF8"] = "1"
+        environment["CHART_BUNDLE_SOURCE_PROJECT"] = str(project)
+        if os.name == "nt":
+            environment["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+            environment["WINDIR"] = environment["SystemRoot"]
+            environment["TEMP"] = str(writable)
+            environment["TMP"] = str(writable)
     log_path = writable / "render.log"
     try:
-        with log_path.open("wb") as log, subprocess.Popen(command, cwd=snapshot, env=environment, stdin=subprocess.DEVNULL, stdout=log,
-                              stderr=log, start_new_session=True) as process:
+        with log_path.open("wb") as log, subprocess.Popen(command, cwd=snapshot, env=(os.environ.copy() if backend == "docker" else environment), stdin=subprocess.DEVNULL, stdout=log,
+                              stderr=log, start_new_session=(os.name != "nt")) as process:
             try:
                 process.wait(timeout=TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired as exc:
-                os.killpg(process.pid, signal.SIGKILL)
+                if backend == "docker":
+                    try:
+                        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                    process.kill()
+                elif os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10)
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 raise CandidateRenderError("Rendering exceeded 45 seconds", "render_timeout") from exc
     except OSError as exc:
         raise CandidateRenderError("OS sandbox could not be started: " + str(exc), "sandbox_unavailable") from exc
+    finally:
+        if container_name:
+            try:
+                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     with log_path.open("rb") as log:
         log.seek(max(0, log_path.stat().st_size - 3500))
         error = log.read(3500).decode("utf-8", errors="replace")
     if process.returncode:
-        if "sandbox_apply" in error or "sandbox-exec:" in error:
-            raise CandidateRenderError("OS isolation is unavailable; candidate was not run. " + error,
+        if (backend == "docker" and (process.returncode in {125, 126, 127} or any(marker in error for marker in ("error during connect", "config.json: open", "Cannot connect to the Docker daemon")))) or "sandbox_apply" in error or "sandbox-exec:" in error:
+            raise CandidateRenderError("OS isolation is unavailable; check Docker Desktop and build Dockerfile.renderer when using Docker. " + error,
                                        "sandbox_unavailable")
         raise CandidateRenderError("Isolated render failed (exit " + str(process.returncode) + "): " + error)
-    output = Path(config["output"])
-    metadata = Path(config["metadata"])
+    output = writable / "figure.png"
+    metadata = writable / "metadata.json"
     if (not output.is_file() or output.is_symlink() or output.stat().st_size > MAX_IMAGE_BYTES
             or not metadata.is_file() or metadata.is_symlink() or metadata.stat().st_size > 5 * 1024 * 1024):
         raise CandidateRenderError("Render did not produce a valid bounded PNG and report")
     if output.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
         raise CandidateRenderError("Expected a PNG candidate output")
-    report = json.loads(metadata.read_text())
+    report = json.loads(metadata.read_text(encoding="utf-8"))
     # Read-only snapshot must also remain byte-identical (OS enforcement is the
     # primary protection, this detects accidental platform/profile regressions).
     for path, digest in input_hashes.items():
@@ -252,6 +329,8 @@ def _one_render(project, entry, files, directory):
         expected_hash = "sha256:" + hashlib.sha256(expected.encode()).hexdigest() if expected is not None else digest
         if "sha256:" + hashlib.sha256((snapshot / path).read_bytes()).hexdigest() != expected_hash:
             raise CandidateRenderError("Read-only snapshot changed: " + path, "scope_rejected")
+    if bundle_signature(project) != bundle_revision:
+        raise CandidateRenderError("Bundle 数据在渲染期间发生变化，请重试", "scope_rejected")
     report["image_bytes"] = output.read_bytes()
     report["stderr"] = error
     return report
@@ -279,6 +358,13 @@ def compare_reports(before, after):
                 visibility.append({"key": key, "before": a.get("visibility"), "after": b.get("visibility")})
             if a.get("style") != b.get("style"):
                 style.append({"key": key, "before": a.get("style"), "after": b.get("style")})
+    prior_inputs=before.get('distribution_inputs') or []
+    next_inputs=after.get('distribution_inputs') or []
+    if prior_inputs and next_inputs:
+        prior=[(c['kind'],c['groups']) for c in prior_inputs]
+        current=[(c['kind'],c['groups']) for c in next_inputs]
+        if prior!=current:
+            changed.append({'key':'distribution_samples','kind':'source_samples','before':prior,'after':current})
     axes_changed = []
     for i in range(max(len(before.get("axes", [])), len(after.get("axes", [])))):
         a = before.get("axes", [])[i] if i < len(before.get("axes", [])) else None
@@ -295,8 +381,7 @@ def compare_reports(before, after):
 
 def inspect_chart_fonts(project_path, chart_path_relative, files=None):
     """Resolve the fonts of the applied chart in the same isolated export path."""
-    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
-        raise CandidateRenderError("A supported OS sandbox is required (macOS sandbox-exec)", "sandbox_unavailable")
+    isolation_backend()
     project = Path(project_path)
     if project.is_symlink() or not project.is_dir():
         raise CandidateRenderError("Invalid project directory", "scope_rejected")
@@ -309,15 +394,15 @@ def inspect_chart_fonts(project_path, chart_path_relative, files=None):
         return report.get("font_audit") or {}
 
 
-def render_candidate(project_path, chart_path_relative, files, output_dir, baseline_files=None):
+def render_candidate(project_path, chart_path_relative, files, output_dir, baseline_files=None, shared_files=None):
     """Return a saved candidate PNG and observed baseline/candidate diagnostics.
 
     files and baseline_files map project-relative allowed paths to full sources.
-    This function never updates official project files. It fails closed when an
-    OS sandbox is unavailable. output_dir must be a fresh, trusted caller path.
+    This function saves only candidate artifacts. Local mode requires project
+    consent and is not an OS sandbox. Optional isolated backends fail closed.
+    output_dir must be a fresh, trusted caller path.
     """
-    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
-        raise CandidateRenderError("A supported OS sandbox is required (macOS sandbox-exec)", "sandbox_unavailable")
+    isolation_backend()
     project = Path(project_path)
     if project.is_symlink() or not project.is_dir():
         raise CandidateRenderError("Invalid project directory", "scope_rejected")
@@ -327,13 +412,24 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         raise CandidateRenderError("Expected a chart Python entry", "scope_rejected")
     _validate_sources(entry, files)
     _validate_sources(entry, baseline_files or {})
+    # Only the shared-module workflow supplies this separate argument. Normal
+    # Chat proposals remain constrained to their selected chart entry.
+    library_overrides={}
+    for path,source in (shared_files or {}).items():
+        relative=_relative(path)
+        target=project/relative
+        if (not relative.startswith('lib/') or not relative.endswith('.py') or not target.is_file()
+                or target.is_symlink() or not target.resolve().is_relative_to((project/'lib').resolve())):
+            raise CandidateRenderError('共享候选只能替换项目中已有的 lib Python 模块','scope_rejected')
+        _validate_sources(entry,{entry:source})
+        library_overrides[relative]=source
     output = Path(output_dir)
     if any(parent.is_symlink() for parent in [output, *output.parents]):
         raise CandidateRenderError("Symlinked output directories are not allowed", "scope_rejected")
     with tempfile.TemporaryDirectory(prefix="chat-candidate-") as temporary:
         temp = Path(temporary)
         baseline = _one_render(project, entry, baseline_files or {}, temp / "baseline")
-        candidate = _one_render(project, entry, files, temp / "candidate")
+        candidate = _one_render(project, entry, {**files,**library_overrides}, temp / "candidate")
         output.mkdir(parents=True, exist_ok=True)
         target = output / "candidate.png"
         if target.exists():
@@ -353,10 +449,14 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "layout_signature": candidate.get("layout_signature"),
                   "baseline_layout_signature": baseline.get("layout_signature"),
                   "normalization_report": candidate.get("normalization_report"),
+                  "distribution_inputs": candidate.get("distribution_inputs", []),
+                  "baseline_distribution_inputs": baseline.get("distribution_inputs", []),
+                  "distribution_overlays": candidate.get("distribution_overlays", []),
+                  "candidate_artists": candidate.get("artists", []),
                   "font_audit": candidate.get("font_audit"),
                   "baseline_font_audit": baseline.get("font_audit"),
                   "warnings": _runtime_warnings(candidate.get("stderr")),
-                  "isolation": {"backend": "macos-seatbelt", "readonly_snapshot": True, "network": "denied"}}
+                  "isolation": {"backend": isolation_backend(), "readonly_snapshot": isolation_backend() != "local-python", "network": "python-audit-hook" if isolation_backend() == "local-python" else "denied", "os_sandbox": isolation_backend() != "local-python"}}
         substitutions=(report.get("font_audit") or {}).get("substitutions", [])
         if substitutions:
             replacements=sorted({f"{item['requested_family']} → {item['selected_family']}" for item in substitutions})
@@ -364,7 +464,7 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         baseline_issues = {issue["id"] for issue in baseline["layout"].get("issues", [])}
         for issue in report["layout"].get("issues", []):
             issue["preexisting"] = issue["id"] in baseline_issues
-        (output / "checks.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        (output / "checks.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
         return report
 
 
@@ -384,19 +484,32 @@ def _number_array(values):
     return {"shape": list(data.shape), "sha256": hashlib.sha256(encoded.encode()).hexdigest(), "sample": sample}
 
 
+def _distribution_values(obj, dimension):
+    if hasattr(obj, 'get_ydata'):
+        return _number_array(obj.get_ydata(orig=False) if dimension else obj.get_xdata(orig=False))
+    if hasattr(obj, 'get_segments'):
+        return [_number_array(segment[:, dimension]) for segment in obj.get_segments()]
+    if hasattr(obj, 'get_paths'):
+        return [_number_array(path.vertices[:, dimension]) for path in obj.get_paths()]
+    return _number_array(obj.get_path().vertices[:, dimension])
+
+
 def _capture(fig, renderer, panel_gap_multiple=2.0):
     import numpy as np
     from matplotlib.collections import LineCollection, PathCollection, PolyCollection, QuadMesh
-    from matplotlib.container import ErrorbarContainer
+    from matplotlib.container import ErrorbarContainer, BarContainer
     from matplotlib.lines import Line2D
     from matplotlib.patches import Rectangle
     from matplotlib.transforms import Bbox
     from chart_naming import figure_naming
 
     records, texts, issues, unsupported, axes_info, axes_layout, legend_regions = [], [], [], [], [], [], []
+    distribution_inputs = []
+    distribution_overlays = []
     axis_details = []
     panel_spacing = {'status': 'not_applicable', 'minimum_multiple': panel_gap_multiple, 'pairs': []}
     errorbar_roles = {}
+    horizontal_bars = set()
     dpi_scale = fig.dpi / 72.0
     tolerance = max(0.75 * dpi_scale, 1.0)
     canvas = fig.bbox
@@ -487,13 +600,46 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
                         "data_hash": hashlib.sha256(joined.encode()).hexdigest(),
                         "data": data, "visibility": visibility, "style": style,
                         "semantic_role": role, "role_evidence": evidence,
+                        "distribution_mutated": (hasattr(obj, '_chat_initial_numeric') and
+                            obj._chat_initial_numeric != data.get('rendered_values')),
                         "errorbar_component": component,
                         "signature_basis": "supplied_statistics" if hasattr(obj, "_chat_semantic_data") else "drawn_geometry"})
     for ai, ax in enumerate(fig.axes):
         if not ax.get_visible():
             continue
         prefix = "axes_" + str(ai)
+        calls = getattr(ax, '_chat_distribution_inputs', [])
+        scatter = [(i, c) for i, c in enumerate(ax.collections) if isinstance(c, PathCollection)]
+        if len(calls) == 1 and scatter:
+            from chart_transform import sample_signature
+            call = calls[0]
+            positions = np.asarray(call.get('positions', range(1, len(call['groups'])+1)), dtype=float)
+            groups = [[] for _ in positions]
+            valid = bool(len(positions) and len(set(positions)) == len(positions))
+            radius = np.min(np.diff(np.sort(positions))) / 2 if len(positions)>1 else .5
+            for _, collection in scatter:
+                offsets = np.ma.asarray(collection.get_offsets())
+                alpha=collection.get_alpha()
+                valid = valid and collection.get_visible() and (alpha is None or bool(np.all(np.asarray(alpha)>0)))
+                if np.ma.getmaskarray(offsets).any() or offsets.ndim!=2 or offsets.shape[1]!=2 or not np.isfinite(offsets).all():
+                    valid = False
+                    continue
+                for point in offsets:
+                    distances = np.abs(positions-point[1-call['dimension']])
+                    index = int(np.argmin(distances))
+                    if distances[index] >= radius:
+                        valid = False
+                    groups[index].append(float(point[call['dimension']]))
+            distribution_overlays.append({'axis':ai, 'valid':bool(valid),
+                'groups':[sample_signature(g) for g in groups],
+                'collection_keys':[prefix+'.collection_'+str(i) for i,_ in scatter]})
+        for call in getattr(ax, '_chat_distribution_inputs', []):
+            dimension = call['dimension']
+            labels = ax.get_xticklabels() if dimension == 1 else ax.get_yticklabels()
+            distribution_inputs.append({**call, 'axis': ai, 'labels': [t.get_text() for t in labels]})
         for container in ax.containers:
+            if isinstance(container, BarContainer) and container.orientation == 'horizontal':
+                horizontal_bars.update(id(patch) for patch in container.patches)
             if isinstance(container, ErrorbarContainer):
                 data_line, cap_lines, bar_collections = container.lines
                 if data_line is not None:
@@ -577,9 +723,13 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
                 data = {"segments": [_number_array(s) for s in collection.get_segments()]}
                 artist(key, "line_collection", data, collection)
             elif isinstance(collection, PathCollection):
-                artist(key, "scatter", {"offsets": _number_array(collection.get_offsets())}, collection)
+                data = {"offsets": _number_array(collection.get_offsets())}
+                if collection.get_array() is not None:
+                    data['scalar_values'] = _number_array(collection.get_array())
+                artist(key, "scatter", data, collection)
             elif isinstance(collection, QuadMesh):
-                artist(key, "heatmap", {"array": _number_array(collection.get_array())}, collection)
+                artist(key, "heatmap", {"array": _number_array(collection.get_array()),
+                                       "coordinates": _number_array(collection.get_coordinates())}, collection)
             elif isinstance(collection, PolyCollection):
                 artist(key, "polygon_collection", {"paths": [_number_array(p.vertices) for p in collection.get_paths()]}, collection)
             else:
@@ -588,7 +738,11 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
             artist(prefix + ".image_" + str(ii), "heatmap", {"array": _number_array(img.get_array()),
                                                              "extent": list(img.get_extent())}, img)
         for pi, patch in enumerate(ax.patches):
-            if isinstance(patch, Rectangle):
+            if id(patch) in horizontal_bars:
+                # In barh, width encodes the value and height is style thickness.
+                data = {"center_y": float(patch.get_y() + patch.get_height() / 2),
+                        "left": float(patch.get_x()), "width": float(patch.get_width())}
+            elif isinstance(patch, Rectangle):
                 # Width is a style token; center/base/height encode bar geometry.
                 data = {"center": float(patch.get_x() + patch.get_width() / 2),
                         "bottom": float(patch.get_y()), "height": float(patch.get_height())}
@@ -707,6 +861,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         unsupported.append("No supported data artist was captured")
         limitations.append(unsupported[-1])
     return {"artists": records, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
+            "distribution_inputs": distribution_inputs, "distribution_overlays":distribution_overlays,
             "normalization_report": getattr(fig, "_normalization_report", None),
             "render_size_px": [round(canvas.width), round(canvas.height)],
             "layout_signature": {"size_inches": list(map(float, fig.get_size_inches())), "dpi": float(fig.dpi),
@@ -720,16 +875,18 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
 
 
 def _worker_main(config_path):
-    import resource
     import runpy
-    resource.setrlimit(resource.RLIMIT_CPU, (30, 35))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_IMAGE_BYTES, MAX_IMAGE_BYTES))
-    resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-    config = json.loads(Path(config_path).read_text())
+    if os.name != "nt":
+        import resource
+        resource.setrlimit(resource.RLIMIT_CPU, (30, 35))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_IMAGE_BYTES, MAX_IMAGE_BYTES))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     sys.dont_write_bytecode = True
     sys.path.insert(0, config["package_root"])
     sys.path.insert(0, config["project"])
     sys.path.insert(0, str(Path(config["project"]) / "charts"))
+    sys.path.insert(0, str(Path(config["project"]) / "lib"))
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -742,10 +899,20 @@ def _worker_main(config_path):
     random.seed(0)
     register_platform_font()
     _install_stat_capture(Axes)
+    # A script may call fig.show() after finish_figure has closed its manager.
+    Figure.show = lambda self, *args, **kwargs: None
     original = Figure.savefig
     captured = []
+    artifacts = {}
+    if config.get("bundle"):
+        import bundle_runtime
+        def observe_output(source, destination):
+            report = artifacts.get(str(Path(source).resolve()))
+            if report is not None:
+                captured[:] = [report]
+        bundle_runtime.OUTPUT_OBSERVER = observe_output
     def savefig(fig, fname, *args, **kwargs):
-        if isinstance(fname, (str, os.PathLike)) and Path(fname).resolve() == Path(config["output"]):
+        if isinstance(fname, (str, os.PathLike)) and (config.get("bundle") or Path(fname).resolve() == Path(config["output"])):
             font_audit = audit_figure_fonts(fig)
             draws = []
             def on_draw(event):
@@ -759,7 +926,9 @@ def _worker_main(config_path):
                 fig.canvas.mpl_disconnect(connection)
             if not draws:
                 raise RuntimeError("No export-size draw event was observed")
-            captured[:] = [draws[-1]]
+            artifacts[str(Path(fname).resolve())] = draws[-1]
+            if Path(fname).resolve() == Path(config["output"]):
+                captured[:] = [draws[-1]]
             return result
         return original(fig, fname, *args, **kwargs)
     Figure.savefig = savefig
@@ -777,7 +946,7 @@ def _worker_main(config_path):
             return value.item()
         raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
     Path(config["metadata"]).write_text(json.dumps(captured[-1], ensure_ascii=False,
-                                                  allow_nan=False, default=json_scalar), encoding="utf-8")
+                                                  allow_nan=False, default=json_scalar), encoding="utf-8", newline="\n")
     plt.close("all")
 
 
@@ -818,6 +987,7 @@ def _install_stat_capture(axes_type):
                                                "component": component, "segment": index % stride,
                                                "statistics": statistics[group]}
                     obj._chat_numeric_dimension = dimension
+                    obj._chat_initial_numeric = _distribution_values(obj, dimension)
         return result
     @functools.wraps(originals["violin"])
     def violin(self, vpstats, *args, **kwargs):
@@ -830,13 +1000,45 @@ def _install_stat_capture(axes_type):
                     obj._chat_semantic_data = {"type": "violin_statistics", "group": group,
                                                "component": component, "statistics": statistics[group]}
                     obj._chat_numeric_dimension = dimension
+                    obj._chat_initial_numeric = _distribution_values(obj, dimension)
             else:
                 objects._chat_semantic_data = {"type": "violin_statistics", "component": component,
                                                "statistics": statistics}
                 objects._chat_numeric_dimension = dimension
+                objects._chat_initial_numeric = _distribution_values(objects, dimension)
         return result
     axes_type.bxp = bxp
     axes_type.violin = violin
+    # Observe the actual samples passed to public distribution APIs, independently
+    # of their changing artist geometry. Do not duplicate wrappers in unit tests.
+    for method, kind in (('boxplot', 'boxplot'), ('violinplot', 'violinplot')):
+        original = getattr(axes_type, method)
+        original = getattr(original, '_chat_original', original)
+        def wrap(original, kind):
+            @functools.wraps(original)
+            def observed(self, *args, **kwargs):
+                from matplotlib.cbook import _reshape_2D
+                from chart_transform import sample_signature
+                signature = inspect.signature(original)
+                bound = signature.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                options = bound.arguments
+                dataset = options[list(signature.parameters)[1]]
+                import matplotlib
+                dimension = 0 if options.get('orientation') == 'horizontal' or options.get('vert') is False else 1
+                groups = [sample_signature(group) for group in _reshape_2D(dataset, 'dataset')]
+                positions=options.get('positions')
+                record = {'kind': kind, 'dimension': dimension, 'groups': groups,
+                          'positions':list(map(float,positions)) if positions is not None else list(range(1,len(groups)+1)),
+                          'showfliers': options.get('showfliers', True),
+                          'whis': (options.get('whis') if options.get('whis') is not None else matplotlib.rcParams['boxplot.whiskers'])}
+                result = original(self, *args, **kwargs)
+                if not hasattr(self, '_chat_distribution_inputs'): self._chat_distribution_inputs = []
+                self._chat_distribution_inputs.append(record)
+                return result
+            observed._chat_original = original
+            return observed
+        setattr(axes_type, method, wrap(original, kind))
 
 
 if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--worker":

@@ -46,16 +46,28 @@ NORMALIZED = SOURCE.replace('import matplotlib.pyplot as plt', 'import matplotli
 
 class ChatIntegrationTests(unittest.TestCase):
     def setUp(self):
+        from chat_runner import isolation_backend
+        import subprocess
+        try:
+            backend = isolation_backend()
+            if backend == "docker":
+                check = subprocess.run(["docker", "image", "inspect", os.environ.get("PLOT_FORGE_RENDER_IMAGE", "plot-forge-renderer:local")], capture_output=True, timeout=15)
+                if check.returncode:
+                    self.skipTest("Docker engine/image unavailable: " + check.stderr.decode("utf-8", errors="replace"))
+        except (CandidateRenderError, OSError, subprocess.TimeoutExpired) as exc:
+            self.skipTest(str(exc))
         self.temp = tempfile.TemporaryDirectory(prefix='chart-integration-')
         self.root = Path(self.temp.name).resolve()
         self.project = self.root / 'synthetic'
+        from local_execution import approve
+        approve(self.project)
         (self.project / 'charts').mkdir(parents=True)
         (self.project / 'data').mkdir()
-        (self.project / 'project.json').write_text('{"name":"Synthetic integration"}')
+        (self.project / 'project.json').write_text('{"name":"Synthetic integration"}', encoding="utf-8", newline="\n")
         self.csv = b'x,mean,sem\n0,1,.1\n1,1.3,.12\n2,1.6,.14\n3,2,.15\n'
         (self.project / 'data/values.csv').write_bytes(self.csv)
         for name in ('a', 'b'):
-            (self.project / f'charts/{name}.py').write_text(SOURCE)
+            (self.project / f'charts/{name}.py').write_text(SOURCE, encoding="utf-8", newline="\n")
         self.project_patch = patch.object(server, 'PROJECTS', self.root)
         self.project_patch.start()
         self.env_patch = patch.dict(os.environ, {'CHAT_MODEL_VISION': '0'})
@@ -117,7 +129,7 @@ class ChatIntegrationTests(unittest.TestCase):
         session = self.harness.create('synthetic', ['a'])
         first = self.turn(session, 'Make the line red; keep everything else.')
         draft1 = self.ready(first)[0]
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         private1 = self.harness.load('synthetic', session['id'])['drafts'][-1]
         self.assertEqual(Path(private1['image_path']).read_bytes()[:8], b'\x89PNG\r\n\x1a\n')
         self.assertFalse((self.project / 'previews/a.png').exists())
@@ -126,15 +138,15 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(draft2['parent_draft_id'], draft1['id'])
         self.assertIn("color='red'", self.contexts[-1]['source_files'][0]['content'])
         self.assertIn('linewidth=3', draft2['code']['charts/a.py'])
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         private2 = self.harness.load('synthetic', session['id'])['drafts'][-1]
         candidate_bytes = Path(private2['image_path']).read_bytes()
         applied = self.harness.draft_action('synthetic', session['id'], draft2['id'], 'apply')
         self.assertEqual(applied['drafts'][-1]['status'], 'applied')
-        self.assertEqual((self.project / 'charts/a.py').read_text(), draft2['code']['charts/a.py'])
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), draft2['code']['charts/a.py'])
         self.assertEqual((self.project / 'previews/a.png').read_bytes(), candidate_bytes)
         self.assertEqual((self.project / 'data/values.csv').read_bytes(), self.csv)
-        self.assertEqual((self.project / 'charts/b.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/b.py').read_text(encoding="utf-8"), SOURCE)
         self.assertEqual(len(server.read_history(self.project, 'a')), 2)
         initial_revision=server.read_history(self.project,'a')[0]['id']
         self.assertEqual((self.project/'history'/(initial_revision+'.png')).read_bytes(),
@@ -151,7 +163,7 @@ class ChatIntegrationTests(unittest.TestCase):
         (self.project / 'data/values.csv').write_bytes(self.csv + b'4,2.2,.2\n')
         with self.assertRaisesRegex(ValueError, 'revision_conflict'):
             self.harness.draft_action('synthetic', session['id'], draft['id'], 'apply')
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         self.assertFalse((self.project / 'previews/a.png').exists())
 
     def test_real_batch_candidates_apply_independently(self):
@@ -162,7 +174,7 @@ class ChatIntegrationTests(unittest.TestCase):
         for draft in drafts:
             self.harness.draft_action('synthetic', session['id'], draft['id'], 'apply')
         for name in ('a', 'b'):
-            self.assertIn("color='red'", (self.project / f'charts/{name}.py').read_text())
+            self.assertIn("color='red'", (self.project / f'charts/{name}.py').read_text(encoding="utf-8"))
             self.assertTrue((self.project / f'previews/{name}.png').is_file())
         self.assertEqual((self.project / 'data/values.csv').read_bytes(), self.csv)
 
@@ -176,7 +188,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(statuses, {'a': 'preview_ready', 'b': 'cannot_complete'})
         self.assertEqual(len(result['drafts']), 1)
         for name in ('a', 'b'):
-            self.assertEqual((self.project / f'charts/{name}.py').read_text(), SOURCE)
+            self.assertEqual((self.project / f'charts/{name}.py').read_text(encoding="utf-8"), SOURCE)
 
     def test_real_changed_plot_values_cannot_apply(self):
         original_agent = self.harness.agent
@@ -195,7 +207,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertTrue(result['drafts'][-1]['data_report']['changed'])
         with self.assertRaises(ValueError):
             self.harness.draft_action('synthetic', session['id'], result['drafts'][-1]['id'], 'apply')
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         self.assertEqual((self.project / 'data/values.csv').read_bytes(), self.csv)
 
     def test_real_layout_conflict_then_explicit_exception(self):
@@ -205,7 +217,8 @@ class ChatIntegrationTests(unittest.TestCase):
             source = next(item for item in context['source_files'] if item['writable'])['content']
             annotations = ("ax.text(.5, .6, 'Overlap A', transform=ax.transAxes)\n"
                            "ax.text(.5, .6, 'Overlap B', transform=ax.transAxes)\n")
-            result['proposed_files'][0]['content'] = source.replace("fig.savefig(", annotations + "fig.savefig(")
+            result['proposed_files'][0]['content'] = (source if 'Overlap A' in source else
+                source.replace("fig.savefig(", annotations + "fig.savefig("))
             operation = result['interpreted_request']['operations'][0]
             operation.update(property='annotation_position', target_element='two requested labels')
             if context.get('layout_exception'):
@@ -219,8 +232,9 @@ class ChatIntegrationTests(unittest.TestCase):
         draft = first['drafts'][-1]
         self.assertEqual(draft['status'], 'needs_clarification')
         self.assertEqual(draft['layout']['status'], 'conflict')
-        self.assertFalse(first['active_drafts'])
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual(first['active_drafts'][draft['chart_id']],draft['id'])
+        self.assertTrue(draft['can_continue'])
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         message = 'I understand the disclosed overlap; keep these labels exactly there.'
         second = self.harness.turn('synthetic', session['id'], {'user_message': message,
             'layout_exception': {'warning_ids': [issue['id'] for issue in draft['layout']['issues']],
@@ -228,7 +242,82 @@ class ChatIntegrationTests(unittest.TestCase):
         accepted = self.ready(second)[0]
         self.assertEqual(accepted['layout']['status'], 'accepted_exception')
         self.assertTrue(any('保留' in item for item in accepted['warnings']))
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
+
+    def test_real_layout_conflict_can_be_repaired_by_followup(self):
+        original_agent = self.harness.agent
+        def edit_labels(context):
+            result = original_agent(context)
+            source = next(item for item in context['source_files'] if item['writable'])['content']
+            if 'Overlap A' not in source:
+                annotations = ("ax.text(.2, .8, 'Overlap A', transform=ax.transAxes)\n"
+                               "ax.text(.2, .8, 'Overlap B', transform=ax.transAxes)\n")
+                source = source.replace('fig.savefig(', annotations + 'fig.savefig(')
+            if context['user_message'] == 'Move the second annotation down on this version.':
+                source = source.replace("ax.text(.2, .8, 'Overlap B'", "ax.text(.2, .6, 'Overlap B'")
+            result['proposed_files'][0]['content'] = source
+            result['interpreted_request']['operations'][0].update(
+                property='annotation_position', target_element='two requested labels')
+            return result
+        self.harness.agent = edit_labels
+        session = self.harness.create('synthetic', ['a'])
+        first = self.turn(session, 'Add two annotations here.')
+        draft = first['drafts'][-1]
+        self.assertEqual(draft['review_blocker'], 'layout_conflict')
+        with self.assertRaises(ValueError):
+            self.harness.draft_action('synthetic', session['id'], draft['id'], 'apply')
+        second = self.turn(session, 'Move the second annotation down on this version.')
+        repaired = self.ready(second)[0]
+        self.assertEqual(repaired['parent_draft_id'], draft['id'])
+        self.assertEqual(repaired['layout']['status'], 'pass')
+        self.assertFalse(self.contexts[-1]['layout_exception'])
+        self.assertTrue(self.contexts[-1]['harness_layout_feedback']['layout']['issues'])
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding='utf-8'), SOURCE)
+
+    def test_real_requested_boxplot_can_continue_and_apply(self):
+        (self.project/'data/groups.csv').write_text('group,value\nA,1\nA,2\nA,5\nB,2\nB,3\nB,7\n')
+        prefix="""import os, csv
+from pathlib import Path
+import matplotlib.pyplot as plt
+rows=list(csv.DictReader((Path(os.environ['CHART_PROJECT_DIR'])/'data/groups.csv').open()))
+groups=[[float(row['value']) for row in rows if row['group']==label] for label in ['A','B']]
+fig,ax=plt.subplots(figsize=(6,4))
+"""
+        suffix="""ax.set_xticks([1,2],['A','B'])
+ax.set_ylabel('Score')
+fig.subplots_adjust(left=.2,bottom=.2)
+fig.savefig(os.environ['CHART_OUTPUT'],dpi=120)
+plt.close(fig)
+"""
+        original=prefix+"ax.errorbar([1,2],[8/3,4],yerr=[.2,.3],fmt='o')\n"+suffix
+        candidate=prefix+"ax.boxplot(groups,showfliers=False)\n"+suffix
+        (self.project/'charts/a.py').write_text(original)
+        def convert(context):
+            result=self.agent(context)
+            result['proposed_files'][0]['content']=candidate
+            result['interpreted_request']['operations'][0].update(property='chart type',desired_change='boxplot')
+            result.pop('expected_effects')
+            result.pop('warnings')
+            result['read_data_refs']=[{'path':d['path'],'sha256':d['sha256'],
+                'columns':[{'name':'group','role':'group'},{'name':'value','role':'observation'}]}
+                for d in context['plot_data'] if d['path']=='data/groups.csv']
+            return result
+        self.harness.agent=convert
+        session=self.harness.create('synthetic',['a'])
+        result=self.turn(session,'将这个图改为箱型图')
+        draft=self.ready(result)[0]
+        self.assertEqual(draft['chart_transform']['status'],'pass')
+        self.assertTrue(draft['can_continue'])
+        self.assertTrue(draft['data_report']['changed'] or draft['data_report']['removed'])
+        self.assertTrue(any('离群点' in w for w in draft['warnings']))
+        calls=len(self.contexts)
+        repeated=self.turn(session,'将这个图改为箱线图')
+        self.assertEqual(repeated['turns'][-1]['results'][0]['status'],'already_compliant')
+        self.assertEqual(repeated['turns'][-1]['results'][0]['model_attempts'],0)
+        self.assertEqual(len(self.contexts),calls)
+        applied=self.harness.draft_action('synthetic',session['id'],draft['id'],'apply')
+        self.assertEqual(applied['drafts'][-1]['status'],'applied')
+        self.assertEqual((self.project/'charts/a.py').read_text(),candidate)
 
     def test_real_normalizer_pipeline_preview_uses_mock_provider_json(self):
         session = self.harness.create('synthetic', ['a'])
@@ -247,7 +336,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn('Never apply automatically', captured[0]['messages'][0]['content'])
         self.assertIn('prepared plotting data', captured[0]['messages'][0]['content'])
         self.assertEqual(draft['code']['charts/a.py'], NORMALIZED)
-        self.assertEqual((self.project / 'charts/a.py').read_text(), SOURCE)
+        self.assertEqual((self.project / 'charts/a.py').read_text(encoding="utf-8"), SOURCE)
         self.assertFalse((self.project / 'previews/a.png').exists())
         private = self.harness.load('synthetic', session['id'])['drafts'][-1]
         from PIL import Image

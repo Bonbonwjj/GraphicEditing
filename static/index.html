@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=13"></head>
+<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=23"></head>
 <body>
-<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
+<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊 · v0.1.2</small></div><div class="headerRight"><span id="teamSyncStatus" role="status">等待同步团队版本</span><button id="collaborationButton" type="button">团队协作</button><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
-  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="uploadPackage" type="button">⬆ 上传项目</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,text/csv" hidden></aside>
+  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="uploadPackage" type="button">⬆ 上传 CSV / Python 项目</button><button id="importBundleButton" type="button">⬆ 导入 Border / Group Bundle</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></aside>
   <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHARTS</div><h1 id="chartTitle">请选择一个项目</h1><p id="description">从左侧项目目录打开项目，预览其中的全部图表。</p></div><div class="actions"><button id="refresh" disabled>重新渲染当前图</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">CSV 数据</button></div>
     <div id="figurePane" class="content"><div class="galleryToolbar"><div><strong id="galleryTitle">项目图集</strong><span id="galleryCount" class="dim">0 张图</span></div><div class="galleryActions"><label class="selectAllLabel"><input id="selectAllCharts" type="checkbox"> 全选</label><span id="selectedCount" class="dim">已选 0 张</span><button id="batchNormalize" type="button" class="primary" disabled>批量标准化</button><button id="batchEdit" type="button" class="primary" disabled>批量对话修改</button></div></div><div id="gallery" class="gallery"><div class="galleryEmpty">选择左侧的项目，查看全部图表。</div></div><p class="hint" id="figureHint">勾选一张或多张图后可标准化；点击图卡下方按钮可查看代码与 CSV 数据。</p></div>
@@ -29,8 +29,8 @@
     <label>项目 ID<input id="uploadProjectId" placeholder="例如：behavior_experiment"></label>
   </div>
   <div class="folderPickers">
-    <label class="folderPicker"><strong>代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
-    <label class="folderPicker"><strong>数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
+    <label class="folderPicker"><strong>code · 绘图代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
+    <label class="folderPicker"><strong>data · 数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
     <label class="folderPicker"><strong>原图文件夹（可选）</strong><span id="imageFolderStatus">尚未选择</span><input type="file" id="imageFolder" accept=".png,.jpg,.jpeg,.svg" webkitdirectory directory multiple></label>
   </div>
   <p class="hint">同名原图会直接用于图集预览；其他图会在后台生成并保存预览。代码、数据和图片按项目归档。</p>
@@ -41,18 +41,58 @@
 <dialog id="historyDialog"><div class="dialogHead"><strong id="historyTitle">图片历史</strong><button id="closeHistory" type="button">关闭</button></div><p class="hint">保存所有图片版本；代码仅保留最早版本、上一轮版本和当前文件。</p><div id="history"></div><button id="finalizeHistory" type="button" class="dangerAction">修改完成，清理旧历史</button></dialog>
 <dialog id="modelConfigDialog" aria-labelledby="modelConfigTitle">
   <div class="dialogHead"><strong id="modelConfigTitle">模型 API 配置</strong><button id="closeModelConfig" type="button">关闭</button></div>
-  <p class="modelConfigHelp">规范化 Agent 和 Chat 改图 Agent 使用同一份配置。密钥保存在这台 Mac 的钥匙串中，页面只显示配置状态。</p>
-  <button id="useCdscPreset" type="button" class="modelPreset">使用本机内网模型预设</button>
+  <p class="modelConfigHelp">规范化 Agent 和 Chat 改图 Agent 使用同一份配置。密钥优先加密保存在本机；系统存储不可用时仅在当前会话生效，重启后需重新输入。页面不会回显密钥。</p>
+  <button id="useCdscPreset" type="button" class="modelPreset">使用默认模型与地址</button>
   <form id="modelConfigForm">
-    <label for="modelApiUrl">API 地址<input id="modelApiUrl" type="url" required autocomplete="url" placeholder="https://…/v1/chat/completions"></label>
-    <label for="modelName">模型名称<input id="modelName" required autocomplete="off" placeholder="例如：deepseek-v4.1-flash"></label>
+    <label for="modelApiUrl">完整 Chat Completions 地址<input id="modelApiUrl" type="url" required autocomplete="url" placeholder="https://…/v1/chat/completions"></label>
+    <p id="modelTransportNotice" class="modelConfigHelp" hidden>正在使用 HTTP：API Key 和请求内容会通过此连接传输，请确认这是你信任的本机或内网服务。</p>
+    <label for="modelName">模型名称<input id="modelName" required autocomplete="off" placeholder="填写服务端提供的模型名称"></label>
     <label for="modelMaxOutputTokens">Chat 改图最大输出 token<input id="modelMaxOutputTokens" type="number" min="1024" max="65536" step="1" required value="16384"></label>
     <label for="modelApiKey">API Key<input id="modelApiKey" type="password" autocomplete="new-password" placeholder="首次配置请输入；留空则保留现有密钥"></label>
     <label class="modelVision"><input id="modelVision" type="checkbox"> 改图时将当前图和参照图传给支持视觉的模型</label>
     <p id="modelConfigState" role="status" aria-live="polite"></p>
     <div class="modelConfigActions"><button id="saveModelConfig" class="primary" type="submit">保存配置</button><button id="testModelConfig" type="button">测试已保存配置</button><button id="clearModelConfig" type="button">清除配置</button></div>
   </form>
-  <p class="modelConfigHelp">“Chat 改图最大输出 token”请按模型实际支持值填写。选用 deepseek-v4.1-flash 时，平台最多请求 16,384 token，并控制输入预算；服务端仍可能设置更低上限。CDSC 预设使用其文档指定的内网 HTTP 地址，需已开通机房 VPN 或二期有线直连。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
+  <p class="modelConfigHelp">本机和内网 IP 的 HTTP 地址可以直接保存，无需设置环境变量。请填写服务端给出的完整接口路径和模型名称；输出 token 上限及图片输入按模型实际能力设置。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
 </dialog>
 
-<script src="/static/app.js?v=16"></script></body></html>
+
+<dialog id="collaborationDialog" aria-labelledby="collaborationTitle">
+  <div class="dialogHead"><strong id="collaborationTitle">团队协作 · GitHub 共享项目</strong><button id="closeCollaboration" type="button">关闭</button></div>
+  <p class="hint">团队同步位置已由平台统一指定，无需个人选择仓库或分支。代码、数据、图片和正式历史在此共享；模型密钥和未应用的候选留在本机。</p>
+  <p class="hint">共享项目按 data/ 和 code/ 分类保存。固定同步位置：<span id="collabTarget"></span></p>
+  <label>协作者姓名<input id="collab-name" placeholder="你的姓名或团队用户名"></label>
+  <label>Git 提交邮箱<input id="collab-email" type="email" placeholder="可使用 GitHub 隐私邮箱"></label>
+  <p class="hint">首次使用只需保存协作者身份，用于记录修改人。使用电脑上已有的 GitHub Git 登录，无需在页面输入 GitHub 密钥。</p>
+  <p class="hint">打开或刷新页面时自动获取团队最新版本。离线或冲突时保留本机版本，并在顶部提示；处理后刷新重试。</p>
+  <div class="modelConfigActions"><button id="connectCollaboration" type="button">保存协作者身份</button></div>
+  <label>本次修改说明<input id="publishMessage" placeholder="例如：上传实验数据，调整轨迹图配色"></label>
+  <button id="publishCollaboration" class="primary" type="button">将全部项目修改合并到团队版本</button>
+  <p class="hint">发布前自动检查远端；双方修改同一文件时停止并列出冲突，不会强制覆盖。生成的候选需先“应用此版”再发布。</p>
+  <p id="collabStatus" role="status" aria-live="polite"></p>
+</dialog>
+
+
+<dialog id="bundleImportDialog"><div class="dialogHead"><strong>Border / Group Plot Bundle</strong><button id="closeBundleImport">关闭</button></div>
+<p class="hint">CSV / TSV / JSON 继续使用原有上传入口。Bundle 数据默认保存在项目中，点击团队协作“发布”后与代码一起共享到 GitHub。</p>
+<label>来源方式<select id="bundleSourceMode"><option value="upload">浏览器上传文件夹（最多 500 MB）</option><option value="server_path">从本机目录复制（适合较大 Bundle）</option></select></label>
+<label>项目 ID<input id="bundleProjectId"></label><label>项目名称<input id="bundleProjectName"></label>
+<label>Bundle 文件夹<input type="file" id="bundleFolder" webkitdirectory directory multiple accept=".json,.gz"></label>
+<label>本机 Bundle 目录（从目录复制时填写）<input id="bundleServerPath"></label>
+<label>behavior_analysis 代码所在目录<input id="bundleRuntimeRoot" placeholder="该目录内应有 behavior_analysis 文件夹"></label>
+<label>允许读取的本机根目录（可选）<input id="bundleAllowedRoot" placeholder="留空时只允许读取本次填写的 Bundle 目录"></label>
+<label><input type="checkbox" id="bundleTrusted"> 我确认此 Bundle 来自可信来源（包含 pickle 数据）</label>
+<button id="startBundleImport" class="primary">导入项目（尚不发布）</button><p id="bundleImportStatus" role="status"></p>
+</dialog>
+<dialog id="sharedModuleDialog"><div class="dialogHead"><strong id="sharedModuleTitle">共享绘图模块</strong><button id="closeSharedModule">关闭</button></div>
+<p class="hint">共用一处修改可验证代表图；检测到不同位置的修改则验证全部项目图表。验证成功仅生成候选，检查后才应用。</p>
+<div id="validationControls"><label>代表图<select id="validationChart"></select></label><label><input type="checkbox" id="moduleForceAll"> 本次强制验证全部图</label></div>
+<textarea id="sharedModuleEditor" spellcheck="false" aria-label="共享模块代码"></textarea>
+<label>修改要求<input id="sharedModulePrompt" placeholder="可在当前编辑器代码基础上继续修改"></label>
+<button id="proposeSharedModule">生成修改建议</button><button id="previewSharedModule" class="primary">验证并生成候选</button>
+<p id="sharedModuleStatus" role="status"></p><div id="sharedModulePreviews"></div>
+<label><input type="checkbox" id="moduleReviewed"> 我已检查本轮候选图片和影响范围</label><label id="moduleDataReviewWrap" hidden><input type="checkbox" id="moduleDataReviewed"> 我已核对下方逐图报告，并接受本轮数据、图元或显示映射变化</label><div id="moduleCheckReports"></div><button id="applySharedModule" disabled>应用此候选</button>
+<details><summary>恢复历史版本到编辑器（仍需验证和确认）</summary><div id="moduleHistory"></div></details>
+</dialog>
+
+<script src="/static/collaboration.js?v=4"></script><script src="/static/app.js?v=26"></script><script src="/static/ly_features.js?v=2"></script></body></html>

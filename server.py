@@ -18,15 +18,24 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote, parse_qs
 from agent_importer import import_package
 from generic_importer import import_generic
+from bundle_importer import PlotBundleAdapter, import_plot_bundle
+from data_sources import resolve_allowed_path
+from git_support import git_status, record_change
+from shared_modules import MAX_SHARED_MODULE_SOURCE, apply_module, discover_modules, module_revision_source, read_module_history, resolve_module
 import llm_client
 from llm_workflows import edit_chart
-from upload_importer import store_upload, store_multipart_upload
+from upload_importer import store_upload, store_multipart_upload, store_bundle_multipart
 from agent_http import post_json
 from chart_naming import RenderedImage
 from chat_harness import ChatHarness, lock as workflow_lock
 from model_config import public as public_model_config, save as save_model_config, clear as clear_model_config, test_connection as test_model_connection, effective as effective_model_config
 
+from collaboration_sync import CollaborationSync, SyncConflict
+from local_execution import require_trust, trusted
+from chat_runner import isolation_backend
+
 ROOT = Path(__file__).resolve().parent
+SYNC = CollaborationSync(ROOT)
 PROJECTS = ROOT / "projects"
 STATIC = ROOT / "static"
 STYLE = ROOT / "skills" / "plot-style" / "SKILL.md"
@@ -39,6 +48,31 @@ PREVIEW_LOCKS_GUARD = threading.Lock()
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
 MAX_BODY = 12_000_000
 MAX_UPLOAD_BODY = 550_000_000
+
+
+def shared_roots_from_env(environ=None):
+    environ = os.environ if environ is None else environ
+    raw = str(environ.get("CHART_STUDIO_SHARED_ROOTS", "")).strip()
+    if not raw:
+        return []
+    roots = []
+    for item in raw.split(os.pathsep):
+        if item.strip():
+            roots.append(Path(item.strip()).resolve(strict=True))
+    return roots
+
+
+def resolve_server_path(path, environ=None):
+    return resolve_allowed_path(Path(path), shared_roots_from_env(environ))
+
+
+def project_data_sources(p):
+    source_file = Path(p) / "data_sources.json"
+    if not source_file.is_file():
+        return []
+    value = json.loads(source_file.read_text(encoding="utf-8"))
+    return value.get("sources", []) if isinstance(value, dict) else []
+
 
 
 def source_revision(source):
@@ -64,6 +98,12 @@ def chart_path(project, chart):
     return p, c
 
 
+def forget_module_previews(p):
+    # Signature checks prevent stale caches; eagerly invalidate metadata for the gallery.
+    for file in (p / "chart_metadata").glob("*.json"):
+        file.unlink(missing_ok=True)
+
+
 def read_history(p, chart):
     f = p / "history" / (chart + ".json")
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
@@ -82,7 +122,7 @@ def history_view(p, chart):
 def write_history(p, chart, entries):
     (p / "history").mkdir(exist_ok=True)
     (p / "history" / (chart + ".json")).write_text(
-        json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def skill_catalog():
@@ -114,13 +154,16 @@ def skill_files(skill_id):
 
 
 def preview_signature(p, source):
-    files = [*p.glob('*.py'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
+    files = [*p.glob('*.py'), *p.glob('data_sources.json'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
     dependencies=[]
     for f in sorted(set(files)):
         if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json') and '__pycache__' not in f.parts:
             if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):raise ValueError('External project dependency')
             dependencies.append((f.relative_to(p).as_posix(),hashlib.sha256(f.read_bytes()).hexdigest()))
-    for f in (ROOT/'studio_style.py',NORMALIZATION_PROFILE):
+    from bundle_bindings import signature as bundle_signature
+    bundle_revision=bundle_signature(p)
+    if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
+    for f in (ROOT/'studio_style.py',ROOT/'chart_overrides.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
     return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
 
@@ -145,7 +188,7 @@ def save_preview(p, chart, source, data, suffix=".png"):
         temp = folder / (chart + ".tmp")
         temp.write_bytes(data)
         temp.replace(target)
-        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix}), encoding="utf-8")
+        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix}), encoding="utf-8", newline="\n")
         if getattr(data, "naming", None) is not None:
             save_naming(p, chart, source, data.naming)
         return data, IMAGE_TYPES[suffix]
@@ -186,7 +229,7 @@ def save_naming(p, chart, source, naming):
     folder.mkdir(exist_ok=True)
     target = folder / (chart + ".json")
     temp = folder / (chart + "." + uuid.uuid4().hex + ".tmp")
-    temp.write_text(json.dumps({"signature": preview_signature(p, source), **naming}, ensure_ascii=False), encoding="utf-8")
+    temp.write_text(json.dumps({"signature": preview_signature(p, source), **naming}, ensure_ascii=False), encoding="utf-8", newline="\n")
     temp.replace(target)
 
 
@@ -203,6 +246,10 @@ def chart_naming(p, chart):
 
 def warm_project_previews(project_id):
     p = project_path(project_id)
+    if json.loads((p / "project.json").read_text(encoding="utf-8")).get("data_source_type") == "plot_bundle":
+        return  # Large Bundles are rendered on demand, not all at startup.
+    if isolation_backend() == "local-python" and not trusted(p):
+        return
     meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
     excluded = set(meta.get("non_chart_scripts", []))
     for f in sorted((p / "charts").glob("*.py")):
@@ -241,29 +288,34 @@ def copy_uploaded_images(upload, p):
     return count
 
 
-def render(p, source, suffix=".png"):
+def render(p, source, suffix=".png", library_path=None):
+    if isolation_backend() == "local-python":
+        require_trust(p)
     with tempfile.TemporaryDirectory(prefix="chart-studio-") as d:
         temp = Path(d)
         script = temp / "chart.py"
         output = temp / ("figure" + suffix)
-        script.write_text(source, encoding="utf-8")
+        script.write_text(source, encoding="utf-8", newline="\n")
         metadata = temp / "naming.json"
         runner = temp / "runner.py"
-        runner.write_text("from chart_naming import install_capture\nimport runpy\n"
+        runner.write_text("from chart_naming import install_capture\nfrom render_paths import install_project_library\nimport runpy\n"
+                          + f"install_project_library({str(p)!r}, {str(library_path or p / 'lib')!r})\n"
                           + f"install_capture({str(output)!r}, {str(metadata)!r})\n"
-                          + f"runpy.run_path({str(script)!r}, run_name='__main__')\n", encoding="utf-8")
+                          + f"runpy.run_path({str(script)!r}, run_name='__main__')\n", encoding="utf-8", newline="\n")
         env = os.environ.copy()
         env["CHART_PROJECT_DIR"] = str(p)
         env["CHART_OUTPUT"] = str(output)
-        env["PYTHONPATH"] = str(ROOT)
+        env["PYTHONPATH"] = os.pathsep.join(([str(library_path)] if library_path else []) + [str(p / "lib"), str(ROOT)])
+        env["PYTHONIOENCODING"] = "utf-8"
         mpl_cache = ROOT / ".mplconfig"
         mpl_cache.mkdir(exist_ok=True)
         env["MPLCONFIGDIR"] = str(mpl_cache)
+        timeout = int(os.environ.get("CHART_RENDER_TIMEOUT", "120"))
         try:
             result = subprocess.run([sys.executable, str(runner)], cwd=p, env=env,
-                                    capture_output=True, text=True, timeout=20)
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise ValueError("Render timed out after 20 seconds")
+            raise ValueError(f"Render timed out after {timeout} seconds")
         if result.returncode or not output.is_file():
             raise ValueError("Render failed: " + (result.stderr[-3500:] or "No output file"))
         image = RenderedImage(output.read_bytes())
@@ -272,7 +324,10 @@ def render(p, source, suffix=".png"):
 
 
 def git(*args):
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    try:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return subprocess.CompletedProcess(["git", *args], 127, "", str(error))
 
 
 def list_projects():
@@ -284,25 +339,134 @@ def list_projects():
             charts = [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded]
             result.append({"id": p.name, **meta, "chart_metadata": {c: chart_naming(p, c) for c in charts},
                            "charts": [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded],
-                           "data": [f.name for f in sorted((p / "data").glob("*.csv"))]})
+                           "modules": discover_modules(p), "data_sources": project_data_sources(p),
+                           "data": [f.relative_to(p / "data").as_posix() for f in sorted((p / "data").rglob("*")) if f.is_file() and f.suffix.lower() in {".csv", ".tsv", ".json"}]})
     return result
 
 
-def csv_preview(p):
+def data_preview(p):
     out = []
-    for f in sorted((p / "data").glob("*.csv")):
-        with f.open(newline="", encoding="utf-8-sig") as stream:
-            reader = csv.reader(stream)
-            head = next(reader, [])
-            rows = [r for _, r in zip(range(3), reader)]
-        out.append({"file": f.name, "columns": head, "sample": rows})
+    data_root = Path(p) / "data"
+    if not data_root.is_dir():
+        return out
+    for f in sorted(data_root.rglob("*")):
+        if not f.is_file() or f.suffix.lower() not in (".csv", ".tsv", ".json"):
+            continue
+        name = f.relative_to(data_root).as_posix()
+        if f.suffix.lower() in (".csv", ".tsv"):
+            with f.open(newline="", encoding="utf-8-sig") as stream:
+                reader = csv.reader(stream, delimiter="\t" if f.suffix.lower() == ".tsv" else ",")
+                head = next(reader, [])
+                rows = [r for _, r in zip(range(3), reader)]
+        elif f.stat().st_size > 5_000_000:
+            head, rows = [], []
+        else:
+            value = json.loads(f.read_text(encoding="utf-8-sig"))
+            records = value if isinstance(value, list) else [value]
+            records = [record for record in records[:3] if isinstance(record, dict)]
+            head = list(records[0]) if records else []
+            rows = [[record.get(column) for column in head] for record in records]
+        out.append({"file": name, "columns": head, "sample": rows, "format": f.suffix.lower()[1:]})
     return out
+
+
+csv_preview = data_preview
+
+
+def shared_module_detail(project, module_id):
+    project = Path(project)
+    module = resolve_module(project, module_id)
+    descriptor = next(
+        item for item in discover_modules(project) if item["id"] == module_id
+    )
+    return {
+        "code": module.read_text(encoding="utf-8"),
+        "history": read_module_history(project, module_id),
+        "data": data_preview(project),
+        "data_sources": project_data_sources(project),
+        "style": STYLE.read_text(encoding="utf-8"),
+        "module": descriptor,
+        "source_revision": source_revision(module.read_text(encoding="utf-8")),
+    }
+
+
+def save_shared_module(project, module_id, source, chart, note, validation_scope="representative", base_revision=None):
+    p, chart_file = chart_path(project, chart)
+    if validation_scope not in {"representative", "all"}:
+        raise ValueError("请选择代表图验证或全项目图表验证")
+    module = resolve_module(p, module_id)
+    if base_revision is not None and source_revision(module.read_text(encoding="utf-8")) != base_revision:
+        raise ValueError("共享模块已变化，请重新打开后再修改")
+
+    def render_candidate(selected_chart, candidate_library):
+        if selected_chart != chart:
+            raise ValueError("代表图已发生变化")
+        sources = [chart_file] if validation_scope == "representative" else sorted((p / "charts").glob("*.py"))
+        if not sources: raise ValueError("项目没有可用于验证的图表")
+        preview = None
+        for entry in sources:
+            preview = render(p, entry.read_text(encoding="utf-8"), library_path=candidate_library)
+        return preview
+
+    return apply_module(
+        p, module_id, source, chart, render_candidate, str(note)[:300]
+    )
+
+
+def validate_tabular_content(name, content):
+    suffix = Path(name).suffix.lower()
+    if suffix not in (".csv", ".tsv", ".json"):
+        raise ValueError("仅支持 CSV、TSV 或 JSON")
+    if suffix == ".json":
+        value = json.loads(content)
+        records = value if isinstance(value, list) else [value]
+        if not records or not all(isinstance(record, dict) for record in records):
+            raise ValueError("JSON 必须是对象或对象数组")
+        return len(records)
+    rows = list(csv.reader(content.splitlines(), delimiter="\t" if suffix == ".tsv" else ","))
+    if len(rows) < 2 or not rows[0]:
+        raise ValueError("表格需要标题行和至少一行数据")
+    return len(rows) - 1
+
+
 
 
 CHAT = ChatHarness(sys.modules[__name__])
 
-def llm_proposal(prompt, source, data, validator=None):
-    return edit_chart(prompt, source, data, validator=validator)
+def llm_instruction(resource_type="chart"):
+    if resource_type == "module":
+        opening = (
+            "You edit one project-local shared visualization module used by one or more "
+            "Python charts. Return only the complete Python source, without markdown fences. "
+            "Change visualization behavior only; do not add data loading, processing, statistics, "
+            "network, shell, or secret access. The user will review and validate the change with "
+            "one representative chart before applying.\n\n"
+        )
+    else:
+        opening = (
+            "You edit one Python Matplotlib chart script. Return only the complete Python source, "
+            "without markdown fences. Follow the plot-style skill. Use only the listed data-source fields, "
+            "preserve CHART_PROJECT_DIR and CHART_OUTPUT, and never include network, shell, or secret access. "
+            "The user will review before applying.\n\n"
+        )
+    return opening + STYLE.read_text(encoding="utf-8")
+
+
+def llm_proposal(prompt, source, data, validator=None, resource_type="chart", module_path=None, chart=None):
+    if resource_type != "module":
+        return edit_chart(prompt, source, data, validator=validator)
+    message = llm_client.chat([
+        {"role": "system", "content": llm_instruction("module")},
+        {"role": "user", "content": json.dumps({"request": prompt, "current_code": source,
+            "module_path": module_path, "validation_chart": chart}, ensure_ascii=False)}])
+    code = message.strip()
+    if code.startswith("```"):
+        code = code.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    ast.parse(code)
+    if len(code) > MAX_SHARED_MODULE_SOURCE:
+        raise ValueError("模型返回的共享模块过大")
+    return code + "\n"
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -329,15 +493,45 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def route(self):
+        port = int(os.environ.get('CHART_STUDIO_PORT', '8765'))
+        if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
+            raise ValueError('请通过本机 localhost 或 127.0.0.1 打开工作台')
+        origin = self.headers.get('Origin')
+        if self.command != 'GET' and origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+            raise ValueError('修改请求必须来自当前本地工作台')
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         parts = [x for x in path.split("/") if x]
+        from ly_api import handle_data_sources
+        if path.startswith("/api/data-sources/"):
+            return handle_data_sources(self, path)
+        if path == "/api/health" and self.command == "GET":
+            return self.json_response({"app": "plot-forge", "root": str(ROOT), "backend": isolation_backend(),
+                "pid": os.getpid(), "desktop_release": os.environ.get('PLOT_FORGE_DESKTOP_RELEASE')})
+        if path == "/api/collaboration":
+            if self.command == "GET":
+                return self.json_response({**SYNC.status(), "backend": isolation_backend(),
+                    "trusted_projects": [p.name for p in PROJECTS.iterdir() if p.is_dir() and trusted(p)]})
+            if self.command == "POST":
+                self.check_local_json()
+                return self.json_response(SYNC.configure(self.body_json()))
+        if path in ("/api/collaboration/pull", "/api/collaboration/publish") and self.command == "POST":
+            self.check_local_json()
+            body = self.body_json()
+            try:
+                return self.json_response(SYNC.sync(path.endswith("/publish"), body.get("message", "")))
+            except SyncConflict as exc:
+                return self.json_response({"error": str(exc), "conflicts": exc.paths}, 409)
         if self.command == "GET" and path in ("/", "/index.html"):
             return self.bytes_response((STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
         if self.command == "GET" and path in ("/legacy", "/legacy/"):
             return self.bytes_response((STATIC / "legacy" / "index.html").read_bytes(), "text/html; charset=utf-8")
         if self.command == "GET" and path == "/static/app.css":
             return self.bytes_response((STATIC / "app.css").read_bytes(), "text/css; charset=utf-8")
+        if self.command == "GET" and path == "/static/ly_features.js":
+            return self.bytes_response((STATIC / "ly_features.js").read_bytes(), "text/javascript; charset=utf-8")
+        if self.command == "GET" and path == "/static/collaboration.js":
+            return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
@@ -395,7 +589,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not image.resolve().is_relative_to(CHAT.path(project, sid).parent.resolve()):
                         raise ValueError("Invalid draft image path")
                     return self.bytes_response(image.read_bytes(), "image/png")
-                if self.command == "POST" and action in ("apply", "activate", "discard"):
+                if self.command == "POST" and action in ("apply", "activate", "discard", "recheck"):
                     self.body_json()
                     return self.json_response(CHAT.draft_action(project, sid, did, action))
             return self.json_response({"error": "Chat route not found"}, 404)
@@ -417,9 +611,9 @@ class Handler(BaseHTTPRequestHandler):
                 if folder.exists():
                     raise ValueError("Skill ID already exists")
                 (folder / "assets").mkdir(parents=True)
-                (folder / "SKILL.md").write_text(content, encoding="utf-8")
-                (folder / "assets" / "style-profile.v1.json").write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
-                (folder / "meta.json").write_text(json.dumps({"name": name}, ensure_ascii=False), encoding="utf-8")
+                (folder / "SKILL.md").write_text(content, encoding="utf-8", newline="\n")
+                (folder / "assets" / "style-profile.v1.json").write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+                (folder / "meta.json").write_text(json.dumps({"name": name}, ensure_ascii=False), encoding="utf-8", newline="\n")
                 return self.json_response({"id": ident, "name": name})
         if len(parts) == 3 and parts[:2] == ["api", "normalization-skills"]:
             skill_id = parts[2]
@@ -430,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
                 skill_files(skill_id)
                 if skill_id == "chart-normalization":
                     SKILL_CATALOG.mkdir(exist_ok=True)
-                    (SKILL_CATALOG / ".hidden.json").write_text('["chart-normalization"]', encoding="utf-8")
+                    (SKILL_CATALOG / ".hidden.json").write_text('["chart-normalization"]', encoding="utf-8", newline="\n")
                 else:
                     shutil.rmtree(SKILL_CATALOG / skill_id)
                 return self.json_response({"deleted": skill_id})
@@ -459,19 +653,14 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 if "Project already exists" in str(error): raise
                 result = import_generic(ROOT, upload, project_id, name)
+            metadata_file = PROJECTS / project_id / "project.json"
+            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+            metadata.setdefault("created_by", SYNC.config().get("name", "本地协作者"))
+            metadata["updated_by"] = SYNC.config().get("name", "本地协作者")
+            metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+            metadata_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
             result["images"] = copy_uploaded_images(upload, PROJECTS / project_id)
-            git("add", str((PROJECTS / project_id).relative_to(ROOT)))
-            commit = git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Upload project " + project_id)
-            if commit.returncode != 0:
-                raise ValueError("项目已转换，但 Git 提交失败：" + commit.stderr[-500:])
-            # Keep uploads local while this integration branch is under review.
-            # A remote upload requires an explicit server setting after review.
             result["github_synced"] = False
-            if os.environ.get("PLOT_FORGE_PUSH_UPLOADS") == "1":
-                pushed = git("push", "origin", "main")
-                result["github_synced"] = pushed.returncode == 0
-                if pushed.returncode != 0:
-                    result["github_error"] = pushed.stderr[-700:]
             PREVIEW_POOL.submit(warm_project_previews, project_id)
             return self.json_response(result)
         if self.command == "POST" and path == "/api/agent/import":
@@ -492,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
             for directory in (p / "data", p / "charts", p / "history"):
                 directory.mkdir(parents=True, exist_ok=True)
             (p / "project.json").write_text(json.dumps({"name": str(body.get("name", ident))[:80],
-                "description": str(body.get("description", ""))[:300]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                "description": str(body.get("description", ""))[:300], "created_by": SYNC.config().get("name", "本地协作者")}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
             git("add", str(p.relative_to(ROOT)))
             git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create project {ident}")
             return self.json_response({"project": ident})
@@ -501,19 +690,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "POST" and len(parts) == 4 and parts[3] == "data":
                 body = self.body_json()
                 name = str(body.get("name", ""))
-                if not name.endswith(".csv") or not name[:-4].replace("_", "").replace("-", "").isalnum():
-                    raise ValueError("CSV filename must contain only letters, numbers, _ or -")
-                content = body.get("content", "")
+                if Path(name).name != name or Path(name).suffix.lower() not in {'.csv', '.tsv', '.json'} or not Path(name).stem.replace('_','').replace('-','').isalnum():
+                    raise ValueError('表格文件名只能包含字母、数字、_ 或 -')
+                content = body.get('content', '')
                 if not isinstance(content, str) or len(content) > 250_000:
-                    raise ValueError("CSV exceeds 250 KB; place larger files directly in project/data")
-                rows = list(csv.reader(content.splitlines()))
-                if len(rows) < 2 or not rows[0]:
-                    raise ValueError("CSV needs a header and at least one data row")
+                    raise ValueError('数据文件超过 250 KB，请使用数据源导入')
+                row_count = validate_tabular_content(name, content)
                 f = p / "data" / name
-                f.write_text(content, encoding="utf-8")
+                f.write_text(content, encoding="utf-8", newline="\n")
                 git("add", str(f.relative_to(ROOT)))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Import data {parts[2]}/{name}")
-                return self.json_response({"file": name, "rows": len(rows)-1})
+                return self.json_response({"file": name, "rows": row_count})
             if self.command == "POST" and len(parts) == 4 and parts[3] == "charts":
                 body = self.body_json()
                 name = str(body.get("name", ""))
@@ -528,13 +715,13 @@ class Handler(BaseHTTPRequestHandler):
                     "fig, ax = plt.subplots(figsize=(4.5, 3.2))\n"
                     "ax.set(xlabel='X', ylabel='Y', title='New chart')\n"
                     "finish_figure(fig, os.environ['CHART_OUTPUT'])\n")
-                f.write_text(source, encoding="utf-8")
+                f.write_text(source, encoding="utf-8", newline="\n")
                 git("add", str(f.relative_to(ROOT)))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create chart {parts[2]}/{name}")
                 PREVIEW_POOL.submit(warm_project_previews, parts[2])
                 return self.json_response({"chart": name})
             if self.command == "GET" and len(parts) == 4 and parts[3] == "data":
-                return self.json_response({"data": csv_preview(p)})
+                return self.json_response({"data": data_preview(p), "data_sources": project_data_sources(p)})
             if self.command == "GET" and len(parts) == 8 and parts[3] == "charts" and parts[5] == "history" and parts[7] == "image":
                 p, _ = chart_path(parts[2], parts[4])
                 entry = next((x for x in read_history(p, parts[4]) if x["id"] == parts[6]), None)
@@ -554,6 +741,9 @@ class Handler(BaseHTTPRequestHandler):
                         old_code.unlink(missing_ok=True)
                     return self.bytes_response((p / "history" / (entry["id"] + suffix)).read_bytes(), IMAGE_TYPES[suffix])
                 raise ValueError("This older version has no saved image")
+            if len(parts) >= 6 and parts[3] == "modules":
+                from ly_api import handle_modules
+                return handle_modules(self, parts, parsed)
             if len(parts) == 6 and parts[3] == "charts":
                 project, chart, action = parts[2], parts[4], parts[5]
                 p, f = chart_path(project, chart)
@@ -561,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
                     current_code = f.read_text(encoding="utf-8")
                     return self.json_response({"code": current_code, "revision": source_revision(current_code),
                                                "history": history_view(p, chart),
-                                               "data": csv_preview(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
+                                               "data": data_preview(p), "data_sources": project_data_sources(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
                 if self.command == "GET" and action in ("preview", "svg", "pdf"):
                     suffix = {"preview": ".png", "svg": ".svg", "pdf": ".pdf"}[action]
                     source = f.read_text(encoding="utf-8")
@@ -618,7 +808,7 @@ class Handler(BaseHTTPRequestHandler):
                     history = read_history(p, chart)
                     if not history:
                         base_id = uuid.uuid4().hex[:12]
-                        (p / "history" / (base_id + ".py")).write_text(old_code, encoding="utf-8")
+                        (p / "history" / (base_id + ".py")).write_text(old_code, encoding="utf-8", newline="\n")
                         try:
                             snapshot_image(p, chart, base_id, old_code)
                         except ValueError:
@@ -626,13 +816,13 @@ class Handler(BaseHTTPRequestHandler):
                         history.append({"id": base_id, "time": stamp, "note": "初始版本"})
                     else:
                         prior_id = history[-1]["id"]
-                        (p / "history" / (prior_id + ".py")).write_text(old_code, encoding="utf-8")
+                        (p / "history" / (prior_id + ".py")).write_text(old_code, encoding="utf-8", newline="\n")
                         if not any((p / "history" / (prior_id + ext)).exists() for ext in IMAGE_TYPES):
                             try:
                                 snapshot_image(p, chart, prior_id, old_code)
                             except ValueError:
                                 pass
-                    f.write_text(new_code, encoding="utf-8")
+                    f.write_text(new_code, encoding="utf-8", newline="\n")
                     save_preview(p, chart, new_code, rendered)
                     snapshot_image(p, chart, revision, new_code, rendered)
                     history.append({"id": revision, "time": stamp, "note": note})
@@ -650,6 +840,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response({"message": "已保存并记录版本", "revision": revision,
                                                "git": commit.returncode == 0})
         self.json_response({"error": "Route not found"}, 404)
+
+    def check_local_json(self):
+        port = int(os.environ.get('CHART_STUDIO_PORT', '8765'))
+        if self.headers.get('Origin') not in (None, f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+            raise ValueError('请求必须来自当前本地工作台')
+        if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+            raise ValueError('请求需要 application/json')
 
     def body_multipart(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -674,6 +871,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": str(e)}, 400)
 
     def do_POST(self):
+        with SYNC.lock:
+            self.post_locked()
+
+    def post_locked(self):
         try:
             parts=[p for p in unquote(urlparse(self.path).path).split('/') if p]
             if len(parts)>=4 and parts[:2]==['api','projects'] and parts[3]!='chat' and parts[-1]!='finalize':
@@ -683,6 +884,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": str(e)}, 400)
 
     def do_DELETE(self):
+        with SYNC.lock:
+            self.delete_locked()
+
+    def delete_locked(self):
         try:
             self.route()
         except Exception as e:

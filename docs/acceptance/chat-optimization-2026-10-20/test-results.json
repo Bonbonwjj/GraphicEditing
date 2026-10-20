@@ -1,0 +1,26 @@
+[
+  {
+    "name": "full-regression.log",
+    "tests": 219,
+    "seconds": 771.512,
+    "skipped": 4
+  },
+  {
+    "name": "shared-regression.log",
+    "tests": 7,
+    "seconds": 152.672,
+    "skipped": 0
+  },
+  {
+    "name": "protocol-regression.log",
+    "tests": 52,
+    "seconds": 0.376,
+    "skipped": 0
+  },
+  {
+    "name": "data-regression.log",
+    "tests": 18,
+    "seconds": 0.911,
+    "skipped": 0
+  }
+]

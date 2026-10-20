@@ -1,7 +1,8 @@
 """Resolve the platform chart font and audit text before PNG export."""
 from pathlib import Path
+import sys
 
-PLATFORM_FONT = "STHeiti"
+PLATFORM_FONT = "STHeiti" if sys.platform == "darwin" else "Microsoft YaHei" if sys.platform == "win32" else "Noto Sans CJK SC"
 
 
 def register_platform_font():

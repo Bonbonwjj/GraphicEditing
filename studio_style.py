@@ -42,12 +42,12 @@ def _normalization_profile():
 
 def apply_normalization_style():
     """Apply fixed global drawing tokens without changing the chart type."""
-    from font_policy import register_platform_font
+    from font_policy import register_platform_font, PLATFORM_FONT
     global_style = _normalization_profile()["global"]
     if not register_platform_font():
-        raise RuntimeError("Platform chart font " + global_style["font_family"] + " is unavailable")
+        raise RuntimeError("Platform chart font " + PLATFORM_FONT + " is unavailable")
     plt.rcParams.update({
-        "font.family": global_style["font_family"],
+        "font.family": PLATFORM_FONT,
         "font.size": global_style["category_tick_font_size_pt"],
         "axes.labelsize": global_style["axis_title_font_size_pt"],
         "xtick.labelsize": global_style["category_tick_font_size_pt"],
@@ -90,7 +90,8 @@ def normalize_figure_geometry(fig, chart_type=None):
     if fig._suptitle is not None and fig._suptitle.get_text():
         report["removed_titles"].append(fig._suptitle.get_text())
         fig._suptitle.set_text("")
-    family = style["font_family"]
+    from font_policy import PLATFORM_FONT
+    family = PLATFORM_FONT
     font_manager.findfont(family, fallback_to_default=False)
     def label_family(text, weight):
         requested_weight = font_manager.weight_dict.get(weight, 400) if isinstance(weight, str) else weight

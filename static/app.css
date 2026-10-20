@@ -36,3 +36,20 @@ dialog{width:min(690px,92vw);color:var(--text);background:var(--surface);border:
 @media(max-width:800px){.headerRight{gap:6px}.headerRight #status{display:none}.modelConfigButton{padding:7px 9px}.modelConfigButton span{display:none}}
 
 .versionLink{color:#fff;text-decoration:underline;font-size:11px;font-weight:700;white-space:nowrap}
+
+#collaborationDialog{width:min(620px,94vw);max-height:90vh;overflow:auto}#collaborationDialog label{display:grid;gap:6px;margin:10px 0;font-size:12px}#collaborationDialog input:not([type=checkbox]),#collaborationDialog select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);color:var(--text)}#collaborationDialog label:has(input[type=checkbox]){display:flex;align-items:flex-start;line-height:1.6}#collabStatus{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;margin-top:16px}#collaborationButton{white-space:nowrap}
+
+#bundleImportDialog,#sharedModuleDialog{width:min(980px,95vw);max-height:92vh;overflow:auto}#bundleImportDialog label,#sharedModuleDialog label{display:block;margin:12px 0;font-size:12px}#bundleImportDialog input:not([type=checkbox]),#bundleImportDialog select,#sharedModuleDialog input:not([type=checkbox]),#sharedModuleDialog select{display:block;width:100%;padding:8px;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:8px}#sharedModuleEditor{width:100%;height:38vh;font:12px/1.5 monospace;background:var(--surface2);color:var(--text);padding:12px}#sharedModulePreviews{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}#sharedModulePreviews img{max-width:100%}#sharedModulePreviews figure{margin:0}#sharedModuleStatus,#bundleImportStatus{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}
+#figurePane{container-type:inline-size}
+#gallery{grid-template-columns:repeat(6,minmax(0,1fr));gap:14px}
+#gallery .chartCard{grid-column:span 6}
+#gallery{width:100%;min-width:0;max-width:100%}
+#gallery .chartCard,#gallery .chartOpen{min-width:0;max-width:100%}
+#gallery .chartImage{height:auto;min-height:220px;padding:6px;position:relative;max-width:100%}
+#gallery .chartImage:has(img){min-height:0;aspect-ratio:var(--canvas-ratio,1);max-height:min(68vh,720px)}
+#gallery .chartImage img{position:absolute;inset:6px;display:block;width:calc(100% - 12px);height:calc(100% - 12px);max-width:100%;max-height:100%;object-fit:contain}
+#gallery .chartCardTop{gap:6px;padding:10px}
+#gallery .chartCardActions{gap:6px;padding:9px;flex-wrap:wrap}
+@container(min-width:460px){#gallery .chartCard{grid-column:span 3}#gallery .chartCard[data-canvas="wide"],#gallery .chartCard[data-canvas="panorama"]{grid-column:span 6}}
+@container(min-width:660px){#gallery .chartCard{grid-column:span 2}#gallery .chartCard[data-canvas="wide"]{grid-column:span 3}#gallery .chartCard[data-canvas="panorama"]{grid-column:span 6}}
+#gallery .chartCard[data-canvas="oversized"]{grid-column:1/-1}
