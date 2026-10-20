@@ -1,1 +1,1 @@
-5fda7df904aa836b9f47ad429dd1f07df8c5bc0dc9d0efc09b4e9fa4132ca9de  Plot-Forge-v0.1.2-macOS-arm64.zip
+2ffe88e6bedd008660d0c3af36d116303d288c7e443270ec37083c4c2c8c6f11  Plot-Forge-v0.1.2-macOS-arm64.zip

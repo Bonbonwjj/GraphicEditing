@@ -15,16 +15,22 @@
 
 - 74 项相关后端回归测试通过，新增 4 项范围策略专项测试通过。
 - 15 项桌面启动器及模型连接测试通过，3 组前端测试通过。
-- 最终 ZIP 解压后在独立中文及空格目录、PATH=/nonexistent 条件下启动成功，使用内置 Python 和 Git，生成 PNG、完成 Git 提交并通过 HTTP 健康检查。
-- 最终解压应用通过 macOS LaunchServices 启动测试。
+- 本机同源构建从 ZIP 解压后，在独立中文及空格目录、PATH=/nonexistent 条件下首次启动成功，生成 PNG、完成内置 Git 提交并通过 HTTP 健康检查。
+- 本机同源构建的解压应用通过 macOS LaunchServices 启动测试。
 - 使用安装包内 Python 和应用模块实际执行 Chat 改轴范围、应用和再次出图，刻度为 0.1、0.275、0.45、0.625、0.8，间隔均为 0.175，未调用模型。
 - 包内关键代码、网页资源及使用说明与本次源文件逐字节核对；种子项目的代码与数据保持既有发布内容。
 - codesign --verify --deep --strict 通过。应用采用 ad hoc 签名，尚未进行 Apple Developer ID 签名和公证，因此继续保留预发布标记。仅适用于 Apple Silicon Mac。
 - 本轮安装包验证没有调用真实模型服务，不构成任意图型科学含义或模型输出质量的全面验收；自定义导出、多子图歧义、日期/分类/对数轴沿用对应核查边界。
 
+## GitHub 构建与发布包
+
+实际发布的 ZIP 由 GitHub macOS arm64 构建机从同一份平台源码重新打包。25 项专项/桌面/连接测试、codesign 严格校验、包内关键代码逐字节核对及发布构建的原生启动测试通过；测试使用独立中文目录、内置 Python/Git 和 PATH=/nonexistent。本机 LaunchServices 及应用后改图回放测试针对同源本机构建，不冒充实际发布 ZIP 的完整本机下载复验。
+
+构建记录：https://github.com/Bonbonwjj/GraphicEditing/actions/runs/39393366811
+
 ## 安装包
 
 - 文件：Plot-Forge-v0.1.2-macOS-arm64.zip
-- 字节数：220753508
-- SHA-256：5fda7df904aa836b9f47ad429dd1f07df8c5bc0dc9d0efc09b4e9fa4132ca9de
-- 应用负载标识：a55696caecbb2977ac61c8873d282b3b36a75ab4ee6aaff61b3415eb2673afac
+- 字节数：220649247
+- SHA-256：2ffe88e6bedd008660d0c3af36d116303d288c7e443270ec37083c4c2c8c6f11
+- 应用负载标识：b5483af3a257998a9124ff178219fbb392a42050c5ac2cafc78c28883407cc49
