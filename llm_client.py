@@ -37,17 +37,22 @@ def chat(messages, temperature=0.1):
         headers["Authorization"] = "Bearer " + settings["key"]
     request = urllib.request.Request(settings["url"], data=json.dumps(payload).encode("utf-8"),
                                      headers=headers, method="POST")
+    from model_connection import report_result
+    connection={'api_url':settings['url'],'api_key':settings['key'],'model':settings['model']}
     try:
         with urllib.request.urlopen(request, timeout=settings["timeout"]) as response:
             result = json.load(response)
         content = result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        report_result(connection,False,'模型未返回兼容的API响应')
         raise ValueError("LLM response did not match the Chat Completions format") from error
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        report_result(connection,False,'模型请求失败：'+str(getattr(error,'code','连接不可用')))
         detail = error.read().decode(errors="replace")[:700] if isinstance(error, urllib.error.HTTPError) else str(error)
         raise ValueError("LLM request failed: " + detail) from error
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
         raise ValueError("LLM returned empty content")
+    report_result(connection,True)
     return content.strip()

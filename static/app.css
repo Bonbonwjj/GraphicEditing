@@ -53,3 +53,7 @@ dialog{width:min(690px,92vw);color:var(--text);background:var(--surface);border:
 @container(min-width:460px){#gallery .chartCard{grid-column:span 3}#gallery .chartCard[data-canvas="wide"],#gallery .chartCard[data-canvas="panorama"]{grid-column:span 6}}
 @container(min-width:660px){#gallery .chartCard{grid-column:span 2}#gallery .chartCard[data-canvas="wide"]{grid-column:span 3}#gallery .chartCard[data-canvas="panorama"]{grid-column:span 6}}
 #gallery .chartCard[data-canvas="oversized"]{grid-column:1/-1}
+
+#modelConfigBadge[data-status="connected"]{color:#328354}#modelConfigBadge[data-status="error"],#modelConfigBadge[data-status="offline"]{color:#d84d4d}#modelConfigBadge[data-status="reachable"],#modelConfigBadge[data-status="checking"],#modelConfigBadge[data-status="stale"]{color:#b88418}#modelConnectionState{font-size:12px;line-height:1.5;margin:0}#modelConnectionState.error{color:#d84d4d}#modelConnectionState.ok{color:#328354}
+
+#modelConfigButton #modelConfigBadge{display:inline}

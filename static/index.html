@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=23"></head>
+<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=30"></head>
 <body>
-<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊 · v0.1.2</small></div><div class="headerRight"><span id="teamSyncStatus" role="status">等待同步团队版本</span><button id="collaborationButton" type="button">团队协作</button><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
+<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊 · v0.1.2</small></div><div class="headerRight"><span id="teamSyncStatus" role="status">等待同步团队版本</span><button id="collaborationButton" type="button">团队协作</button><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge" role="status" aria-live="polite">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
   <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="uploadPackage" type="button">⬆ 上传 CSV / Python 项目</button><button id="importBundleButton" type="button">⬆ 导入 Border / Group Bundle</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></aside>
   <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHARTS</div><h1 id="chartTitle">请选择一个项目</h1><p id="description">从左侧项目目录打开项目，预览其中的全部图表。</p></div><div class="actions"><button id="refresh" disabled>重新渲染当前图</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
@@ -50,6 +50,8 @@
     <label for="modelMaxOutputTokens">Chat 改图最大输出 token<input id="modelMaxOutputTokens" type="number" min="1024" max="65536" step="1" required value="16384"></label>
     <label for="modelApiKey">API Key<input id="modelApiKey" type="password" autocomplete="new-password" placeholder="首次配置请输入；留空则保留现有密钥"></label>
     <label class="modelVision"><input id="modelVision" type="checkbox"> 改图时将当前图和参照图传给支持视觉的模型</label>
+    <p id="modelConnectionState" role="status" aria-live="polite">尚未检测连接</p>
+    <p class="modelConfigHelp">每20秒检查服务连通性，不生成模型文本；首次检测、断线恢复及手动测试会发送简短功能验证请求。</p>
     <p id="modelConfigState" role="status" aria-live="polite"></p>
     <div class="modelConfigActions"><button id="saveModelConfig" class="primary" type="submit">保存配置</button><button id="testModelConfig" type="button">测试已保存配置</button><button id="clearModelConfig" type="button">清除配置</button></div>
   </form>
@@ -95,4 +97,4 @@
 <details><summary>恢复历史版本到编辑器（仍需验证和确认）</summary><div id="moduleHistory"></div></details>
 </dialog>
 
-<script src="/static/collaboration.js?v=4"></script><script src="/static/app.js?v=26"></script><script src="/static/ly_features.js?v=2"></script></body></html>
+<script src="/static/collaboration.js?v=4"></script><script src="/static/app.js?v=32"></script><script src="/static/ly_features.js?v=2"></script></body></html>

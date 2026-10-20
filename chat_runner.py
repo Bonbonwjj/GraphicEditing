@@ -227,7 +227,7 @@ def _one_render(project, entry, files, directory):
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "chart_overrides.py"):
+    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "chart_overrides.py", "chart_type_defaults.py", "axis_range_policy.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
     profile_relative = Path("skills/chart-normalization/assets/style-profile.v1.json")
     target = package_root / profile_relative
@@ -498,6 +498,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
     import numpy as np
     from matplotlib.collections import LineCollection, PathCollection, PolyCollection, QuadMesh
     from matplotlib.container import ErrorbarContainer, BarContainer
+    from matplotlib.colors import to_hex
     from matplotlib.lines import Line2D
     from matplotlib.patches import Rectangle
     from matplotlib.transforms import Bbox
@@ -548,7 +549,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         box = text.get_window_extent(renderer)
         if not np.isfinite(box.extents).all():
             return
-        texts.append({"key": key, "box": box, "group": group, "owner": owner, "text": text.get_text()})
+        texts.append({"key": key, "box": box, "group": group, "owner": owner, "text": text.get_text(), "fontsize": float(text.get_fontsize())})
         if outside(box, canvas):
             issue("text_clipped", [key], "Text extends beyond the exported canvas: " + text.get_text())
         if text.get_clip_on() and text.get_clip_box() is not None and outside(box, text.get_clip_box()):
@@ -658,7 +659,17 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         bottom_spine = ax.spines.get('bottom')
         configured_bounds = left_spine.get_bounds() if left_spine is not None else None
         bottom_bounds = bottom_spine.get_bounds() if bottom_spine is not None else None
+        def numeric_ticklabels(axis):
+            converter=axis.get_converter() if hasattr(axis,'get_converter') else axis.converter
+            if converter is not None:return False
+            labels=[t.get_text() for t in axis.get_ticklabels() if t.get_visible() and t.get_text()]
+            try:
+                for label in labels:float(label.replace('−','-'))
+            except ValueError:return False
+            return bool(labels)
         axis_details.append({
+            'xscale': ax.get_xscale(), 'yscale': ax.get_yscale(),
+            'numeric_xticks': numeric_ticklabels(ax.xaxis), 'numeric_yticks': numeric_ticklabels(ax.yaxis),
             'xlim': [xlower, xupper],
             'ylim': [lower, upper],
             'major_xticks': [float(value) for value in ax.xaxis.get_majorticklocs()
@@ -675,8 +686,11 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         axes_layout.append({"position": list(map(float, ax.get_position().bounds)),
                             "labels": [ax.get_xlabel(), ax.get_ylabel()],
                             "label_fontsizes": [ax.xaxis.label.get_fontsize(), ax.yaxis.label.get_fontsize()],
+                            "line_colors": [to_hex(line.get_color(), keep_alpha=True) for line in ax.lines if line.get_visible() and len(line.get_xdata()) > 0],
+                            "legend": ({"loc": ax.get_legend()._loc, "fontsizes": [float(t.get_fontsize()) for t in ax.get_legend().get_texts()], "labels": [t.get_text() for t in ax.get_legend().get_texts()]} if ax.get_legend() is not None and ax.get_legend().get_visible() else None),
                             "tick_texts": [[t.get_text() for t in ax.get_xticklabels()], [t.get_text() for t in ax.get_yticklabels()]],
                             "tick_fontsizes": [[t.get_fontsize() for t in ax.get_xticklabels()], [t.get_fontsize() for t in ax.get_yticklabels()]],
+                            "spine_linewidths": {name: float(spine.get_linewidth()) for name,spine in ax.spines.items() if spine.get_visible()},
                             "spines": {name: list(map(float, spine.get_window_extent(renderer).extents))
                                        for name, spine in ax.spines.items() if spine.get_visible()}})
         if ax.name != "rectilinear":
@@ -866,7 +880,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
             "render_size_px": [round(canvas.width), round(canvas.height)],
             "layout_signature": {"size_inches": list(map(float, fig.get_size_inches())), "dpi": float(fig.dpi),
                                  "axes": axes_layout,
-                                 "texts": [{"key": t["key"], "text": t["text"],
+                                 "texts": [{"key": t["key"], "text": t["text"], "fontsize": t["fontsize"],
                                             "bbox": [round(float(v), 4) for v in t["box"].extents]} for t in texts],
                                  "legends": [{"key": key, "bbox": list(map(float, box.extents))} for key, box, _ in legend_regions]},
             "layout": {"status": "conflict" if issues else "unverified" if unsupported else "pass",

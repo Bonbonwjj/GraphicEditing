@@ -41,6 +41,62 @@ def simple_distribution_request(message):
     return None
 
 
+def _verify_iqr_connectors(artists, call, samples):
+    """Verify quartile bars/connectors against matched full source rows."""
+    import numpy as np
+    dimension=call['dimension'];positions=call.get('positions',[])
+    verified=[];seen=set()
+    for artist in artists:
+        key=artist.get('key','unknown')
+        def reject(detail):
+            return [],f'图元 {key}：{detail}；尚不能作为小提琴的分位统计线放行。'
+        visibility=artist.get('visibility') or {}
+        if visibility.get('visible') is False or visibility.get('alpha')==0:
+            return reject('连接线不可见')
+        data=artist.get('data') or {};segments=[]
+        if artist.get('kind')=='line':
+            x,y=data.get('x',{}),data.get('y',{})
+            if x.get('shape')==[2] and y.get('shape')==[2] and len(x.get('sample',[]))==len(y.get('sample',[]))==2:
+                segments=[list(zip(x['sample'],y['sample']))]
+        elif artist.get('kind')=='line_collection':
+            recorded=data.get('segments',[])
+            if recorded and all(seg.get('shape')==[2,2] and len(seg.get('sample',[]))==2 for seg in recorded):
+                segments=[seg['sample'] for seg in recorded]
+        if not segments or call.get('kind')!='violinplot':
+            return reject('额外元素不是可完整读取的两端点线段')
+        for segment in segments:
+            points=np.asarray(segment,dtype=float)
+            if points.shape!=(2,2) or not np.isfinite(points).all():
+                return reject('线段坐标不完整或含非有限值')
+            groups=[i for i,pos in enumerate(positions) if np.allclose(points[:,1-dimension],pos,rtol=0,atol=1e-8)]
+            if len(groups)==1:
+                group=groups[0];q1,q3=np.percentile(samples[group],[25,75])
+                if not np.allclose(np.sort(points[:,dimension]),[q1,q3],rtol=1e-9,atol=1e-9):
+                    return reject(f"{call['labels'][group]} 组端点应为 Q1={q1:.8g}、Q3={q3:.8g}")
+                if group in seen:return reject('同组出现重复的四分位连接线')
+                seen.add(group)
+                verified.append({'key':key,'group':call['labels'][group],'statistic':'Q1-Q3',
+                                 'q1':float(q1),'q3':float(q3)})
+                continue
+            # Outer/median bars are orthogonal to the value axis and centered
+            # on exactly one group. Their values come from full matched rows.
+            if not np.allclose(points[:,dimension],points[0,dimension],rtol=1e-9,atol=1e-9):
+                return reject('线段既不位于组中心，也不是水平于分位值的统计线')
+            center=float(np.mean(points[:,1-dimension]))
+            groups=[i for i,pos in enumerate(positions) if np.isclose(center,pos,rtol=0,atol=1e-8)]
+            if len(groups)!=1:return reject('分位横线未唯一对齐某一组中心')
+            group=groups[0];quartiles=np.percentile(samples[group],[25,50,75])
+            matches=[name for name,value in zip(('Q1','median','Q3'),quartiles)
+                     if np.isclose(points[0,dimension],value,rtol=1e-9,atol=1e-9)]
+            if not matches:return reject(f"{call['labels'][group]} 组横线数值不等于原始样本的 Q1、中位数或 Q3")
+            distances=[abs(pos-positions[group]) for i,pos in enumerate(positions) if i!=group]
+            if distances and np.ptp(points[:,1-dimension])>=min(distances):
+                return reject('分位横线跨入其他组的位置')
+            verified.append({'key':key,'group':call['labels'][group],'statistic':'/'.join(matches),
+                             'value':float(points[0,dimension])})
+    return verified,None
+
+
 def _verify_single_distribution(project, chart, context, proposal, report):
     """Return None for ordinary edits, otherwise a pass/fail/unverified report."""
     kind = requested_distribution(context.get('user_message', ''))
@@ -98,6 +154,7 @@ def _verify_single_distribution(project, chart, context, proposal, report):
         if overlay.get('groups') != groups:
             return stop('叠加散点的样本或组别与分布图不一致，不能自动放行。','fail')
         overlay_keys.update(overlay.get('collection_keys',[]))
+    extra_artists=[]
     for artist in artists:
         if artist.get('key') in overlay_keys:
             continue
@@ -114,7 +171,7 @@ def _verify_single_distribution(project, chart, context, proposal, report):
                    and len(x.get('sample', [])) == 3 and x['sample'][0] == x['sample'][1]
                    and len(y.get('sample', [])) == 3 and y['sample'][1] == y['sample'][2])
         if not bracket:
-            return stop('目标分布图之外还有无法核对的数据元素，不能自动放行。')
+            extra_artists.append(artist)
     import pandas as pd
     known = {item['path']: item for item in context.get('plot_data', [])}
     comparable=False
@@ -152,6 +209,11 @@ def _verify_single_distribution(project, chart, context, proposal, report):
                     continue
                 comparable=True
                 if all(e['sha256'] and e == actual for e, actual in zip(expected, groups)):
+                    if extra_artists:
+                        samples=[pd.to_numeric(table.loc[grouped.eq(label),value_column],errors='raise').to_numpy(float) for label in labels]
+                        verified,error=_verify_iqr_connectors(extra_artists,call,samples)
+                        if error:return stop(error)
+                        result['statistic_overlays']=verified
                     result['matches'] = [{'path': path, 'group_column': group_column, 'value_column': value_column,
                                           'groups': [{'label': label, 'count': e['count']} for label, e in zip(labels, expected)]}]
                     if kind == 'boxplot':

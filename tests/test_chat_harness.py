@@ -236,6 +236,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(draft['status'],'preview_ready')
         self.assertTrue(draft['can_continue'])
 
+    def test_unsupported_model_completion_is_not_reported_as_verified(self):
+        from chat_agent import expand_compact_response
+        with patch.object(self.h,'agent',side_effect=lambda context:expand_compact_response(context,{'status':'already_compliant','reason':'looks done','warnings':[],'interpreted_request':{'operations':[]},'intent_check':{'status':'consistent','unresolved_items':[]},'proposed_files':[]})):
+            result=self.turn({'user_message':'让整张图具有更好的视觉平衡'})
+        item=result['turns'][-1]['results'][0]
+        self.assertEqual(item['status'],'manual_review',item)
+        self.assertIn('人工审阅',item['summary'])
+
     def test_repeated_conversion_reuses_verified_candidate_without_model_question(self):
         with patch('chart_transform.verify_distribution',return_value={'status':'pass','kind':'boxplot'}):
             first=self.turn({'user_message':'把这2个图改为箱线图'})

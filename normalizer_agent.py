@@ -282,11 +282,14 @@ def normalize_source(source, data_schema, style_profile, related_sources=None, s
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
                                      headers={"Authorization": "Bearer " + key,
                                               "Content-Type": "application/json"}, method="POST")
+    from model_connection import report_result
+    connection={'api_url':url,'model':model_name,'api_key':key}
     outcome = 'incomplete'
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             completion = json.load(response)
             choice = completion["choices"][0]
+            report_result(connection,True)
             if choice.get('finish_reason') == 'length':
                 usage = completion.get('usage') or {}
                 details = usage.get('completion_tokens_details') or {}
@@ -309,11 +312,13 @@ def normalize_source(source, data_schema, style_profile, related_sources=None, s
                                  '；未获得 JSON 或候选代码。模型可能把预算用于推理，或服务端没有返回最终答案。')
         outcome = 'response'
     except TimeoutError as error:
+        report_result(connection,False,'规范化模型接口连接或读取超时')
         outcome = 'timeout'
         elapsed = round(time.monotonic() - started, 1)
         raise ValueError(f'规范化模型接口连接或读取超时（已等待 {elapsed} 秒）；本轮未生成候选图。'
                          '这一步尚未进入绘图渲染，请检查模型服务排队、负载或网络连接。') from error
     except urllib.error.HTTPError as error:
+        report_result(connection,False,'规范化模型请求失败：HTTP '+str(error.code))
         outcome = 'http_' + str(error.code)
         if error.code == 429:
             retry_after = error.headers.get('Retry-After', '').strip()
@@ -333,6 +338,7 @@ def normalize_source(source, data_schema, style_profile, related_sources=None, s
             raise ValueError(explanation) from error
         raise ValueError('规范化模型请求失败：HTTP ' + str(error.code)) from error
     except urllib.error.URLError as error:
+        report_result(connection,False,'规范化模型连接不可用')
         outcome = 'network_error'
         if isinstance(getattr(error, 'reason', None), TimeoutError):
             elapsed = round(time.monotonic() - started, 1)

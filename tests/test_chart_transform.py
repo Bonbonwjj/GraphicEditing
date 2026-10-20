@@ -137,4 +137,34 @@ class ChartTransformTests(unittest.TestCase):
         self.assertEqual(self.verify(report)['status'],'unverified')
 
 
+    def test_violin_iqr_connectors_checked_against_complete_source_groups(self):
+        import numpy as np
+        self.context['user_message']='改为小提琴图'
+        for horizontal,collection,wrong,hidden in ((False,False,False,False),(True,False,False,False),
+                                                   (False,True,False,False),(False,False,True,False),
+                                                   (False,False,False,True)):
+            with self.subTest(horizontal=horizontal,collection=collection,wrong=wrong,hidden=hidden):
+                report=self.report()
+                fig,ax=plt.subplots();groups=[[1,2,5],[2,3,7]]
+                if horizontal:
+                    ax.violinplot(groups,orientation='horizontal',showmedians=True,quantiles=[[.25,.75]]*2)
+                    ax.set_yticks([1,2],['A','B']);ax.set_xlabel('Score')
+                else:
+                    ax.violinplot(groups,showmedians=True,quantiles=[[.25,.75]]*2)
+                    ax.set_xticks([1,2],['A','B']);ax.set_ylabel('Score')
+                for i,g in enumerate(groups,1):
+                    q1,q3=np.percentile(g,[25,75]);q3+=1 if wrong else 0
+                    if collection:artist=ax.vlines(i,q1,q3)
+                    elif horizontal:artist,=ax.plot([q1,q3],[i,i])
+                    else:artist,=ax.plot([i,i],[q1,q3])
+                    if hidden:artist.set_alpha(0)
+                fig.canvas.draw();after=_capture(fig,fig.canvas.get_renderer())
+                report.update(distribution_inputs=after['distribution_inputs'],candidate_artists=after['artists'],
+                              layout_signature=after['layout_signature'])
+                checked=self.verify(report)
+                self.assertEqual(checked['status'],'unverified' if wrong or hidden else 'pass',checked)
+                if wrong:self.assertIn('端点应为 Q1=',checked['reason'])
+                if not wrong and not hidden:self.assertEqual(len(checked['statistic_overlays']),2)
+
+
 if __name__=='__main__':unittest.main()

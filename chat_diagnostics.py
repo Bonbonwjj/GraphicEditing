@@ -51,6 +51,9 @@ def explain_draft(draft):
         choices = {
             'layout_conflict': ('layout_conflict', '布局存在重叠或裁切', 'presentation', '可基于此候选继续修复；审阅所列冲突后也可明确接受布局例外。'),
             'font_unverified': ('font_unverified', '字体效果未确认', 'unverified', '查看实际字体、替代字体或缺字信息，可继续调整字体。'),
+            'manual_review': ('manual_review', '需人工审阅', 'unverified', '对照当前图人工核对要求；模型的完成判断尚未获得自动验证。'),
+            'intent_unmet': ('intent_unmet', '本轮要求未实现', 'mismatch', '查看需求验收的目标值和导出值，可基于候选继续修复。'),
+            'intent_unverified': ('intent_unverified', '本轮要求无法自动确认', 'unverified', '查看缺少的目标或测量信息，明确目标后继续修改。'),
             'axis_unmet': ('axis_unmet', '坐标轴要求尚未实现', 'mismatch', '检查范围、端点刻度和轴线；进一步说明需要调整哪条轴。'),
             'no_visible_change': ('no_visible_change', '图片变化未达到要求', 'mismatch', '核对上一版是否已满足要求；若未满足，检查参数是否真正作用于输出图。'),
             'render_failed': ('render_failed', '候选未能成功出图', 'execution', '查看运行错误，检查代码、数据路径、依赖或超时。'),
@@ -87,5 +90,6 @@ def check_results(draft, transform, font_issue, axis_issue, visual_issue, remain
         {'name':'新增图元授权','status':'unmet' if addition_issue else 'no_blocker','reason':'新增对象缺少对应的用户要求。' if addition_issue else '未发现未授权的新增对象；新增元素仍需审阅。'},
         {'name':'字体效果','status':'unverified' if font_issue else 'no_blocker','reason':font_issue or '未发现字体要求阻断项；实际字体请看导出字体报告。'},
         {'name':'坐标轴要求','status':'unmet' if axis_issue else 'no_blocker','reason':axis_issue or '本轮可识别的坐标范围要求未发现不满足项。'},
+        {'name':'本轮需求验收','status':(draft.get('edit_contract') or {}).get('status','not_requested'),'reason':'以逐项需求的目标值和最终导出值为准；未覆盖要求需人工审阅。'},
         {'name':'实际图像效果','status':'unmet' if visual_issue else 'no_blocker','reason':visual_issue or '本轮图像效果检查未发现阻断项。'},
     ]

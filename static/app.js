@@ -15,13 +15,37 @@ function alertStatus(s) { $('status').textContent = s; }
 function bubble(s, cls='assistant') { const e=document.createElement('div'); e.className='bubble '+cls; e.textContent=s; $('messages').append(e); $('messages').scrollTop=$('messages').scrollHeight; }
 function updateModelTransportNotice(){const notice=$("modelTransportNotice");if(notice)notice.hidden=!$("modelApiUrl").value.trim().toLowerCase().startsWith("http://");}
 $("modelApiUrl").oninput=updateModelTransportNotice;
-function showModelConfig(config){updateModelTransportNotice();$('modelConfigBadge').textContent=config.key_configured?'已配置':'未配置';$('modelConfigButton').title=config.key_configured?'模型 API 已配置':'配置模型 API';$('modelApiUrl').value=config.api_url||'';updateModelTransportNotice();$('modelName').value=config.model||'';$('modelMaxOutputTokens').value=config.max_output_tokens||16384;$('modelApiKey').value='';$('modelVision').checked=!!config.vision_enabled;state.modelPreset=config.intranet_preset||null;$('useCdscPreset').disabled=!state.modelPreset;$('useCdscPreset').hidden=!state.modelPreset;const source=config.key_source==='session'?'当前会话可用：系统密钥存储不可用，重启后台后需重新输入 API Key':config.key_source==='windows_encrypted'?'已使用 Windows 用户加密保存，重启后仍可使用':config.keyring_available===false?'本机钥匙串暂不可用，请从普通终端启动工作台':config.key_source==='keychain'?'已保存在本机钥匙串':config.key_source==='environment'?'已由运行环境配置':'尚未配置 API Key';$('modelConfigState').textContent=source;$('modelConfigState').className=config.key_configured?'ok':'';$('testModelConfig').disabled=!config.key_configured;$('clearModelConfig').disabled=!['keychain','windows_encrypted','session'].includes(config.key_source);if(config.key_configured)document.querySelectorAll('.configNotice').forEach(e=>e.remove());}
+function showModelConfig(config){updateModelTransportNotice();state.modelConnectionRevision=(state.modelConnectionRevision||0)+1;state.modelConfigured=!!config.key_configured;renderModelConnection(config.key_configured?{status:'checking',message:'正在检测已保存的API连接…'}:{status:'unconfigured',message:'尚未配置API Key'});refreshModelConnection();$('modelConfigButton').title=config.key_configured?'模型 API 已配置':'配置模型 API';$('modelApiUrl').value=config.api_url||'';updateModelTransportNotice();$('modelName').value=config.model||'';$('modelMaxOutputTokens').value=config.max_output_tokens||16384;$('modelApiKey').value='';$('modelVision').checked=!!config.vision_enabled;state.modelPreset=config.intranet_preset||null;$('useCdscPreset').disabled=!state.modelPreset;$('useCdscPreset').hidden=!state.modelPreset;const source=config.key_source==='session'?'当前会话可用：系统密钥存储不可用，重启后台后需重新输入 API Key':config.key_source==='windows_encrypted'?'已使用 Windows 用户加密保存，重启后仍可使用':config.keyring_available===false?'本机钥匙串暂不可用，请从普通终端启动工作台':config.key_source==='keychain'?'已保存在本机钥匙串':config.key_source==='environment'?'已由运行环境配置':'尚未配置 API Key';$('modelConfigState').textContent=source;$('modelConfigState').className=config.key_configured?'ok':'';$('testModelConfig').disabled=!config.key_configured;$('clearModelConfig').disabled=!['keychain','windows_encrypted','session'].includes(config.key_source);if(config.key_configured)document.querySelectorAll('.configNotice').forEach(e=>e.remove());}
+function renderModelConnection(connection){
+  state.modelConnection=connection;
+  const labels={unconfigured:'未配置',checking:'检测中',connected:'已连接',reachable:'服务可达',error:'连接异常',stale:'状态待更新',offline:'网络离线',unknown:'尚未检测'};
+  const label=labels[connection.status]||'状态未知',badge=$('modelConfigBadge'),detail=$('modelConnectionState');
+  badge.textContent=label;badge.dataset.status=connection.status;
+  const checked=connection.checked_at?` · 检测于 ${new Date(connection.checked_at*1000).toLocaleTimeString()}`:'';
+  const text=label+'：'+(connection.message||label)+checked;
+  detail.textContent=text;detail.className=connection.status==='error'||connection.status==='offline'?'error':connection.status==='connected'?'ok':'';
+  $('modelConfigButton').title=text;
+}
+async function refreshModelConnection(){
+  if(state.modelConnectionPending||!state.modelConfigured||document.hidden)return;
+  if(typeof navigator!=='undefined'&&navigator.onLine===false){renderModelConnection({status:'offline',message:'浏览器检测到网络离线，恢复网络后自动重试。'});return;}
+  state.modelConnectionPending=true;const revision=state.modelConnectionRevision;
+  try{const connection=await api('/api/model-config/connection');if(revision===state.modelConnectionRevision&&state.modelConfigured)renderModelConnection(connection);}
+  catch(error){if(revision===state.modelConnectionRevision&&state.modelConfigured)renderModelConnection({status:'unknown',message:'无法取得连接状态：'+error.message});}
+  finally{state.modelConnectionPending=false;}
+}
+setInterval(()=>refreshModelConnection(),3000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshModelConnection();});
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('offline',()=>renderModelConnection({status:'offline',message:'网络离线，恢复后自动重试。'}));
+  window.addEventListener('online',()=>refreshModelConnection());
+}
 async function loadModelConfig(){const config=await api('/api/model-config');showModelConfig(config);return config;}
 $('modelConfigButton').onclick=async()=>{try{await loadModelConfig();$('modelConfigDialog').showModal();}catch(e){alertStatus('无法读取模型配置：'+e.message);}};
 $('closeModelConfig').onclick=()=>$('modelConfigDialog').close();
 $('useCdscPreset').onclick=()=>{if(!state.modelPreset)return;$('modelApiUrl').value=state.modelPreset.api_url;updateModelTransportNotice();$('modelName').value=state.modelPreset.model||$('modelName').value;$('modelConfigState').className='';$('modelConfigState').textContent='已填入默认模型与地址；请填写本机 API Key 并保存。HTTP 连接会传输 API Key 和请求内容。';};
 $('modelConfigForm').onsubmit=async e=>{e.preventDefault();const save=$('saveModelConfig');save.disabled=true;$('modelConfigState').textContent='正在安全保存到本机…';try{const config=await api('/api/model-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_url:$('modelApiUrl').value.trim(),model:$('modelName').value.trim(),max_output_tokens:Number($('modelMaxOutputTokens').value),api_key:$('modelApiKey').value,vision_enabled:$('modelVision').checked})});showModelConfig(config);$('modelConfigState').textContent=config.key_source==='session'?'配置已在当前会话生效，可测试连接或改图；系统密钥存储不可用，重启后台后需重新输入 API Key。':'已保存。规范化和对话改图可直接使用；可点击“测试已保存配置”。';alertStatus('模型 API 配置已保存');}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{save.disabled=false;$('modelApiKey').value='';}};
-$('testModelConfig').onclick=async()=>{const button=$('testModelConfig');button.disabled=true;$('modelConfigState').className='';$('modelConfigState').textContent='正在连接模型服务…';try{const result=await api('/api/model-config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});$('modelConfigState').className='ok';$('modelConfigState').textContent=`连接成功：${result.model}（${result.elapsed_ms} ms）`;}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{button.disabled=false;}};
+$('testModelConfig').onclick=async()=>{const button=$('testModelConfig');button.disabled=true;$('modelConfigState').className='';$('modelConfigState').textContent='正在连接模型服务…';renderModelConnection({status:'checking',message:'正在验证模型API…'});try{const result=await api('/api/model-config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});$('modelConfigState').className='ok';$('modelConfigState').textContent=`连接成功：${result.model}（${result.elapsed_ms} ms）`;await refreshModelConnection();}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{button.disabled=false;refreshModelConnection();}};
 $('clearModelConfig').onclick=async()=>{if(!confirm('清除保存在本机的模型 API Key 和地址、模型配置？'))return;try{const config=await api('/api/model-config',{method:'DELETE',headers:{'Content-Type':'application/json'}});showModelConfig(config);$('modelConfigState').textContent='页面保存的配置已清除。';alertStatus('模型 API 配置已清除');}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}};
 function tab(name) { document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); for(const n of ['figure','code','data']) $(n+'Pane').classList.toggle('hide',n!==name); }
 function toggleProject(id){
@@ -108,6 +132,13 @@ function renderDraftReview(draft){
     if(typeof effect!=='object'||effect===null)return readable(effect);
     return [readable(effect.observable_change||effect.description||effect.summary),effect.preservation_checks?'保留检查：'+readable(effect.preservation_checks):'',effect.review_required?'需审阅：'+readable(effect.review_required):''].filter(Boolean).join('\n')||readable(effect);
   });
+  if(draft.edit_contract){
+    body+=reviewList('本轮需求验收（最终导出实测）',draft.edit_contract.requirements,item=>[
+      item.request,'结果：'+({pass:'通过',fail:'未达到',unverified:'需进一步核对'}[item.status]||item.status),
+      item.expected!==undefined?'目标：'+readable(item.expected):'',item.actual!==undefined?'导出值：'+readable(item.actual):'',item.tick_spacing?'刻度值：'+readable(item.tick_spacing.ticks)+'；相邻间隔：'+readable(item.tick_spacing.intervals):'',item.reason
+    ].filter(Boolean).join('\n'));
+    body+=`<p>${esc(draft.edit_contract.scope||'')}</p>`;
+  }
   const transform=draft.chart_transform;
   if(transform){
     body+=`<section><strong>图型转换数据核对</strong><p>${esc(transform.reason||transform.status)}</p></section>`;
@@ -169,7 +200,7 @@ function renderDraftReview(draft){
   }
   return body?`<details class="draftReview"><summary>修改理解与检查结果</summary>${body}</details>`:'';
 }
-const statusNames={preview_ready:'候选 · 待审阅',candidate:'候选',needs_clarification:'需要你确认',needs_context:'需要补充上下文',needs_shared_module:'需要共享模块候选',cannot_complete:'无法完成',validation_failed:'检查未通过',font_unverified:'字体效果未达要求',no_visible_change:'图像变化未达要求',axis_unmet:'坐标轴未达要求',render_failed:'渲染失败',agent_failed:'生成失败',scope_rejected:'超出允许范围',revision_conflict:'正式版本已变化',applied:'已应用',discarded:'已放弃',already_compliant:'已满足要求'};
+const statusNames={manual_review:'需人工审阅',intent_unmet:'本轮要求未实现',intent_unverified:'本轮要求无法自动确认',preview_ready:'候选 · 待审阅',candidate:'候选',needs_clarification:'需要你确认',needs_context:'需要补充上下文',needs_shared_module:'需要共享模块候选',cannot_complete:'无法完成',validation_failed:'检查未通过',font_unverified:'字体效果未达要求',no_visible_change:'图像变化未达要求',axis_unmet:'坐标轴未达要求',render_failed:'渲染失败',agent_failed:'生成失败',scope_rejected:'超出允许范围',revision_conflict:'正式版本已变化',applied:'已应用',discarded:'已放弃',already_compliant:'已满足要求'};
 function renderDraft(draft,session,context,interactive=true){
   const active=interactive&&session.active_drafts?.[draft.chart_id]===draft.id;
   const open=interactive&&session.status!=='closed';
@@ -181,12 +212,14 @@ function renderDraft(draft,session,context,interactive=true){
   const diagnosis=asList(draft.diagnostics)[0];
   const statusLabel=esc(diagnosis?.title||statusNames[draft.status]||draft.status);
   const nextAction=diagnosis?.next_action?`<p class="draftActionHint">${esc(diagnosis.next_action)}</p>`:'';
+  const style=draft.chart_type_style;
+  const styleNote=style?`<p class="draftActionHint">样式依据：标准化 Skill v${esc(style.version)} · ${esc(style.name)}。${style.overrides?.length?'已按本轮明确要求允许覆盖相应默认项。':''}样式依据不替代数据与布局检查。</p>`:'';
   const image=draft.image_url,previous=draft.baseline_image_url;
   const preview=image?`<div class="draftPreview"><div class="draftPreviewLabel">修改后版本 · 点击图片查看大图</div><a class="draftImageLink" href="${esc(image)}" target="_blank" rel="noopener" title="打开修改后的完整图片"><img class="draftImage" loading="lazy" src="${esc(image)}" alt="${name} 修改后预览"><span class="draftImageMissing" hidden>本轮未生成可用图片，请查看下方原因。</span></a>${previous?`<details class="draftPrevious"><summary>查看上一版的图</summary><a class="draftImageLink" href="${esc(previous)}" target="_blank" rel="noopener" title="打开上一版完整图片"><img class="draftImage" loading="lazy" src="${esc(previous)}" alt="${name} 修改前预览"><span class="draftImageMissing" hidden>上一版图片暂时无法读取。</span></a></details>`:''}</div>`:'';
   const chooseReason=interactive?'此版本未通过继续修改所需的检查':'请先打开此会话';
   const applyReason=interactive?'此版本仍有未解决问题，不能替换正式图':'请先打开此会话';
   const actions=open&&image&&!['applied','discarded'].includes(draft.status)?`<div class="draftActions"><button data-draft-action="activate" data-draft-id="${esc(draft.id)}" data-blocked="${!continuable}" ${continuable?'':`disabled title="${chooseReason}"`}>选此版本继续更改</button><button class="primary" data-draft-action="apply" data-draft-id="${esc(draft.id)}" data-blocked="${!ready}" ${ready?'':`disabled title="${applyReason}"`}>应用此版</button><button data-draft-action="discard" data-draft-id="${esc(draft.id)}" data-blocked="${!open}" ${open?'':'disabled title="请先打开此会话"'}>放弃</button>${draft.status==='validation_failed'?`<button data-draft-action="recheck" data-draft-id="${esc(draft.id)}" data-blocked="false">重新检查此版</button>`:''}${layoutOverride?`<button class="layoutOverride" data-layout-override="${esc(draft.id)}">仍按要求执行</button>`:''}</div>${!ready&&open?`<p class="draftActionHint">${continuable?'此版可作为下一轮修改起点；通过检查后才能应用。':'此版未通过继续修改或应用所需的检查；请查看下方原因。'}</p>`:''}${layoutOverride?'<p class="hint">请先展开“请留意”查看布局问题；点击表示接受所列冲突，其他要求继续保留。</p>':''}`:'';
-  return `<article class="draftCard ${active?'activeDraft':''}" data-draft="${esc(draft.id)}"><div class="draftHeader"><strong>${name}</strong><span class="draftStatus">${statusLabel}${active?' · 继续修改的起点':''}</span></div>${preview}${actions}<p class="draftSummary">${esc(readable(draft.summary))}</p>${warningsHTML(draft)}${draft.reason?`<p class="draftReason">${esc(readable(draft.reason))}</p>`:''}${nextAction}${renderDraftReview(draft)}${Object.keys(files).length?`<details class="draftCode"><summary>查看候选代码（${Object.keys(files).length} 个文件）</summary>${Object.entries(files).map(([path,code])=>`<strong>${esc(path)}</strong><pre>${esc(typeof code==='object'?code.content:code)}</pre>`).join('')}</details>`:''}</article>`;
+  return `<article class="draftCard ${active?'activeDraft':''}" data-draft="${esc(draft.id)}"><div class="draftHeader"><strong>${name}</strong><span class="draftStatus">${statusLabel}${active?' · 继续修改的起点':''}</span></div>${preview}${actions}<p class="draftSummary">${esc(readable(draft.summary))}</p>${styleNote}${warningsHTML(draft)}${draft.reason?`<p class="draftReason">${esc(readable(draft.reason))}</p>`:''}${nextAction}${renderDraftReview(draft)}${Object.keys(files).length?`<details class="draftCode"><summary>查看候选代码（${Object.keys(files).length} 个文件）</summary>${Object.entries(files).map(([path,code])=>`<strong>${esc(path)}</strong><pre>${esc(typeof code==='object'?code.content:code)}</pre>`).join('')}</details>`:''}</article>`;
 }
 function renderModuleHandoff(result,project,interactive){
   const handoff=result.module_handoff;
@@ -398,7 +431,7 @@ $('startUpload').onclick=async()=>{
 let csvImportProject=null;
 function importCsv(project){if(!project){alert('请先创建或选中项目。');return;}csvImportProject=project;$('csvFile').click();}
 $('csvFile').onchange=async e=>{const f=e.target.files[0],project=csvImportProject;csvImportProject=null;if(!f||!project)return;try{const content=await f.text();await api(`/api/projects/${encodeURIComponent(project)}/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:f.name,content})});forgetProjectPreviews(project);const chart=state.project===project?state.chart:null;await reloadProjects();if(chart)await select(project,chart);alertStatus('已导入 '+f.name);}catch(err){alert(err.message);}e.target.value='';};
-(async()=>{try{if(window.syncTeamOnOpen)await window.syncTeamOnOpen();const [r]=await Promise.all([api('/api/projects'),reloadSkills()]);state.projects=r.projects;drawTree();alertStatus(`项目目录：${r.root}`);if(r.projects[0]){showProject(r.projects[0].id);if(r.projects[0].charts[0])await select(r.projects[0].id,r.projects[0].charts[0]);}if(!r.llm_enabled)bubble('尚未配置模型 API。点击页面顶部的“API 配置”即可填写；现有图片和代码仍可查看。','configNotice');loadModelConfig().catch(e=>alertStatus('模型配置状态不可用：'+e.message));}catch(e){alertStatus(e.message);}})();
+(async()=>{try{loadModelConfig().catch(e=>alertStatus('模型配置状态不可用：'+e.message));if(window.syncTeamOnOpen)await window.syncTeamOnOpen();const [r]=await Promise.all([api('/api/projects'),reloadSkills()]);state.projects=r.projects;drawTree();alertStatus(`项目目录：${r.root}`);if(r.projects[0]){showProject(r.projects[0].id);if(r.projects[0].charts[0])await select(r.projects[0].id,r.projects[0].charts[0]);}if(!r.llm_enabled)bubble('尚未配置模型 API。点击页面顶部的“API 配置”即可填写；现有图片和代码仍可查看。','configNotice');}catch(e){alertStatus(e.message);}})();
 
 // Load persisted naming metadata while existing previews are being indexed in the background.
 let refreshingNames=false;

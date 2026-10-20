@@ -413,6 +413,8 @@ def propose(context):
     if not key:
         raise ValueError('尚未配置模型 API 密钥；请点击页面顶部的「API 配置」保存密钥。已有候选保持不变。')
     url = validate_url(model_auth.get('api_url') or os.environ.get('LLM_API_URL', 'https://api.siliconflow.cn/v1/chat/completions'))
+    from chart_type_defaults import conversion_style
+    context['chart_type_style']=conversion_style(context.get('user_message',''))
     instruction = SKILL.read_text(encoding='utf-8') + """
 Transport format for this call: compact_v1. This changes serialization only;
 all skill intent, data, scope, font and layout rules still apply.
@@ -437,6 +439,11 @@ The local adapter supplies these fixed fields from this request before validatio
 Do not omit source quotes, current values, desired changes, data-column references,
 intent problems or real warnings. reference_usage still needs pinned reference IDs.
 Only use allow_disclosed_overlap when a supplied layout_exception permits it.
+User-requested changes take precedence over previous styles and chart-type defaults.
+Preserve underlying samples, units and scientific meaning; a style request never authorizes inventing data.
+Turn every explicit request into a concrete effect; apply all clauses, not only the easiest one.
+Final-export edit_contract feedback contains independently measured expected/actual values.
+Repair mismatches at the final export boundary; changing unrelated pixels does not satisfy a failed requirement.
 Try chart-entry parameters or a chart-local adapter first so other charts stay unchanged.
 When the edit truly requires a shared function change, return status:"needs_shared_module",
 shared_module_path from shared_module_catalog, and a concrete reason, with no file edits.
@@ -449,6 +456,29 @@ Batch requests are split into one call per selected chart. When the user says
 "these charts", "the two charts", "这两个图" or similar, perform the requested edit
 on this pinned chart. Do NOT ask the user to choose a second chart merely because
 only one chart is writable in this call. Do not guess additional targets from the catalog.
+When chart_type_style is supplied, use its versioned defaults for the requested
+conversion unless the user explicitly overrides a property. Keep existing group
+colors, labels, scientific units and annotations. Do not treat cosmetic defaults
+as mandatory clarification questions. For violin/box conversions, generate normal
+ax.violinplot/ax.boxplot calls: the Harness routes them through fixed standard
+renderers (chart_type_defaults) before checking. The source of truth is the existing normalization Skill and profile, not a second
+style guide. Read the supplied chart_type_style.global and matching templates
+exactly; the policy includes the normalization profile version/hash. For an
+applicable template, use studio_style.apply_normalization_style before drawing
+and finish_normalized_figure with the matching template instead of finish_figure;
+do not use bbox_inches='tight' or shrink fixed fonts. A chart conversion is
+explicitly authorized here; the normalization Skill's preserve-chart-type rule
+applies to normalization-only operations, not to this conversion request.
+The fixed violin renderer adds profile-defined Q1/median/Q3 solid bars and center
+IQR connector, with median twice outer-bar length, clipped inside the body. Do not
+add duplicate custom marks or a second boxplot. Preserve existing whisker,
+outlier, bandwidth, bin and error definitions: styling does not authorize changing
+statistical choices. Do not invent SEM for a mean/error conversion. More groups
+or horizontal/complex panels without a matching template must report that limit
+and apply only safe common/artist rules; never claim full compliance. Preserve an
+explicitly requested alternative and
+state it briefly. For other types, implement the supplied model guideline;
+do not claim that a generic style guideline proves data equivalence.
 An explicit chart-type conversion request authorizes replacing the old data marks
 and adjusting view limits to the new representation. For box/violin plots, use
 the complete original per-observation groups, preserving samples, group identities,
@@ -461,6 +491,17 @@ Users need not know numerical font sizes or axis linewidths. For relative visual
 requests such as "字大一点" or "坐标轴粗一点", use the existing object's actual
 setting and a modest relative step (normally about 20%), disclose it briefly,
 and preview the result. Do not demand an exact point size merely to proceed.
+When a source exports with finish_converted_figure, it applies normalization
+before saving. Explicit later edits must use its parameters={...} final override
+(e.g. spine_scale:0.5), or explicitly normalize first then edit and save. Setting
+spines/font parameters before that finalizer alone will be overwritten. Defaults
+must never take precedence over the user's later explicit visual adjustments.
+For explicit numeric linear X/Y range edits, the default is equal major-tick
+spacing with both endpoints retained, applied after normalization. Use the
+chart-local axis_range_policy adapter for ordinary savefig exports. Do not append
+endpoints to an old tick grid or change tick labels without their positions.
+Category/date/log axes need their own locator semantics; do not convert them into
+linear numeric axes to satisfy this default.
 When source_evidence says available, the project data was already found: use it
 to repair the candidate and its sample verification instead of requesting another
 upload. Missing drawing observation is not evidence of missing source data.
@@ -531,12 +572,18 @@ omitted values; request missing context rather than guessing.
         try:
             with urllib.request.urlopen(request, timeout=180) as stream:
                 text = read_model_response(stream,max_output_tokens,payload.get('reasoning_effort'),call_metrics)
+            from model_connection import report_result
+            report_result({'api_url':url,'model':model_name,'api_key':key},True)
         except (urllib.error.HTTPError, urllib.error.URLError) as error:
+            from model_connection import report_result
+            report_result({'api_url':url,'model':model_name,'api_key':key},False,'模型请求失败：HTTP '+str(getattr(error,'code','连接不可用')))
             # Do not echo provider request bodies or credentials into the UI.
             if isinstance(error,urllib.error.HTTPError) and error.code==400:
                 raise ValueError(f'模型拒绝改图请求（HTTP 400）；请核对模型名称以及配置的最大输出 {max_output_tokens} token 是否受支持。') from error
             raise ValueError('模型调用失败：' + str(getattr(error, 'code', '连接不可用'))) from error
         except (ConnectionError, TimeoutError, OSError) as error:
+            from model_connection import report_result
+            report_result({'api_url':url,'model':model_name,'api_key':key},False,'模型连接提前中断或超时，请检查网络和服务状态。')
             # http.client.RemoteDisconnected can bypass urllib's URLError wrapper.
             raise ValueError('模型服务在处理改图请求时提前断开连接；本轮未修改图片。') from error
         finally:

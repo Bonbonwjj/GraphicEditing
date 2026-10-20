@@ -26,7 +26,7 @@ function environment() {
     fetch() { throw Error('Unexpected network'); }, setInterval() {},
   };
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-  const init = source.indexOf('(async()=>{try{if(window.syncTeamOnOpen)');
+  const init = source.indexOf('(async()=>{try{loadModelConfig()');
   assert(init > 0, 'Locate automatic page initialization');
   source = source.slice(0, init);
   source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, renderModuleHandoff, renderTurnMetrics };';
@@ -113,6 +113,13 @@ function testCards() {
   assert(explained.includes('本轮出图检查记录'));
   assert(explained.includes('&lt;sample&gt;'));
   assert(!explained.includes('<sample>'));
+  const unmet=app.renderDraft({...draft,status:'intent_unmet',can_continue:true,edit_contract:{
+    scope:'最终导出属性',requirements:[{request:'字号改为12 <script>',status:'fail',expected:12,actual:10,reason:'最终字号未改变'}]}},current,context);
+  assert(unmet.includes('本轮需求验收（最终导出实测）'));
+  assert(unmet.includes('目标：12'));assert(unmet.includes('导出值：10'));
+  assert(unmet.includes('最终字号未改变'));assert(!unmet.includes('<script>'));
+  assert(/data-draft-action="apply"[^>]*data-blocked="true"/.test(unmet));
+  assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(unmet));
   const handoff=app.renderModuleHandoff({module_handoff:{path:'draw.py',module_id:'m1',chart:'B',
     prompt:'change <font>',notice:'共享修改需审阅',affected_charts:['A','B']}},'project',true);
   assert(handoff.includes('可能受影响的图（2）'));

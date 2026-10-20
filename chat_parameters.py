@@ -14,7 +14,16 @@ def parse_request(message):
     text = re.sub(r'[，,；;]\s*其他(?:内容)?(?:保持)?不变$', '', text)
     text = re.sub(r'^(?:请|帮我)\s*', '', text)
     text = re.sub(r'^(?:把|将)\s*', '', text)
+    text = re.sub(r'^(?:这(?:个|张)?(?:图表|图)|当前(?:图表|图)|选中的(?:图表|图))(?:的)?\s*','',text)
     change = r'\s*(?:改为|改成|设为|设置为|调整为)\s*'
+    # Explicit proportions, including ordinary batch wording, need no model.
+    prefix=r'(?:我|现在|目前|希望|想要|想|请|帮我|把|将|这|些|两|个|张|选中|图表|图|的|[0-9]|\s)*'
+    target=r'([xX][yY]轴|[xX]轴和[yY]轴|[xX]和[yY]轴|坐标轴|轴线|[xXyY]轴)'
+    fraction=re.fullmatch(prefix+target+r'(?:的)?(?:线宽|粗细|轴线)?(?:调整一下|调整|改为|变为|设为|设置为)?[，,\s]*(?:都)?(?:细一些|细一点|变细|缩小)?[，,\s]*(?:线宽|粗细)?(?:是|为|改为)?(?:现在|当前|原来|上一版|原本|目前)?(?:的)?(一半|减半|1/2|50%|百分之五十)',text)
+    if fraction:
+        axis=fraction[1].lower();setting='xspine_scale' if axis=='x轴' else 'yspine_scale' if axis=='y轴' else 'spine_scale'
+        return {'method':None,'keyword':None,'value':.5,'property':'linewidth','target':fraction[1],
+                'setting':setting,'relative':True,'description':'依据当前实际导出线宽，将指定坐标轴线宽减半；数据、刻度线及其他样式保持不变。'}
     relative=re.fullmatch(r'(?:再)?(字|文字|字体|字号|[XYxy]轴(?:标题|标签)(?:字号)?|(?:坐标)?轴(?:线)?|[XYxy]轴(?:线)?)\s*(?:再|稍微|稍稍)?\s*(?:调|改|变|放|加)?\s*(大|小|粗|细)(?:一?点|一些)?',text)
     if relative:
         target,direction=relative.groups()
@@ -60,7 +69,7 @@ def parse_request(message):
 def _literal_proposal(context):
     intent = parse_request(context.get('user_message', ''))
     # Layout overrides and unresolved previous layout changes need the full workflow.
-    if not intent or context.get('layout_exception') or context.get('harness_layout_feedback'):
+    if not intent or intent.get('method') in ('set_xlim','set_ylim') or context.get('layout_exception') or context.get('harness_layout_feedback'):
         return None
     paths = context['allowed_write_paths']
     if len(paths) != 1:
@@ -159,7 +168,7 @@ def _literal_proposal(context):
     return validate_response(context, expand_compact_response(context, response))
 
 
-def propose_parameters(context):
+def _propose_single_parameters(context):
     response = _literal_proposal(context)
     if response is not None:
         return response
@@ -179,15 +188,20 @@ def propose_parameters(context):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'subplots':
                 if n.args or any(k.arg in ('nrows','ncols') and ast.literal_eval(k.value)!=1 for k in n.keywords):
                     return None
-        # Use an explicit Figure.savefig only: shared helpers may save internally
-        # or override styling, so a helper call is not a safe insertion boundary.
+        # A known conversion finalizer accepts post-normalization parameters.
+        # Other shared exporters remain unsafe insertion boundaries.
+        finalizers={a.asname or a.name for n in tree.body if isinstance(n,ast.ImportFrom)
+                    and n.module=='chart_type_defaults' for a in n.names if a.name=='finish_converted_figure'}
         exports = [n for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
-                   and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'savefig'
-                   and isinstance(n.value.func.value, ast.Name)]
+                   and ((isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'savefig'
+                         and isinstance(n.value.func.value, ast.Name))
+                        or (isinstance(n.value.func,ast.Name) and n.value.func.id in finalizers))]
         if len(exports) != 1:
             return None
         export = exports[0]
-        figure = export.value.func.value.id
+        finalizer=isinstance(export.value.func,ast.Name)
+        if finalizer and (not export.value.args or not isinstance(export.value.args[0],ast.Name)):return None
+        figure = export.value.args[0].id if finalizer else export.value.func.value.id
         pyplot = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
                   for a in n.names if a.name == 'matplotlib.pyplot'}
         if figure in pyplot:
@@ -211,13 +225,18 @@ def propose_parameters(context):
                     'legend':'legend_loc', 'plot':'line_color', 'set_xlim':'xlim', 'set_ylim':'ylim'}[intent['method']]
         edits = {setting:intent['value']}
         # Consolidate our own earlier override instead of accumulating blocks.
+        final_parameters=next((kw for kw in export.value.keywords if kw.arg=='parameters'),None) if finalizer else None
         overrides = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                      and n.func.id == '_plot_forge_apply_parameters']
+        if finalizer and overrides and not final_parameters:return None
         lines = content.encode('utf-8').splitlines(keepends=True)
-        if overrides:
-            if len(overrides)!=1 or len(overrides[0].args)!=2 or not isinstance(overrides[0].args[0],ast.Name) or overrides[0].args[0].id!=figure:
-                return None
-            node=overrides[0].args[1]; prior=ast.literal_eval(node)
+        if overrides or final_parameters:
+            if final_parameters:
+                node=final_parameters.value
+            else:
+                if len(overrides)!=1 or len(overrides[0].args)!=2 or not isinstance(overrides[0].args[0],ast.Name) or overrides[0].args[0].id!=figure:return None
+                node=overrides[0].args[1]
+            prior=ast.literal_eval(node)
             if not isinstance(prior,dict):
                 return None
             unchanged=prior.get(setting)==intent['value']
@@ -236,20 +255,32 @@ def propose_parameters(context):
             start=sum(map(len,lines[:node.lineno-1]))+node.col_offset
             end=sum(map(len,lines[:node.end_lineno-1]))+node.end_col_offset
             edited=(content.encode()[:start]+repr(prior).encode()+content.encode()[end:]).decode()
+        elif finalizer:
+            call=export.value
+            call.keywords.append(ast.keyword(arg='parameters',value=ast.parse(repr(edits),mode='eval').body))
+            start=sum(map(len,lines[:call.lineno-1]))+call.col_offset
+            end=sum(map(len,lines[:call.end_lineno-1]))+call.end_col_offset
+            edited=(content.encode()[:start]+ast.unparse(call).encode()+content.encode()[end:]).decode()
+            unchanged=False
         else:
             line=content.splitlines()[export.lineno-1]
             indent=line[:export.col_offset]
             if indent.strip():
                 return None
             start=sum(map(len,lines[:export.lineno-1]))
-            block=(indent+'from chart_overrides import apply_chart_parameters as _plot_forge_apply_parameters\n'
+            module='axis_range_policy' if setting in ('xlim','ylim') else 'chart_overrides'
+            block=(indent+f'from {module} import apply_chart_parameters as _plot_forge_apply_parameters\n'
                    +indent+f'_plot_forge_apply_parameters({figure}, {edits!r})\n')
             edited=(content.encode()[:start]+block.encode()+content.encode()[start:]).decode()
             unchanged=False
+        if setting in ('xlim','ylim'):
+            edited=edited.replace('from chart_overrides import apply_chart_parameters as _plot_forge_apply_parameters',
+                                  'from axis_range_policy import apply_chart_parameters as _plot_forge_apply_parameters')
         ast.parse(edited)
     except (SyntaxError, ValueError, TypeError, KeyError):
         return None
     response={'status':'candidate','generation_path':'local_parameters','parameter_value_unchanged':unchanged,
+        'parameter_intent':intent,
         'summary':intent.get('description') or '已生成仅作用于当前图的参数候选；共享函数和其他图的默认参数不变。',
         'interpreted_request':{'operations':[{'target_element':intent['target'],'property':intent['property'],
             'current_value':None,'desired_change':intent['value'],'source_quotes':[context['user_message']]}]},
@@ -258,3 +289,79 @@ def propose_parameters(context):
         'read_data_refs':[{'path':d['path'],'columns':[{'name':c,'role':'unchanged_source'} for c in d['columns']]}
                           for d in context.get('plot_data',[]) if d.get('columns')], 'warnings':[]}
     return validate_response(context,expand_compact_response(context,response))
+
+
+def parse_requests(message):
+    """Accept only complete, disjoint supported clauses; never drop a clause."""
+    one=parse_request(message)
+    if one:return [(message,one)]
+    text=re.sub(r'[，,；;]\s*(?:其他|其余)(?:内容)?(?:保持)?不变[。！!]*$', '',message.strip())
+    parts=[p.strip() for p in re.split(r'[，,；;]|并且|同时',text) if p.strip()]
+    if not 1<len(parts)<=6:return None
+    intents=[];used=set()
+    for part in parts:
+        intent=parse_request(part)
+        if not intent:return None
+        key=intent.get('setting') or {'set_xlabel':'xlabel_fontsize','set_ylabel':'ylabel_fontsize','legend':'legend_loc','plot':'line_color','set_xlim':'xlim','set_ylim':'ylim'}.get(intent.get('method'))
+        fields=({'xlabel','ylabel','ticks','legend_font','other_text'} if key=='text_scale' else
+                {'xlabel'} if key.startswith('xlabel') else {'ylabel'} if key.startswith('ylabel') else
+                {'ticks'} if key=='tick_fontsize' else {'legend_font'} if key=='legend_fontsize' else
+                {'xspine','yspine'} if key=='spine_scale' else {'xspine'} if key=='xspine_scale' else
+                {'yspine'} if key=='yspine_scale' else {key})
+        if fields&used:return None
+        used.update(fields);intents.append((part,intent))
+    return intents
+
+
+def propose_parameters(context):
+    requests=parse_requests(context.get('user_message',''))
+    if not requests:return None
+    if len(requests)==1:return _propose_single_parameters(context)
+    import copy,hashlib
+    working=copy.deepcopy(context);operations=[];intents=[];responses=[]
+    for message,intent in requests:
+        working['user_message']=message
+        response=_propose_single_parameters(working)
+        if response is None:return None
+        responses.append(response);intents.append(intent)
+        operations.extend(response['interpreted_request']['operations'])
+        for file in response['proposed_files']:
+            source=next(f for f in working['source_files'] if f['path']==file['path'])
+            source.update(content=file['content'],sha256='sha256:'+hashlib.sha256(file['content'].encode()).hexdigest())
+    result=copy.deepcopy(responses[-1]);result.pop('parameter_intent',None)
+    result.update({key:context[key] for key in ('request_id','edit_session_id','turn_id','parent_draft_id','chart_id','base_revision','user_message')})
+    result['parameter_intents']=intents;result['interpreted_request']['operations']=operations
+    for index,op in enumerate(operations,1):op['operation_id']='op_'+str(index)
+    for file in result['proposed_files']:
+        file['base_sha256']=next(f['sha256'] for f in context['source_files'] if f['path']==file['path'])
+    result['parameter_value_unchanged']=all(r.get('parameter_value_unchanged') for r in responses)
+    result['summary']=f'已生成包含 {len(requests)} 项参数调整的候选，等待最终导出核对。'
+    return validate_response(context,result)
+
+
+def prepare_axis_range_proposal(context,response,requirements):
+    """Persist trusted range defaults in the proposed entry, also for model edits.
+
+    Reuse the conservative exporter adapter; unsupported exporters remain subject
+    to final validation instead of silently claiming an adjustment was applied.
+    """
+    if not requirements or response.get('status')!='candidate':return response
+    import copy,hashlib
+    from decimal import Decimal
+    result=copy.deepcopy(response);working=copy.deepcopy(context)
+    working.pop('harness_layout_feedback',None);working.pop('layout_exception',None)
+    for file in result['proposed_files']:
+        source=next(s for s in working['source_files'] if s['path']==file['path'])
+        source.update(content=file['content'],sha256='sha256:'+hashlib.sha256(file['content'].encode()).hexdigest())
+    for requirement in requirements:
+        lower=format(Decimal(str(requirement['lower'])),'f');upper=format(Decimal(str(requirement['upper'])),'f')
+        working['user_message']=requirement['axis'].upper()+'轴范围改为'+lower+'到'+upper
+        patched=propose_parameters(working)
+        if patched is None:return response
+        for file in patched['proposed_files']:
+            source=next(s for s in working['source_files'] if s['path']==file['path'])
+            source.update(content=file['content'],sha256='sha256:'+hashlib.sha256(file['content'].encode()).hexdigest())
+    for file in result['proposed_files']:
+        file['content']=next(s['content'] for s in working['source_files'] if s['path']==file['path'])
+    result['axis_range_policy']='equal_numeric_linear_ticks'
+    return result

@@ -214,7 +214,7 @@ def clear():
     return public()
 
 
-def test_connection():
+def _test_connection():
     settings = effective()
     if not settings['api_key']:
         raise ValueError('请先保存 API Key')
@@ -259,3 +259,15 @@ def test_connection():
     if not isinstance(result, dict) or not result.get('choices'):
         raise ValueError('模型服务未返回兼容的 Chat Completions 响应')
     return {'connected': True, 'model': settings['model'], 'elapsed_ms': round((time.monotonic()-started)*1000)}
+
+
+def test_connection():
+    from model_connection import report_result
+    settings=effective()
+    try:
+        result=_test_connection()
+    except Exception as exc:
+        report_result(settings,False,str(exc).replace(settings.get('api_key') or '\0','[已隐藏密钥]')[:400])
+        raise
+    report_result(settings,True)
+    return result

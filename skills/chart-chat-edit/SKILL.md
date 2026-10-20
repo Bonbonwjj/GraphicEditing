@@ -99,3 +99,9 @@ For a `candidate`, `interpreted_request.operations` is a nonempty array. **Every
 Replace `current_value: null` with the actual value when the supplied code establishes it. `null` means the value could not be determined from the supplied sources; explain that uncertainty in the proposal rather than inventing a value. Do not use alternate keys such as `element`, `attribute`, `old_value`, `new_value`, or `desired_value` in place of the required names. This schema describes the edit; the candidate must still supply complete modified source code in `proposed_files`.
 
 Each candidate's `read_data_refs` item must contain the supplied `path`, `sha256`, and a nonempty `columns` list. Each column item has `name` and `role` (for example group selection, x coordinates, plotted means, or SEM). Include columns used by unchanged helpers as well as edited code. Merely saying “read-only data” or naming the CSV file is insufficient. A column present in the CSV but not consumed by the candidate is not a plotted input; do not claim its values are used. If no CSV is consumed, return an empty list. If the used columns cannot be established from missing code, request that context or clarify the gap rather than fabricate lineage.
+
+## 图型转换的默认样式
+
+当 Harness 提供 `chart_type_style` 时，严格复用 chart-normalization Skill 的 assets/style-profile.v1.json 及适用模板，不另设一套默认值；明确的用户要求优先。保留原始数据、组别、单位、颜色与统计标注。默认样式不是科学统计定义的统一标准，而是本平台一致的展示约定。
+
+箱线图、小提琴图由固定绘制函数提供默认几何与统计元素；生成普通 `ax.boxplot` / `ax.violinplot` 调用即可，Harness 自动衔接。小提琴默认显示 Q1、中位数、Q3 和中心 Q1–Q3 连接线，不再额外手工重复绘制。不得为满足默认样式构造缺失样本、误差量、p值或拟合曲线。

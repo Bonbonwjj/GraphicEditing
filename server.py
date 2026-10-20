@@ -165,6 +165,10 @@ def preview_signature(p, source):
     if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
     for f in (ROOT/'studio_style.py',ROOT/'chart_overrides.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
+    if 'chart_type_defaults' in source or any('chart_type_defaults' in f.read_text(errors='ignore') for f in files if f.is_file() and f.suffix=='.py'):
+        dependencies.append(('@platform/chart_type_defaults.py',hashlib.sha256((ROOT/'chart_type_defaults.py').read_bytes()).hexdigest()))
+    if any(name in source for name in ('axis_range_policy','chart_type_defaults')) or any(any(name in f.read_text(errors='ignore') for name in ('axis_range_policy','chart_type_defaults')) for f in files if f.is_file() and f.suffix=='.py'):
+        dependencies.append(('@platform/axis_range_policy.py',hashlib.sha256((ROOT/'axis_range_policy.py').read_bytes()).hexdigest()))
     return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
 
 
@@ -538,6 +542,9 @@ class Handler(BaseHTTPRequestHandler):
             name = Path(path).name
             mime = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
             return self.bytes_response((STATIC / "legacy" / name).read_bytes(), mime)
+        if path == '/api/model-config/connection' and self.command=='GET':
+            from model_connection import connection_status
+            return self.json_response(connection_status())
         if path == '/api/model-config' or path == '/api/model-config/test':
             if self.command == 'GET' and path == '/api/model-config':
                 return self.json_response(public_model_config())
