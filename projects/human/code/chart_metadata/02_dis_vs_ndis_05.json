@@ -1,1 +1,0 @@
-{"signature": "bb9d61a2b4ead4f3618228a89b3a303126c48714631d7635bf3b43a7fcba9a12", "status": "ready", "display_name": "DIS&NDIS_Gaze scanpath speed (px/s)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Gaze scanpath speed (px/s)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

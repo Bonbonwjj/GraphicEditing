@@ -96,7 +96,7 @@ def main():
         subprocess.run(['ditto','-c','-k','--sequesterRsrc','--keepParent',str(artifact),str(ROOT/'dist'/(label+'.zip'))],check=True)
     else:
         shutil.make_archive(str(ROOT/'dist'/label),'zip',root_dir=ROOT/'dist',base_dir=artifact.name)
-    print('Desktop build:',artifact,flush=True)
+    print(f'Desktop build: {artifact} ({sys.platform})', flush=True)
 
 
 if __name__ == '__main__':

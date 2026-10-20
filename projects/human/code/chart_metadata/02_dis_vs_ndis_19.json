@@ -1,1 +1,0 @@
-{"signature": "521d1ecef76f79e6528031825cfd4f528e20c4e2cd3fd2c87e9f5e159de753e2", "status": "ready", "display_name": "DIS&NDIS_Gaze-coverage area (deg²)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Gaze-coverage area (deg²)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

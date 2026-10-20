@@ -21,7 +21,12 @@ def user_home():
         return Path(os.environ['PLOT_FORGE_HOME']).expanduser().resolve()
     if sys.platform == 'win32':
         return Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'PlotForge'
-    return Path.home() / 'Library/Application Support/PlotForge'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library/Application Support/PlotForge'
+    # Linux follows the XDG user-data conventions while remaining portable for
+    # single-user desktop installs. This keeps the bundled runtime and workspace
+    # isolated from the application directory itself.
+    return Path.home() / '.local' / 'share' / 'PlotForge'
 
 
 @contextlib.contextmanager

@@ -4,7 +4,7 @@
 
 ## 桌面 App
 
-打包版已内置 Python、绘图库和 Git，无需另行安装。完整解压 Windows 安装包后打开 `Plot Forge.exe`；macOS 打开对应芯片版本的 `Plot Forge.app`。首次打开自动初始化环境并打开本地网页，之后双击即可使用。个人 API Key 和 GitHub 账号权限仍由各自配置，公司模型需要 VPN。
+打包版已内置 Python、绘图库和 Git，无需另行安装。完整解压后在对应系统上运行：Windows 打开 `Plot Forge.exe`，macOS 打开对应芯片版本的 `Plot Forge.app`，Linux 直接运行解压目录内的 `Plot Forge` 可执行文件。首次打开自动初始化环境并打开本地网页，之后双击即可使用。个人 API Key 和 GitHub 账号权限仍由各自配置，公司模型需要 VPN。
 
 正式项目、候选和配置保存在用户目录，更新 App 时保留。构建方式与验收说明见 `docs/DESKTOP_APP.md`；下方 Python/Git 安装步骤仅适用于直接运行源码。
 

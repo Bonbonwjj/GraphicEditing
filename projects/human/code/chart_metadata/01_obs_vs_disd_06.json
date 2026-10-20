@@ -1,1 +1,0 @@
-{"signature": "bbae5de3b6c303c41197fb207fb6f716a955d82e5c423b4eb07f8a38aef107cc", "status": "ready", "display_name": "Obs&DIS-D_Gaze-shift speed (deg/s)", "x_groups": ["Obs", "DIS-D"], "x_label": "", "y_label": "Gaze-shift speed (deg/s)", "group_key": "[\"categories\", [\"Obs\", \"DIS-D\"]]"}

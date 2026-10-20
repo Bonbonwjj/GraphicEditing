@@ -1,1 +1,0 @@
-{"signature": "5b0d1d78d805cc0e095627962077927e91f8866de8fc0d7ec59ad7383654b8f6", "status": "ready", "display_name": "DIS&NDIS_Gaze-covered images count", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Gaze-covered images count", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

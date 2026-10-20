@@ -1,1 +1,0 @@
-{"signature": "72ae9dc5129b26bf0a0ef328021fdc39109fe925ccf29d6959e8805a6aa87544", "status": "ready", "display_name": "DIS&NDIS_Inter-dimensional gaze-switch rate (per s)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Inter-dimensional gaze-switch rate (per s)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

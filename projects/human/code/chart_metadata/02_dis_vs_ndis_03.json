@@ -1,1 +1,0 @@
-{"signature": "49db5638071d36ba59ebd9da81ca9d81c73956d7f7219808f750b8527f941c87", "status": "ready", "display_name": "DIS&NDIS_Gaze-shift speed (deg/s)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Gaze-shift speed (deg/s)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

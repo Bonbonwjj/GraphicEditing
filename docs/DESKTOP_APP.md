@@ -1,15 +1,15 @@
 # 桌面应用
 
-Windows 与 macOS 安装包内置 Python 3.11、Matplotlib、NumPy、Pandas、SciPy、Pillow、系统密钥库支持以及 Git。使用者不需要安装 Python、Git、Conda 或 Docker。
+Windows、macOS 与 Linux 安装包内置 Python 3.11、Matplotlib、NumPy、Pandas、SciPy、Pillow、系统密钥库支持以及 Git。使用者不需要安装 Python、Git、Conda 或 Docker。
 
 ## 同事使用
 
 1. 下载适合自己操作系统和 CPU 的 ZIP，完整解压。
-2. Windows 打开 `Plot Forge/Plot Forge.exe`，不要只复制 exe；macOS 将 `Plot Forge.app` 拖入“应用程序”并打开。
+2. Windows 打开 `Plot Forge/Plot Forge.exe`，不要只复制 exe；macOS 将 `Plot Forge.app` 拖入“应用程序”并打开；Linux 直接运行解压目录中的 `Plot Forge` 可执行文件。
 3. 首次打开自动从随包携带的压缩档初始化运行环境，随后在默认浏览器打开本地工作台。后续启动会复用后台。
 4. 公司模型需要连接 VPN，首次填写个人 API Key。团队版本固定同步到 `Bonbonwjj/GraphicEditing` 的 `main`，写入仍需要个人 GitHub 账号的仓库权限和 Git 凭据；安装包不会携带开发者的登录凭据。
 
-工作数据保存在 Windows 的 `%LOCALAPPDATA%/PlotForge/workspace` 或 macOS 的 `~/Library/Application Support/PlotForge/workspace`。密钥、候选和项目不会写到应用安装目录。更新 App 后，正式项目和个人配置继续保留。
+工作数据保存在 Windows 的 `%LOCALAPPDATA%/PlotForge/workspace`、macOS 的 `~/Library/Application Support/PlotForge/workspace`，以及 Linux 的 `~/.local/share/PlotForge/workspace`。密钥、候选和项目不会写到应用安装目录。更新 App 后，正式项目和个人配置继续保留。
 
 应用本身仍使用本地网页界面；双击 App 自动管理后台并打开网页。关闭网页不会退出后台，再次打开 App 会复用后台。
 

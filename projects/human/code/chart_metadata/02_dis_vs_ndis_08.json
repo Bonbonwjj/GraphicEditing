@@ -1,1 +1,0 @@
-{"signature": "dba6f75c522bb7389469bd55a04b78313bfe089a610d1057223114543a284c76", "status": "ready", "display_name": "DIS&NDIS_Mean gaze duration per covered image (ms)", "x_groups": ["DIS", "NDIS"], "x_label": "", "y_label": "Mean gaze duration per covered image (ms)", "group_key": "[\"categories\", [\"DIS\", \"NDIS\"]]"}

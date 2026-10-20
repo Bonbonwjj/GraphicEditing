@@ -1,1 +1,0 @@
-{"signature": "1dd2ebdb3a1d06fa4c0dbd15e08e817effb2c601cc113f4523ec0762af0f01bf", "status": "ready", "display_name": "Obs&DIS-D_Gaze-covered dimensions count", "x_groups": ["Obs", "DIS-D"], "x_label": "", "y_label": "Gaze-covered dimensions count", "group_key": "[\"categories\", [\"Obs\", \"DIS-D\"]]"}

@@ -83,3 +83,8 @@ class DesktopTests(unittest.TestCase):
             target=Path(folder)/'桌面工作区 test'
             with patch.dict('os.environ',{'PLOT_FORGE_HOME':str(target)}):
                 self.assertEqual(desktop.user_home(),target.resolve())
+
+    def test_linux_uses_xdg_data_dir(self):
+        with patch.object(desktop.sys, 'platform', 'linux'):
+            home = Path.home() / '.local' / 'share' / 'PlotForge'
+            self.assertEqual(desktop.user_home(), home.resolve())
