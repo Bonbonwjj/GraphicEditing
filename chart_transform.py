@@ -99,7 +99,8 @@ def _verify_iqr_connectors(artists, call, samples):
 
 def _verify_single_distribution(project, chart, context, proposal, report):
     """Return None for ordinary edits, otherwise a pass/fail/unverified report."""
-    kind = requested_distribution(context.get('user_message', ''))
+    from chat_reference_images import inferred_distribution
+    kind = requested_distribution(context.get('user_message', '')) or inferred_distribution(context,proposal)
     if not kind:
         return None
     result = {'kind': kind, 'status': 'unverified', 'warnings': [], 'matches': []}
@@ -230,7 +231,8 @@ def _verify_single_distribution(project, chart, context, proposal, report):
 
 def verify_distribution(project, chart, context, proposal, report):
     """Verify every panel independently; unsupported mappings never bypass checks."""
-    kind=requested_distribution(context.get('user_message',''))
+    from chat_reference_images import inferred_distribution
+    kind=requested_distribution(context.get('user_message','')) or inferred_distribution(context,proposal)
     if not kind:
         return None
     before=(report.get('baseline_layout_signature') or {}).get('axes',[])

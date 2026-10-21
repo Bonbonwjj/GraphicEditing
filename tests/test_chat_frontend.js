@@ -29,7 +29,7 @@ function environment() {
   const init = source.indexOf('(async()=>{try{loadModelConfig()');
   assert(init > 0, 'Locate automatic page initialization');
   source = source.slice(0, init);
-  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, renderModuleHandoff, renderTurnMetrics };';
+  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, renderModuleHandoff, renderTurnMetrics, uploadChatReferenceFiles, selectedChatImages, referenceImageHistoryHTML };';
   vm.runInNewContext(source, sandbox);
   const app = sandbox.app;
   app.state.project = 'project';
@@ -94,15 +94,20 @@ function testCards() {
   assert(card.includes('继续修改的起点'));
   assert(card.includes('&lt;unsafe&gt;'));
   assert(!card.includes('<unsafe>'));
-  assert(!app.renderDraft(draft, { ...current, status: 'closed' }, context).includes('data-draft-action'));
+  assert(app.renderDraft(draft, { ...current, status: 'closed' }, context).includes('data-draft-action'));
   const diagnostic = { ...draft, status: 'needs_clarification', layout: { issues: [{ id: 'warn_1', message: 'tick overlap' }] } };
   assert(app.renderDraft(diagnostic, current, context).includes('仍按要求执行'));
   const layoutDraft = app.renderDraft({ ...diagnostic, can_continue: true }, current, context);
   assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(layoutDraft));
-  assert(/data-draft-action="apply"[^>]*data-blocked="true"/.test(layoutDraft));
-  assert(layoutDraft.includes('此版可作为下一轮修改起点'));
+  assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(layoutDraft));
+  assert(layoutDraft.includes('以下检查仅作提示'));
   assert(!app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('data-layout-override'));
   assert(app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('重新检查此版'));
+  for(const status of ['validation_failed','revision_conflict','render_failed','applied','discarded']){
+    const enabled=app.renderDraft({...draft,status,image_url:null,can_apply:true,can_continue:true},{...current,status:'closed'},context);
+    assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(enabled));
+    assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(enabled));
+  }
   const explained=app.renderDraft({ ...draft, status:'validation_failed', diagnostics:[{
     title:'图型转换尚无法核对',reason:'缺少 <sample>',next_action:'请核对完整样本',
     evidence:[{label:'移除对象',count:1,objects:['axes_0.line_0']}]}],
@@ -118,7 +123,7 @@ function testCards() {
   assert(unmet.includes('本轮需求验收（最终导出实测）'));
   assert(unmet.includes('目标：12'));assert(unmet.includes('导出值：10'));
   assert(unmet.includes('最终字号未改变'));assert(!unmet.includes('<script>'));
-  assert(/data-draft-action="apply"[^>]*data-blocked="true"/.test(unmet));
+  assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(unmet));
   assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(unmet));
   const handoff=app.renderModuleHandoff({module_handoff:{path:'draw.py',module_id:'m1',chart:'B',
     prompt:'change <font>',notice:'共享修改需审阅',affected_charts:['A','B']}},'project',true);
@@ -225,9 +230,51 @@ async function testSubmitHandler() {
   assert(elements.get('messages').innerHTML.includes('Which legend?'));
 }
 
+async function testUploadedImageIsolationAndSubmission(){
+  const {app,sandbox,elements}=environment(),context=app.chatContext(),current=session();
+  app.storeSession(context,current);app.state.chatKey=context.key;
+  sandbox.FileReader=class{readAsDataURL(file){this.result=file.data;this.onload();}};
+  let release;const calls=[];
+  sandbox.fetch=async(url,options)=>{
+    calls.push({url,body:JSON.parse(options.body)});
+    return new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({reference_id:'refimg_1',name:'style <unsafe>.png',image_url:'/api/projects/project/chat/reference-images/refimg_1/image'})});});
+  };
+  const task=app.uploadChatReferenceFiles([{name:'style.png',type:'image/png',size:20,data:'data:image/png;base64,eA=='}],context);
+  await ready(()=>release);
+  assert.equal(elements.get('sendChat').disabled,true);
+  app.state.chart='A';const other=app.chatContext();app.state.chatKey=other.key;
+  release();await task;
+  assert.equal(app.selectedChatImages(context).length,1);assert.equal(app.selectedChatImages(other).length,0);
+  assert(calls[0].url.endsWith('/chat/reference-images'));assert(calls[0].body.data_url.startsWith('data:image/'));
+  const history=app.referenceImageHistoryHTML(app.selectedChatImages(context));
+  assert(history.includes('&lt;unsafe&gt;'));assert(!history.includes('<unsafe>'));
+  app.state.chart='B';app.state.chatKey=context.key;
+  sandbox.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,json:async()=>({...current,turns:[],drafts:[]})};};
+  await app.generateChat({user_message:'画成和参考图类似的样式'},'turns',context);
+  assert.deepEqual(calls.at(-1).body.reference_image_ids,['refimg_1']);
+  assert.equal(calls.at(-1).body.user_message,'画成和参考图类似的样式');
+}
+
+function testReferenceVisualReviewActions(){
+  const {app}=environment(),context=app.chatContext(),current=session();
+  const draft={id:'visual',chart:'B',chart_id:'cht_b',display_name:'Target',status:'font_unverified',
+    image_url:'/candidate.png',code:{'charts/B.py':'draw()'},can_continue:true,can_apply_after_reference_review:true,
+    reference_features:{features:[{feature_id:'f1',name:'半小提琴',expected:'<unsafe>',evidence:'左侧密度',transfer:'style'}]},
+    reference_comparison:{status:'different',items:[{feature_id:'f1',status:'different',observed:'仅有散点',reason:'密度未显示'}]}};
+  const html=app.renderDraft(draft,current,context);
+  assert(html.includes('读图与关键特征对照 · 有差异'));
+  assert(html.includes('data-draft-action="apply"'));
+  assert(!html.includes('审阅后应用此版'));assert(html.includes('应用此版'));assert(html.includes('选此版本继续更改'));
+  assert(html.includes('&lt;unsafe&gt;'));assert(!html.includes('<unsafe>'));
+  const blocked=app.renderDraft({...draft,status:'validation_failed',can_continue:false,can_apply_after_reference_review:false},current,context);
+  assert(!blocked.includes('data-draft-action="apply-reviewed"'));
+}
+
 (async () => {
+  testReferenceVisualReviewActions();
   testCards();
   testClarificationQuestion();
+  await testUploadedImageIsolationAndSubmission();
   await testTargetIsolation();
   await testSubmitHandler();
   await testFinalizeRefresh();

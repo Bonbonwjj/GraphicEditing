@@ -28,7 +28,7 @@ def inspect_source_samples(project, chart, context, references=()):
             continue
         declared=[column['name'] for ref in references if ref.get('path')==path for column in ref.get('columns',[])
                   if column.get('role','').lower() in ('group','grouping','condition') and column.get('name') in table.columns]
-        group_columns=declared+[column for column in table.columns if column.lower() in ('group','condition','treatment','组别','分组') and column not in declared]
+        group_columns=declared+[column for column in table.columns if column.lower() in ('group','group_label','condition','treatment','组别','分组') and column not in declared]
         if not group_columns:
             unresolved.append(path);continue
         group=group_columns[0]

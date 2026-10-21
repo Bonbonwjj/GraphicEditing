@@ -569,6 +569,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "history"] and self.command == "GET":
             project_path(parts[2])
             return self.json_response({"sessions": CHAT.history(parts[2])})
+        if len(parts)>=5 and parts[:2]==['api','projects'] and parts[3:5]==['chat','reference-images']:
+            from chat_reference_images import store,resolve
+            project_path(parts[2]);directory=CHAT.directory(parts[2])
+            if len(parts)==5 and self.command=='POST':
+                return self.json_response(store(directory,parts[2],self.body_json()))
+            if len(parts)==7 and parts[6]=='image' and self.command=='GET':
+                return self.bytes_response(Path(resolve(directory,parts[5])['_image']).read_bytes(),'image/png')
+            return self.json_response({'error':'Reference image route not found'},404)
         if len(parts) >= 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "sessions"]:
             project = parts[2]
             project_path(project)
@@ -596,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not image.resolve().is_relative_to(CHAT.path(project, sid).parent.resolve()):
                         raise ValueError("Invalid draft image path")
                     return self.bytes_response(image.read_bytes(), "image/png")
-                if self.command == "POST" and action in ("apply", "activate", "discard", "recheck"):
+                if self.command == "POST" and action in ("apply", "apply-reviewed", "activate", "discard", "recheck"):
                     self.body_json()
                     return self.json_response(CHAT.draft_action(project, sid, did, action))
             return self.json_response({"error": "Chat route not found"}, 404)

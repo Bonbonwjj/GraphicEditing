@@ -16,6 +16,66 @@ BASE=(ROOT/'docs/chat-acceptance/inputs/01.json')
 
 
 class HarnessTests(unittest.TestCase):
+    def test_quality_and_revision_checks_do_not_gate_candidate_actions(self):
+        created=self.turn({'user_message':'first'});did=created['drafts'][-1]['id']
+        for status in ('validation_failed','needs_clarification','font_unverified','axis_unmet',
+                       'intent_unmet','intent_unverified','no_visible_change','revision_conflict','discarded','applied'):
+            with self.subTest(status=status):
+                stored=self.h.load('test',created['id']);draft=stored['drafts'][-1]
+                draft.update(status=status,base_revision='old-version',paired_runtime_sha256='old-rules',
+                    chart_type_style={'runtime_sha256':'old-rules'},data_report={'status':'fail','changed':[{}]},
+                    chart_transform={'status':'fail'},edit_contract={'blocking':True})
+                self.h.save(stored)
+                active=self.h.draft_action('test',created['id'],did,'activate')
+                self.assertTrue(active['drafts'][-1]['can_continue'])
+                self.assertTrue(active['drafts'][-1]['can_apply'])
+                with patch.object(self.h,'commit_draft') as commit:
+                    applied=self.h.draft_action('test',created['id'],did,'apply')
+                commit.assert_called_once();self.assertEqual(applied['drafts'][-1]['status'],'applied')
+
+    def test_candidate_without_image_can_continue_and_apply_attempts_render(self):
+        created=self.turn({'user_message':'first'});stored=self.h.load('test',created['id']);draft=stored['drafts'][-1]
+        draft.pop('image_path',None);draft.pop('image_url',None);draft['status']='render_failed';self.h.save(stored)
+        self.assertTrue(self.h.get('test',created['id'])['drafts'][-1]['can_apply'])
+        active=self.h.draft_action('test',created['id'],draft['id'],'activate')
+        self.assertEqual(active['active_drafts'][draft['chart_id']],draft['id'])
+        with patch.object(self.h,'commit_draft') as commit:
+            applied=self.h.draft_action('test',created['id'],draft['id'],'apply')
+        commit.assert_called_once();self.assertEqual(applied['drafts'][-1]['status'],'applied')
+
+    def test_failed_font_inspection_does_not_block_fixing_candidate_code(self):
+        created=self.turn({'user_message':'first'});stored=self.h.load('test',created['id']);draft=stored['drafts'][-1]
+        draft['status']='render_failed';draft.pop('image_path',None);draft.pop('font_audit',None)
+        stored['font_context_cache']={};self.h.save(stored)
+        with patch('chat_runner.inspect_chart_fonts',side_effect=ValueError('broken candidate')):
+            result=self.turn({'user_message':'fix this candidate'})
+        self.assertEqual(self.contexts[-1]['parent_draft_id'],draft['id'])
+        self.assertEqual(result['drafts'][-1]['status'],'preview_ready')
+
+    def test_actual_execution_failure_preserves_formal_files(self):
+        created=self.turn({'user_message':'first'});stored=self.h.load('test',created['id']);draft=stored['drafts'][-1]
+        draft.pop('image_path',None);draft['status']='render_failed';self.h.save(stored)
+        before=(self.project/'charts/b.py').read_bytes()
+        self.h.renderer=lambda *a,**kw:(_ for _ in ()).throw(ValueError('actual code execution failed'))
+        with self.assertRaisesRegex(ValueError,'actual code execution failed'):
+            self.h.draft_action('test',created['id'],draft['id'],'apply')
+        self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
+        self.assertTrue(self.h.get('test',created['id'])['drafts'][-1]['can_continue'])
+
+    def test_cross_metric_sample_error_reaches_repair_without_waiving_checks(self):
+        failure={'kind':'source_scope','status':'fail','code':'source_scope_mismatch','warnings':[],
+                 'reason':'候选每组 1425 行，当前指标应为 75 行；先按指标筛选再配对。'}
+        with patch('paired_plot.scope_mismatch',side_effect=[failure,None]):
+            session=self.h.turn('test',self.session['id'],{'user_message':'参照图片调整绘图样式'})
+        result=session['turns'][-1]['results'][0]
+        self.assertEqual(result['status'],'preview_ready',result)
+        self.assertEqual(len(self.contexts),2)
+        self.assertLessEqual(result['model_attempts'],3)
+        history=session['drafts'][-1]['check_history']
+        self.assertEqual(history[0]['status'],'validation_failed')
+        self.assertEqual(history[0]['diagnostics'][0]['code'],'source_scope_mismatch')
+        self.assertIn('1425',self.contexts[-1]['harness_layout_feedback']['reason'])
+
     def test_prompt_csv_scope_keeps_only_selected_panel_rows(self):
         files={
             'charts/target.py':{'path':'charts/target.py','content':"read_csv('data/panels.csv')\npanel_id = 'target'",'sha256':'source'},
@@ -142,11 +202,11 @@ class HarnessTests(unittest.TestCase):
         self.assertIsNone(self.contexts[-1]['parent_draft_id'])
         self.assertIn('# first',next(f for f in self.contexts[-1]['source_files'] if f['writable'])['content'])
 
-    def test_dependency_change_rejects_apply(self):
+    def test_dependency_change_does_not_gate_apply(self):
         a=self.turn({'user_message':'first'});(self.project/'shared_draw.py').write_text('# changed', encoding="utf-8", newline="\n")
-        with self.assertRaisesRegex(ValueError,'revision_conflict'):
-            self.h.draft_action('test',a['id'],a['drafts'][0]['id'],'apply')
-        self.assertEqual((self.project/'charts/b.py').read_text(encoding="utf-8"),self.source)
+        with patch.object(self.h,'commit_draft') as commit:
+            applied=self.h.draft_action('test',a['id'],a['drafts'][0]['id'],'apply')
+        commit.assert_called_once();self.assertEqual(applied['drafts'][0]['status'],'applied')
 
     def test_foreign_draft_and_missing_warning_rejected(self):
         a=self.turn({'user_message':'first'})
@@ -172,7 +232,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(d['status'],'needs_clarification')
         self.assertEqual(a['active_drafts'][d['chart_id']],d['id'])
         self.assertTrue(d['can_continue'])
-        with self.assertRaises(ValueError):self.h.draft_action('test',a['id'],d['id'],'apply')
+        self.assertTrue(d['can_apply'])
         b=self.turn({'user_message':'accept overlap','layout_exception':{'warning_ids':['w1'],'authorization_quote':'accept overlap'}})
         self.assertEqual(b['drafts'][-1]['status'],'preview_ready')
         self.assertEqual(b['drafts'][-1]['layout']['status'],'accepted_exception')
@@ -191,12 +251,12 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(second['drafts'][-1]['status'],'preview_ready')
         self.assertEqual((self.project/'charts/b.py').read_text(encoding='utf-8'),self.source)
 
-    def test_layout_continuation_still_rejects_changed_or_removed_data(self):
+    def test_layout_data_differences_do_not_gate_continuation(self):
         draft={'image_path':'candidate.png','code':{'charts/b.py':'pass'},
                'status':'needs_clarification','review_blocker':'layout_conflict'}
         for report in ({'changed':[{'key':'line'}]}, {'removed':[{'key':'line'}]}, {'status':'fail'}):
             with self.subTest(report=report):
-                self.assertFalse(self.h.can_continue_draft({**draft,'data_report':report}))
+                self.assertTrue(self.h.can_continue_draft({**draft,'data_report':report}))
 
     def test_accepting_layout_allows_identical_image_only_for_explicit_acceptance(self):
         self.layout_issues=[{'id':'w1','kind':'text_overlap','elements':['xlabel','tick']}]
@@ -219,10 +279,12 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(self.contexts)-count,1)
         self.assertEqual(len(b['turns'][-1]['results']),1)
 
-    def test_data_change_cannot_apply(self):
+    def test_data_change_is_advisory_on_explicit_apply(self):
         self.changed_data=True;a=self.turn({'user_message':'first'})
         self.assertEqual(a['drafts'][0]['status'],'validation_failed')
-        with self.assertRaises(ValueError):self.h.draft_action('test',a['id'],a['drafts'][0]['id'],'apply')
+        with patch.object(self.h,'commit_draft') as commit:
+            applied=self.h.draft_action('test',a['id'],a['drafts'][0]['id'],'apply')
+        commit.assert_called_once();self.assertEqual(applied['drafts'][0]['status'],'applied')
 
     def test_verified_chart_conversion_allows_expected_geometry_changes(self):
         def converted(*args,**kwargs):
@@ -264,7 +326,7 @@ class HarnessTests(unittest.TestCase):
         with patch('chart_transform.verify_distribution',return_value={'status':'pass'}):
             result=self.turn({'user_message':'改为箱线图'})
         self.assertEqual(result['drafts'][-1]['status'],'validation_failed')
-        self.assertFalse(result['drafts'][-1]['can_continue'])
+        self.assertTrue(result['drafts'][-1]['can_continue'])
 
     def test_missing_target_distribution_can_be_repaired_but_wrong_data_cannot(self):
         with patch('chart_transform.verify_distribution',side_effect=[
@@ -290,11 +352,11 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(checked['drafts'][-1]['rechecked_from'],first['drafts'][-1]['id'])
         self.assertEqual(checked['active_drafts'][checked['drafts'][-1]['chart_id']],checked['drafts'][-1]['id'])
 
-    def test_recheck_rejects_stale_source(self):
+    def test_recheck_uses_current_dependencies_without_rejecting_old_candidate(self):
         first=self.turn({'user_message':'first'})
         (self.project/'charts/b.py').write_text(self.source+'\n# external edit\n')
-        with self.assertRaisesRegex(ValueError,'revision_conflict'):
-            self.h.draft_action('test',first['id'],first['drafts'][-1]['id'],'recheck')
+        result=self.h.draft_action('test',first['id'],first['drafts'][-1]['id'],'recheck')
+        self.assertTrue(result['drafts'][-1]['can_continue'])
 
     def test_reference_versions_pinned_across_turns(self):
         self.session=self.h.create('test',['b'],['c']);first=self.session['references'][0]['revision_id']
@@ -316,13 +378,13 @@ class HarnessTests(unittest.TestCase):
         a=self.turn({'user_message':'accept','layout_exception':{'warning_ids':['w1'],'authorization_quote':'accept'}})
         self.assertEqual(a['drafts'][-1]['status'],'needs_clarification')
 
-    def test_unrequested_view_change_does_not_become_applicable(self):
+    def test_view_changes_are_reported_without_gating_candidate_actions(self):
         self.axes_changes=[{'axis':'x','before':[0,10],'after':[0,1]}]
         a=self.turn({'user_message':'line width only'})
         self.assertEqual(a['drafts'][-1]['status'],'needs_clarification')
-        self.assertFalse(a['drafts'][-1]['can_continue'])
-        with self.assertRaises(ValueError):
-            self.h.draft_action('test',a['id'],a['drafts'][-1]['id'],'activate')
+        self.assertTrue(a['drafts'][-1]['can_continue'])
+        active=self.h.draft_action('test',a['id'],a['drafts'][-1]['id'],'activate')
+        self.assertEqual(active['active_drafts'][a['drafts'][-1]['chart_id']],a['drafts'][-1]['id'])
 
     def test_reference_image_is_immutable_and_target_image_is_in_context(self):
         import io
@@ -352,7 +414,9 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
         self.assertFalse(Path(a['drafts'][0]['image_url']).is_file())
         self.assertFalse((self.h.path('test',a['id']).parent/'drafts'/a['drafts'][0]['id']).exists())
-        with self.assertRaises(ValueError):self.h.draft_action('test',a['id'],a['drafts'][1]['id'],'apply')
+        with patch.object(self.h,'commit_draft') as commit:
+            self.h.draft_action('test',a['id'],a['drafts'][1]['id'],'apply')
+        commit.assert_called_once()
 
     def test_orphan_running_session_recovers_after_restart(self):
         a=self.h.load('test',self.session['id']);a['status']='running';self.h.save(a)

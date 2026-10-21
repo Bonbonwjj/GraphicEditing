@@ -137,6 +137,12 @@ def prepare_conversion_proposal(context,response):
     remain subject to the existing conversion checks, never marked compliant.
     """
     policy=conversion_style(context.get('user_message',''))
+    if not policy:
+        from chat_reference_images import inferred_distribution
+        kind=inferred_distribution(context,response)
+        if kind:
+            policy=conversion_style(context.get('user_message','')+'；改为'+('小提琴图' if kind=='violinplot' else '箱线图'))
+            policy['inferred_from_reference']=True
     if not policy or response.get('status')!='candidate':return response
     result=copy.deepcopy(response);result['chart_type_style']=policy
     result['chart_type_style']['runtime_sha256']=runtime_signature()

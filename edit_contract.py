@@ -126,8 +126,21 @@ def verify_requirements(message,report):
 def finish_summary(draft):
     """Visible completion text comes from checks, with model prose kept for auditing."""
     draft.setdefault('proposal_summary',draft.get('summary',''))
+    if draft.get('code') and draft.get('status') not in ('preview_ready','applied','discarded'):
+        draft['summary']=('候选代码已保留，尚未成功出图；可继续修改，或点击应用尝试重新执行。'
+                          if not draft.get('image_path') else
+                          '候选已保留；检查差异仅作提示，可直接应用或基于此版本继续修改。')
+        return
     contract=draft.get('edit_contract') or {}
     if draft['status']=='preview_ready':
-        draft['summary']=(f"已生成候选；{len(contract.get('requirements',[]))} 项参数要求通过最终导出核对，请审阅后应用。" if contract.get('status')=='pass' else '已生成候选；部分要求需对照图片人工审阅，请审阅后应用。')
+        draft['summary']=(f"已生成候选；{len(contract.get('requirements',[]))} 项参数要求通过最终导出核对，请直接应用。" if contract.get('status')=='pass' else '已生成候选；部分要求需对照图片人工审阅，请直接应用。')
+        comparison=draft.get('reference_comparison')
+        if comparison:
+            label={'match':'关键特征一致','different':'部分关键特征有差异','unverified':'部分关键特征尚未确认'}.get(comparison.get('status'),'请审阅特征对照')
+            draft['summary']='已生成候选；参考图视觉核对：'+label+'。可继续基于此版修改，或直接应用。'
+    elif draft.get('review_blocker')=='paired_presentation':
+        draft['summary']='候选已保留，原始样本和被试配对已核对；展示差异可继续修改，或应用此版。'
     elif draft['status']=='already_compliant':draft['summary']=draft.get('reason','当前图已满足要求。')
+    elif draft.get('reference_comparison') and draft['status'] in ('axis_unmet','font_unverified','no_visible_change','intent_unmet','intent_unverified'):
+        draft['summary']='候选存在展示要求差异；可继续修改，或对照参考图直接应用。'+draft.get('reason','')
     else:draft['summary']='候选尚未通过检查，未替换正式图。'+draft.get('reason','')

@@ -227,7 +227,7 @@ def _one_render(project, entry, files, directory):
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "chart_overrides.py", "chart_type_defaults.py", "axis_range_policy.py"):
+    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "chart_overrides.py", "chart_type_defaults.py", "axis_range_policy.py", "paired_plot.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
     profile_relative = Path("skills/chart-normalization/assets/style-profile.v1.json")
     target = package_root / profile_relative
@@ -453,6 +453,7 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "baseline_distribution_inputs": baseline.get("distribution_inputs", []),
                   "distribution_overlays": candidate.get("distribution_overlays", []),
                   "candidate_artists": candidate.get("artists", []),
+                  "paired_plots": candidate.get("paired_plots", []),
                   "font_audit": candidate.get("font_audit"),
                   "baseline_font_audit": baseline.get("font_audit"),
                   "warnings": _runtime_warnings(candidate.get("stderr")),
@@ -507,6 +508,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
     records, texts, issues, unsupported, axes_info, axes_layout, legend_regions = [], [], [], [], [], [], []
     distribution_inputs = []
     distribution_overlays = []
+    paired_plots = []
     axis_details = []
     panel_spacing = {'status': 'not_applicable', 'minimum_multiple': panel_gap_multiple, 'pairs': []}
     errorbar_roles = {}
@@ -601,6 +603,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
                         "data_hash": hashlib.sha256(joined.encode()).hexdigest(),
                         "data": data, "visibility": visibility, "style": style,
                         "semantic_role": role, "role_evidence": evidence,
+                        "paired_plot_member": any(obj is a for a in getattr(obj.axes, '_paired_plot_record', {}).get('artists', [])),
                         "distribution_mutated": (hasattr(obj, '_chat_initial_numeric') and
                             obj._chat_initial_numeric != data.get('rendered_values')),
                         "errorbar_component": component,
@@ -609,6 +612,9 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         if not ax.get_visible():
             continue
         prefix = "axes_" + str(ai)
+        from paired_plot import capture as capture_paired
+        paired = capture_paired(ax)
+        if paired: paired_plots.append({**paired, 'axis': ai})
         calls = getattr(ax, '_chat_distribution_inputs', [])
         scatter = [(i, c) for i, c in enumerate(ax.collections) if isinstance(c, PathCollection)]
         if len(calls) == 1 and scatter:
@@ -876,6 +882,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         limitations.append(unsupported[-1])
     return {"artists": records, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
             "distribution_inputs": distribution_inputs, "distribution_overlays":distribution_overlays,
+            "paired_plots": paired_plots,
             "normalization_report": getattr(fig, "_normalization_report", None),
             "render_size_px": [round(canvas.width), round(canvas.height)],
             "layout_signature": {"size_inches": list(map(float, fig.get_size_inches())), "dpi": float(fig.dpi),

@@ -51,6 +51,14 @@ class ChartTransformTests(unittest.TestCase):
         self.assertEqual([g['count'] for g in result['matches'][0]['groups']],[3,3])
         self.assertTrue(any('不显示离群点' in w for w in result['warnings']))
 
+    def test_image_guided_conversion_still_requires_original_samples(self):
+        self.context.update(user_message='改为和这个参考图类似的图',reference_images=[{'reference_id':'ref_image','revision_id':'sha256:ref'}],image_order=['ref_image'])
+        self.proposal['interpreted_request']={'operations':[{'property':'chart_type','desired_change':'boxplot'}]}
+        self.assertEqual(self.verify(self.report())['status'],'pass')
+        self.assertEqual(self.verify(self.report(groups=[[1,2,6],[2,3,7]]))['status'],'fail')
+        self.context['user_message']='只参考配色，图型保持不变'
+        self.assertIsNone(self.verify(self.report()))
+
     def test_violin_from_same_samples_passes(self):
         self.context['user_message']='将此图改成小提琴图'
         result=self.verify(self.report(kind='violinplot'))

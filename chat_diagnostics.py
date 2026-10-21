@@ -9,6 +9,13 @@ def explain_draft(draft):
     source=transform.get('source_evidence') or {}
     data = draft.get('data_report') or {}
     reason = draft.get('reason') or ''
+    if transform.get('code')=='source_scope_mismatch':
+        return [{'code':'source_scope_mismatch','title':'候选混入其他指标或重复样本','category':'mismatch',
+                 'reason':reason,'next_action':'先按当前指标筛选，再检查条件内受试者 ID 唯一性并按 ID 配对；查看当前指标预期样本数。','evidence':[]}]
+    if status=='render_failed' and 'Invalid arguments to set_clip_path' in reason:
+        return [{'code':'invalid_clip_path','title':'候选裁剪代码参数错误','category':'execution',
+                 'reason':'绘图代码把 Bbox 传给了不接受该类型的 set_clip_path；半小提琴尚未成功出图。',
+                 'next_action':'使用平台半小提琴绘制函数，或有效的 Path/Patch 裁剪；原始运行错误保留在详情。','evidence':[]}]
     if status in ('cannot_complete','agent_failed','needs_shared_module'):
         options=[
             ('429','model_rate_limit','模型服务限流','稍后重试，或检查服务端额度和并发限制。'),
@@ -49,6 +56,7 @@ def explain_draft(draft):
             '检查下方变化对象。绘图几何差异不直接证明 CSV 被改；图型转换需核对原始样本，普通样式修改应保留数据映射。')
     else:
         choices = {
+            'paired_presentation': ('paired_presentation', '展示差异待审阅，可继续修改或应用', 'presentation', '样本、观测值和被试配对已核对；可继续调整组别图例或统计标注，也可点击“应用此版”，接受当前展示差异。'),
             'layout_conflict': ('layout_conflict', '布局存在重叠或裁切', 'presentation', '可基于此候选继续修复；审阅所列冲突后也可明确接受布局例外。'),
             'font_unverified': ('font_unverified', '字体效果未确认', 'unverified', '查看实际字体、替代字体或缺字信息，可继续调整字体。'),
             'manual_review': ('manual_review', '需人工审阅', 'unverified', '对照当前图人工核对要求；模型的完成判断尚未获得自动验证。'),
@@ -75,7 +83,9 @@ def explain_draft(draft):
 def check_results(draft, transform, font_issue, axis_issue, visual_issue, remaining, view_issue=False, addition_issue=False):
     """A checklist of observed evidence, independent of the first blocking reason."""
     data=draft.get('data_report') or {}
-    transformed=bool(transform and transform['status']=='pass' and data.get('status') not in ('fail','changed','conflict'))
+    transformed=bool(transform and (transform['status']=='pass' or
+        (transform.get('status')=='presentation_review' and transform.get('data_integrity_verified')))
+        and data.get('status') not in ('fail','changed','conflict'))
     changed=bool(data.get('changed') or data.get('removed') or data.get('status') in ('fail','changed','conflict'))
     layout=draft.get('layout') or {}
     return [

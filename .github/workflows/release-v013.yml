@@ -1,0 +1,92 @@
+name: Release v0.1.3 macOS
+on:
+  push:
+    tags: ['v0.1.3']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      TMPDIR: /private/tmp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.1.3
+      - name: Recover the verified Apple Silicon runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          gh release download v0.1.2 --pattern Plot-Forge-v0.1.2-macOS-arm64.zip --dir "$RUNNER_TEMP/previous"
+          ditto -x -k "$RUNNER_TEMP/previous/Plot-Forge-v0.1.2-macOS-arm64.zip" "$RUNNER_TEMP/previous/app"
+          python3 - <<'PY'
+          import os,json,hashlib,shutil
+          from pathlib import Path
+          from desktop_launcher import prepare,python_path
+          from app_version import APP_VERSION
+          assert APP_VERSION=='0.1.3'
+          archive=Path(os.environ['RUNNER_TEMP'])/'previous/Plot-Forge-v0.1.2-macOS-arm64.zip'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest()=='2ffe88e6bedd008660d0c3af36d116303d288c7e443270ec37083c4c2c8c6f11'
+          payload=Path(os.environ['RUNNER_TEMP'])/'previous/app/Plot Forge.app/Contents/Resources/payload'
+          runtime,_=prepare(payload,Path(os.environ['RUNNER_TEMP'])/'build-runtime')
+          stage=Path('.desktop-build/payload');stage.mkdir(parents=True)
+          (stage/'app').mkdir()
+          shutil.copy2(payload/'runtime.tar.gz',stage/'runtime.tar.gz')
+          manifest=json.loads((payload/'manifest.json').read_text())
+          manifest['environment_sha256']=hashlib.sha256((runtime/'conda-meta/history').read_bytes()).hexdigest()
+          (stage/'manifest.json').write_text(json.dumps(manifest))
+          with open(os.environ['GITHUB_ENV'],'a') as env:env.write('RUNTIME_PYTHON='+str(python_path(runtime))+'\n')
+          PY
+      - name: Test candidate actions and reference editing
+        run: |
+          "$RUNTIME_PYTHON" -m unittest tests.test_chat_harness tests.test_chat_reference_images tests.test_paired_plot tests.test_reference_visual_review tests.test_edit_contract tests.test_chat_parameters tests.test_chat_diagnostics tests.test_desktop_launcher tests.test_model_connection -q
+          node tests/test_chat_frontend.js
+          node tests/test_shared_module_frontend.js
+          node tests/test_model_connection_frontend.js
+      - name: Build v0.1.3
+        run: '"$RUNTIME_PYTHON" build_desktop.py --reuse-runtime'
+      - name: Verify bundled app and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict "dist/Plot Forge.app"
+          export PLOT_FORGE_HOME="$RUNNER_TEMP/first launch 中文"
+          PATH=/nonexistent "$GITHUB_WORKSPACE/dist/Plot Forge.app/Contents/MacOS/Plot Forge" --smoke-report "$RUNNER_TEMP/native-smoke.json"
+          "$RUNTIME_PYTHON" - <<'PY'
+          from pathlib import Path
+          import os,json,hashlib
+          payload=Path('dist/Plot Forge.app/Contents/Resources/payload')
+          smoke=json.loads((Path(os.environ['RUNNER_TEMP'])/'native-smoke.json').read_text())
+          assert smoke['ok']
+          excluded={'build_desktop.py','desktop_launcher.py','export_shared_projects.py'}
+          for path in Path('.').glob('*.py'):
+              if path.name not in excluded:assert (payload/'app'/path.name).read_bytes()==path.read_bytes(),str(path)
+          for name in ['static/app.js','static/app.css','static/index.html','skills/chart-chat-edit/SKILL.md','skills/chart-normalization/SKILL.md','docs/USER_GUIDE.zh-CN.md','docs/CHAT_HARNESS.zh-CN.md']:
+              assert (payload/'app'/name).read_bytes()==Path(name).read_bytes(),name
+          manifest=json.loads((payload/'manifest.json').read_text())
+          assert manifest['version']=='0.1.3'
+          assert smoke['health']['desktop_release']==manifest['release']
+          archive=Path('dist/Plot-Forge-v0.1.3-macOS-arm64.zip')
+          sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          result={'ok':True,'source_commit':os.environ['GITHUB_SHA'],'workflow_run':os.environ['GITHUB_SERVER_URL']+'/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/'+os.environ['GITHUB_RUN_ID'],'version':manifest['version'],'release':manifest['release'],'sha256':sha,'size':archive.stat().st_size,'native_smoke':True,'codesign':True,'payload_matches_source':True,'architecture':'arm64'}
+          Path('dist/v0.1.3-validation.json').write_text(json.dumps(result,indent=2))
+          Path('dist/SHA256SUMS.txt').write_text(sha+'  '+archive.name+'\n')
+          print(json.dumps(result))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v0.1.3-macOS-validation
+          path: |
+            dist/Plot-Forge-v0.1.3-macOS-arm64.zip
+            dist/v0.1.3-validation.json
+            dist/SHA256SUMS.txt
+            ${{ runner.temp }}/native-smoke.json
+      - name: Upload release assets
+        run: |
+          gh release view v0.1.3 >/dev/null 2>&1 || gh release create v0.1.3 --draft --prerelease --title v0.1.3 --notes-file docs/RELEASE-v0.1.3.zh-CN.md
+          gh release upload v0.1.3 dist/Plot-Forge-v0.1.3-macOS-arm64.zip dist/v0.1.3-validation.json dist/SHA256SUMS.txt

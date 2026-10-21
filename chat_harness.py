@@ -93,10 +93,42 @@ def scoped_plot_data(files, chart):
 
 
 class ChatHarness:
-    def __init__(self, host, agent=None, renderer=None):
+    def __init__(self, host, agent=None, renderer=None, visual_agent=None):
         self.host = host
         self.agent = agent or self.call_agent
         self.renderer = renderer
+        self.visual_agent = visual_agent or self.call_agent
+
+    def read_reference_features(self,session,context):
+        from reference_visual_review import cache_key,visual_request,validate
+        cache=session.setdefault('reference_feature_cache',{})
+        key=cache_key(context)
+        if key not in cache:
+            session['progress']['stage']='reading_reference';self.save(session)
+            request=visual_request(context,'extract')
+            cache[key]=validate(request,self.visual_agent(request))
+            # Bound cache growth while keeping pinned, reusable observations.
+            while len(cache)>12:cache.pop(next(iter(cache)))
+            self.save(session)
+        return json.loads(json.dumps(cache[key]))
+
+    def compare_reference_features(self,session,context,draft,budget):
+        from reference_visual_review import visual_request,validate,unavailable
+        draft['reference_features']=context['reference_features']
+        if not draft.get('image_path'):
+            draft['reference_comparison']=unavailable(draft['reference_features'],'候选尚未成功出图。');return
+        if budget['used']>=MAX_MODEL_ATTEMPTS:
+            draft['reference_comparison']=unavailable(draft['reference_features'],'本轮三次模型调用已用完；保留候选供审阅，尚未完成视觉对照。');return
+        session['progress']['stage']='comparing_reference';self.save(session)
+        try:
+            request=visual_request(context,'compare',draft)
+            draft['reference_comparison']=validate(request,self.visual_agent(request))
+        except Exception as error:
+            draft['reference_comparison']=unavailable(draft['reference_features'],'视觉对照未完成：'+str(error)[:500])
+        comparison=draft['reference_comparison']
+        draft.setdefault('check_results',[]).append({'name':'参考图关键特征（审阅项）',
+            'status':{'match':'pass','different':'mismatch'}.get(comparison['status'],'unverified'),
+            'reason':'视觉匹配结果供审阅，不阻断继续修改或应用；数据及版本检查独立执行。'})
 
     def call_agent(self, context):
         url = os.environ.get('CHAT_AGENT_URL')
@@ -174,6 +206,8 @@ class ChatHarness:
         if any('chart_type_defaults' in f.get('content','') for f in files.values()):
             helper=self.host.ROOT/'chart_type_defaults.py'
             dependencies['@platform/chart_type_defaults.py']=digest(helper.read_bytes())
+        if any('paired_plot' in f.get('content','') for f in files.values()):
+            dependencies['@platform/paired_plot.py']=digest((self.host.ROOT/'paired_plot.py').read_bytes())
         if any(any(name in f.get('content','') for name in ('axis_range_policy','chart_type_defaults')) for f in files.values()):
             dependencies['@platform/axis_range_policy.py']=digest((self.host.ROOT/'axis_range_policy.py').read_bytes())
         from bundle_bindings import signature as bundle_signature
@@ -187,40 +221,8 @@ class ChatHarness:
                 for f in (self.host.ROOT/'studio_style.py',self.host.ROOT/'chart_overrides.py',self.host.NORMALIZATION_PROFILE)}
 
     def ensure_current_base(self,session,record):
-        """Upgrade legacy Skill-inclusive revisions only when drawing inputs match."""
-        chart_id=record['chart_id']
-        files,current=self.snapshot(session['project'],record['chart'])
-        previous=session['base_revisions'][chart_id]
-        if current==previous:return files,current
-        before=session['base_sources'].get(chart_id,{})
-        changed=sorted(path for path in set(before)|set(files)
-                       if before.get(path,{}).get('sha256')!=files.get(path,{}).get('sha256'))
-        if changed:
-            raise ValueError('revision_conflict：正式绘图文件或共用数据已变化：'+', '.join(changed[:5]))
-        platform=self.platform_dependencies()
-        saved_platform=session.get('base_platform_hashes')
-        if saved_platform is not None and saved_platform!=platform:
-            changed=sorted(path for path in set(saved_platform)|set(platform)
-                           if saved_platform.get(path)!=platform.get(path))
-            helper='@platform/chart_overrides.py'
-            old_sources=[f.get('content','') for source_map in session['base_sources'].values() for f in source_map.values()]
-            old_sources.extend(code for d in session.get('drafts',[]) for code in d.get('code',{}).values())
-            if changed!=[helper] or helper in saved_platform or any('chart_overrides' in code for code in old_sources):
-                raise ValueError('revision_conflict：绘图运行依赖已变化：'+', '.join(changed))
-        if saved_platform is None:
-            # Older sessions saved source hashes but not platform hashes.
-            # Permit migration only when both rendering dependencies predate
-            # the session; otherwise their original contents are unknown.
-            created=datetime.fromisoformat(session['created_at']).timestamp()
-            runtime=(self.host.ROOT/'studio_style.py',self.host.NORMALIZATION_PROFILE)
-            if any(path.stat().st_mtime>created for path in runtime):
-                raise ValueError('revision_conflict：绘图运行依赖可能已变化；旧会话无法安全确认，请新建会话')
-        session['base_revisions'][chart_id]=current
-        session['base_platform_hashes']=platform
-        for draft in session.get('drafts',[]):
-            if draft['chart_id']==chart_id and draft.get('base_revision')==previous:
-                draft['base_revision']=current
-        return files,current
+        """Compatibility alias: version changes are informational, not a gate."""
+        return self.refresh_action_base(session,record)
 
     def create(self, project, charts, references=None):
         if not isinstance(charts,list) or not charts or len(charts)>100 or len(set(charts))!=len(charts):
@@ -230,7 +232,7 @@ class ChatHarness:
                    'chart_ids':[r['chart_id'] for r in records], 'charts':records,
                    'base_revisions':{},'base_sources':{},'active_drafts':{},'turns':[], 'drafts':[],
                    'base_platform_hashes':self.platform_dependencies(),
-                   'references':self.references(project,references or []),'layout_exceptions':{},'status':'open',
+                   'reference_images':[],'references':self.references(project,references or []),'layout_exceptions':{},'status':'open',
                    'created_at':datetime.now(timezone.utc).isoformat()}
         for record in records:
             files,revision = self.snapshot(project,record['chart'])
@@ -260,10 +262,16 @@ class ChatHarness:
         value=json.loads(json.dumps(session))
         value.pop('base_sources',None)
         value.pop('font_context_cache',None)
+        value.pop('reference_feature_cache',None)
         for record in value['charts']:record.pop('_image',None)
         for draft in value['drafts']:
             draft['diagnostics'] = explain_draft(draft)
             draft['can_continue'] = self.can_continue_draft(draft)
+            draft['can_apply_after_reference_review']=self.can_apply_after_reference_review(draft)
+            draft['can_apply']=self.can_continue_draft(draft)
+            if draft['can_continue'] and draft['status'] not in ('preview_ready','applied','discarded'):
+                from edit_contract import finish_summary
+                finish_summary(draft)
             if draft.get('baseline_image_path'):
                 draft['baseline_image_url'] = (f"/api/projects/{session['project']}/chat/sessions/{session['id']}"
                                                f"/drafts/{draft['id']}/baseline-image")
@@ -272,6 +280,8 @@ class ChatHarness:
             draft.pop('baseline_image_path',None)
         for turn in value['turns']:
             for result in turn.get('results',[]):result.pop('_image',None)
+        from chat_reference_images import public as public_images
+        value['reference_images']=public_images(value.get('reference_images',[]))
         for ref in value['references']:
             ref.pop('source_files',None);ref.pop('plot_data',None);ref.pop('_image',None)
         return value
@@ -304,7 +314,8 @@ class ChatHarness:
         draft_fields=('id','turn_id','chart','chart_id','display_name','status','summary',
                       'reason','warnings','layout','image_url','baseline_image_url',
                       'normalization_report','font_audit','visual_change','created_at','edit_contract',
-                      'proposal_summary','check_results','diagnostics','chart_transform','chart_type_style','generation_path')
+                      'proposal_summary','check_results','diagnostics','chart_transform','chart_type_style','generation_path',
+                      'reference_features','reference_comparison','can_apply_after_reference_review')
         for session in self.list(project):
             drafts=[]
             for draft in session['drafts']:
@@ -317,7 +328,7 @@ class ChatHarness:
             sessions.append({'id':session['id'],'project':project,'charts':session['charts'],
                              'status':session['status'],'created_at':session['created_at'],
                              'active_drafts':session['active_drafts'],'turns':session['turns'],
-                             'drafts':drafts})
+                             'drafts':drafts,'reference_images':session.get('reference_images',[])})
         return sessions
 
     def cached_image(self,project,chart,source,revision):
@@ -357,6 +368,8 @@ class ChatHarness:
             for path,source in parent['code'].items():
                 files[path]['content']=source;files[path]['sha256']=digest(source)
         plot_data=scoped_plot_data(files,record['chart'])
+        from paired_plot import discover_contract
+        paired_data=discover_contract(self.host.project_path(session['project']),record['chart'],plot_data)
         lineage=[];ancestor=parent
         by_id={d['id']:d for d in session['drafts']}
         while ancestor and ancestor['id'] not in lineage:
@@ -374,12 +387,15 @@ class ChatHarness:
         for ref in refs:
             image_path=ref.pop('_image',None)
             if image_path:image_paths.append((ref['chart_id'],image_path))
+        from chat_reference_images import select as select_images,public as public_images,MAX_MODEL_IMAGES
+        uploaded=select_images(self.directory(session['project']),[r['reference_id'] for r in turn.get('reference_images',[])]) if turn['operation']!='normalize' else []
+        image_paths=[(r['reference_id'],r['_image']) for r in uploaded]+image_paths
         target_image=parent.get('image_path') if parent else record.get('_image')
         if target_image:image_paths.insert(0,('current_target',target_image))
         images=[];image_order=[]
         if effective_model_config()['vision_enabled']:
             from PIL import Image
-            for ident,path in image_paths[:3]:
+            for ident,path in image_paths[:MAX_MODEL_IMAGES]:
                 with Image.open(path) as source_image:
                     preview=source_image.copy()
                     preview.thumbnail((1024,1024),Image.Resampling.LANCZOS)
@@ -388,6 +404,8 @@ class ChatHarness:
                     data=encoded.getvalue()
                 if len(data)<2_000_000:
                     images.append('data:image/png;base64,'+base64.b64encode(data).decode());image_order.append(ident)
+        if uploaded and any(r['reference_id'] not in image_order for r in uploaded):
+            raise ValueError('参考图未能传入模型；请检查图片输入配置或重新上传较小的参考图')
         font_audit=parent.get('font_audit') if parent else None
         if turn['operation']!='normalize' and not font_audit and not skip_font_audit:
             cache_key=parent['id'] if parent else session['base_revisions'][chart_id]
@@ -395,8 +413,12 @@ class ChatHarness:
             font_audit=cache.get(cache_key)
             if font_audit is None:
                 from chat_runner import inspect_chart_fonts
-                font_audit=inspect_chart_fonts(self.host.project_path(session['project']),
+                try:
+                    font_audit=inspect_chart_fonts(self.host.project_path(session['project']),
                                                'charts/'+record['chart']+'.py',parent['code'] if parent else None)
+                except Exception as error:
+                    font_audit={'status':'unverified','fonts':[],
+                                'reason':'字体预检查未完成，继续生成修改方案：'+str(error)[:500]}
                 cache[cache_key]=font_audit
                 self.save(session)
         platform_helper=None
@@ -414,15 +436,16 @@ class ChatHarness:
                 'chart_type_style':__import__('chart_type_defaults').conversion_style(turn['user_message']),
                 'user_message':turn['user_message'],'source_files':[f for f in files.values() if f['path'].endswith('.py')],
                 'plot_data':plot_data,'allowed_write_paths':['charts/'+record['chart']+'.py'],
-                'reference_charts':refs,'project_chart_catalog':self.records(session['project'],list(self.identity(session['project'])['charts'])),
+                'paired_plot_data':paired_data,
+                'reference_images':public_images(uploaded),'reference_charts':refs,'project_chart_catalog':self.records(session['project'],list(self.identity(session['project'])['charts'])),
                 'shared_module_catalog':discover_modules(self.host.project_path(session['project'])),
                 'conversation_context':{'recent_turns':recent,'active_parent_lineage':lineage,
                     'active_source_authoritative':True,'non_lineage_turns':'Historical context only; do not reapply their changes or preservation constraints to this branch.',
                     'active_draft_summary':parent.get('summary') if parent else None},
                 'current_font_audit':font_audit,
-                'harness_layout_feedback':({'candidate_code':parent['code'],'layout':parent['layout'],
+                'harness_layout_feedback':({'candidate_code':parent['code'],'layout':parent.get('layout'),
                     'reason':parent.get('reason'),'accepted_exception':exception}
-                    if parent and parent.get('review_blocker')=='layout_conflict' else None),
+                    if parent and parent.get('status') not in ('preview_ready','applied') else None),
                 'platform_render_helper':platform_helper,
                 'constraints':['CSV and shared dependencies are read-only','Preserve data and scientific meaning','Only selected chart entry is writable','Default avoid unintended overlap; report unsupported checks'],
                 'layout_exception':exception,'visual_context_available':bool(images),'target_image_available':'current_target' in image_order,
@@ -433,27 +456,30 @@ class ChatHarness:
         if ident is None:return None
         candidate=next((d for d in session['drafts'] if d['id']==ident and d['chart_id']==chart_id),None)
         if not candidate or not self.can_continue_draft(candidate):
-            raise ValueError('该候选不可继续修改，请选择有图片且未触及数据安全边界的版本')
-        if candidate['base_revision']!=session['base_revisions'][chart_id]:
-            raise ValueError('该候选属于旧正式版本，请从当前正式版重新开始')
+            raise ValueError('该版本没有可继续修改的候选代码')
         return candidate
 
     @staticmethod
+    def can_apply_after_reference_review(draft):
+        # Compatibility field. All candidate checks are advisory for actions.
+        return ChatHarness.can_continue_draft(draft)
+
+    @staticmethod
     def can_continue_draft(draft):
-        if not draft.get('image_path') or not draft.get('code'):
-            return False
-        layout_only=(draft.get('status')=='needs_clarification'
-                     and draft.get('review_blocker')=='layout_conflict')
-        if not layout_only and draft.get('status') not in ('preview_ready','applied','axis_unmet','font_unverified',
-                                                          'no_visible_change','already_compliant','intent_unmet','intent_unverified'):
-            return False
-        report=draft.get('data_report') or {}
-        if report.get('status') in ('fail','changed','conflict'):
-            return False
-        if draft.get('chart_transform',{}).get('status')=='pass':
-            return True
-        return not (report.get('status') in ('fail','changed','conflict') or
-                    report.get('changed') or report.get('removed'))
+        return bool(isinstance(draft.get('code'),dict) and draft['code']
+                    and all(isinstance(code,str) and code.strip() for code in draft['code'].values()))
+
+    def refresh_action_base(self,session,record):
+        """Use current dependencies without rejecting an older candidate branch."""
+        files,revision=self.snapshot(session['project'],record['chart'])
+        previous=session['base_revisions'].get(record['chart_id'])
+        if previous!=revision:
+            session.setdefault('base_refreshes',[]).append({'chart_id':record['chart_id'],
+                'from':previous,'to':revision,'at':time.time()})
+        session['base_sources'][record['chart_id']]=files
+        session['base_revisions'][record['chart_id']]=revision
+        session['base_platform_hashes']=self.platform_dependencies()
+        return files,revision
 
     def exception(self,session,chart_id,body,message):
         requested=body.get('layout_exception')
@@ -477,7 +503,7 @@ class ChatHarness:
         if not guard.acquire(blocking=False):raise ValueError('该会话仍在生成，请等待上一轮结束')
         try:
             session=self.load(project,sid)
-            if session.get('status')=='closed':raise ValueError('此会话已结束，请新建会话')
+            if session.get('status')=='closed':session['status']='open'
             if 'reference_charts' in body:
                 requested_refs=body['reference_charts']
                 if not isinstance(requested_refs,list) or len(requested_refs)>10:raise ValueError('最多选择 10 张参照图')
@@ -486,7 +512,12 @@ class ChatHarness:
                 session['references']=[retained.get(r) or fresh[r] for r in dict.fromkeys(requested_refs)]
             message=body.get('user_message','') if not normalize else '按所选 Skill 规范化绘图'
             if not isinstance(message,str) or not message.strip() or len(message)>5000:raise ValueError('请输入不超过 5000 字的修改要求')
-            turn={'id':uid('trn'),'user_message':message,'operation':'normalize' if normalize else 'chat_edit','results':[],'created_at':time.time()}
+            from chat_reference_images import select as select_images,public as public_images
+            image_refs=[] if normalize else select_images(self.directory(project),body.get('reference_image_ids',[r['reference_id'] for r in session.get('reference_images',[])]))
+            if image_refs and not effective_model_config().get('vision_enabled'):
+                raise ValueError('使用上传参考图需要支持图片输入的模型。请在顶部 API 配置中开启“改图时将当前图和参照图传给支持视觉的模型”，保存后重试。')
+            if not normalize:session['reference_images']=public_images(image_refs)
+            turn={'reference_images':public_images(image_refs),'id':uid('trn'),'user_message':message,'operation':'normalize' if normalize else 'chat_edit','results':[],'created_at':time.time()}
             session['turns'].append(turn);session['status']='running';session.pop('completed_at',None);self.save(session)
             records=session['charts']
             override_target=(body.get('layout_exception') or {}).get('chart_id')
@@ -502,7 +533,7 @@ class ChatHarness:
                                      'display_name':record['display_name'],'started_at':time.time()}
                 self.save(session)
                 try:
-                    self.ensure_current_base(session,record)
+                    self.refresh_action_base(session,record)
                     # Normalization always starts from the applied chart. A
                     # preview left active after the user declines it must not
                     # silently become the input to another standardization.
@@ -512,6 +543,8 @@ class ChatHarness:
                     skip_font_audit=not normalize and not exception and parse_requests(message) is not None
                     context=self.context(session,record,turn,parent,exception,skip_font_audit=skip_font_audit)
                     context['_model_attempt_budget']=attempt_budget
+                    if image_refs:
+                        context['reference_features']=self.read_reference_features(session,context)
                     context['layout_exception_requested']=bool(body.get('layout_exception'))
                     if exception:
                         diagnostic=next((d for d in reversed(session['drafts']) if d['chart_id']==record['chart_id'] and d.get('layout',{}).get('issues')),None)
@@ -526,18 +559,19 @@ class ChatHarness:
                         from chart_transform import simple_distribution_request
                         requested_kind=simple_distribution_request(message)
                         verified=(parent or {}).get('chart_transform') or {}
-                        if (requested_kind and parent and parent.get('status')=='preview_ready'
+                        if (not image_refs and requested_kind and parent and parent.get('status')=='preview_ready'
                                 and verified.get('status')=='pass' and verified.get('kind')==requested_kind):
                             name='箱线图' if requested_kind=='boxplot' else '小提琴图'
                             response={'status':'already_compliant','existing_draft_id':parent['id'],
                                       'reason':f'当前候选已经是{name}，且原始样本检查通过；可直接应用此版，或继续提出具体修改。',
                                       'warnings':[]}
                         else:
-                            response=propose_parameters(context)
+                            response=None if image_refs else propose_parameters(context)
                             if response is None:
                                 if skip_font_audit and not context.get('current_font_audit'):
                                     from chat_runner import inspect_chart_fonts
-                                    context['current_font_audit']=inspect_chart_fonts(self.host.project_path(project),context['allowed_write_paths'][0],parent['code'] if parent else None)
+                                    try:context['current_font_audit']=inspect_chart_fonts(self.host.project_path(project),context['allowed_write_paths'][0],parent['code'] if parent else None)
+                                    except Exception as error:context['current_font_audit']={'status':'unverified','fonts':[],'reason':str(error)[:500]}
                                 response=validate_response(context,self.agent(context))
                         if response['status']=='needs_context':
                             # A uniquely identified reference can be loaded without changing the target.
@@ -548,6 +582,7 @@ class ChatHarness:
                                 session['references']+=self.references(project,[c for c in matches if c not in existing])
                                 context=self.context(session,record,turn,parent,exception)
                                 context['_model_attempt_budget']=attempt_budget
+                                if image_refs:context['reference_features']=self.read_reference_features(session,context)
                                 response=validate_response(context,self.agent(context))
                         if response['status']=='already_compliant' and (parse_requests(message) or self.axis_requirement(message)):
                             # Render the unchanged parent through the same Harness checks.
@@ -580,10 +615,10 @@ class ChatHarness:
                         check_history=[{'status':draft['status'], 'diagnostics':explain_draft(draft)}]
                         # Format correction and render repair share three model calls.
                         for repair_attempt in range(MAX_MODEL_ATTEMPTS-1):
-                            if (normalize or attempt_budget['used']>=MAX_MODEL_ATTEMPTS or exception or
+                            if (normalize or attempt_budget['used']>=MAX_MODEL_ATTEMPTS or exception or draft.get('review_blocker')=='paired_presentation' or
                                     draft.get('chart_transform',{}).get('source_evidence',{}).get('status') in ('summary_only','insufficient_samples') or
                                     (draft['status'] not in ('render_failed','needs_clarification','no_visible_change','axis_unmet','font_unverified','intent_unmet','intent_unverified')
-                                     and draft.get('review_blocker')!='transform_unverified')):
+                                     and draft.get('review_blocker') not in ('transform_unverified','paired_unverified','source_scope_mismatch'))):
                                 break
                             session['progress']['stage']='repairing';self.save(session)
                             context['request_id']=uid('req')
@@ -608,6 +643,7 @@ class ChatHarness:
                             except Exception as error:
                                 draft['warnings'].append('自动修复未完成：'+str(error))
                                 break
+                        if image_refs:self.compare_reference_features(session,context,draft,attempt_budget)
                         _,after_revision=self.snapshot(project,record['chart'])
                         if after_revision!=context['base_revision']:
                             draft.update(status='revision_conflict',reason='生成期间正式版本或依赖已变化，请新建会话')
@@ -619,8 +655,7 @@ class ChatHarness:
                             try:self.save_normalization_cache(project,context,response)
                             except OSError as error:print(f'Normalization cache unavailable: {error}',flush=True)
                         session['drafts'].append(draft)
-                        if (draft['status']=='preview_ready' or
-                                (draft.get('review_blocker')=='layout_conflict' and self.can_continue_draft(draft))):
+                        if self.can_continue_draft(draft):
                             session['active_drafts'][record['chart_id']]=draft['id']
                         result.update(status=draft['status'],draft_id=draft['id'],summary=draft['summary'],reason=draft.get('reason'),warnings=draft.get('warnings',[]))
                 except Exception as error:
@@ -712,12 +747,19 @@ class ChatHarness:
                'parent_draft_id':context['parent_draft_id'],'code':code,'summary':response.get('summary') or '候选修改',
                'warnings':response.get('warnings',[]),'proposal':response,'created_at':time.time(),'status':'rendering'}
         draft['generation_path']=response.get('generation_path','model')
+        if context.get('reference_features'):
+            from reference_visual_review import unavailable
+            draft['reference_features']=context['reference_features']
+            draft['reference_comparison']=unavailable(context['reference_features'],'候选尚未完成视觉对照。')
         if response.get('parameter_intent'):draft['parameter_intent']=response['parameter_intent']
         if response.get('chart_type_style'):draft['chart_type_style']=response['chart_type_style']
         atomic_json(output/'proposal.json',response)
         try:
             render=self.renderer or render_candidate
             report=render(self.host.project_path(session['project']),context['allowed_write_paths'][0],code,output,baseline_files=baseline)
+            if report.get('paired_plots'):
+                from paired_plot import runtime_signature as paired_signature
+                draft['paired_runtime_sha256']=paired_signature()
             draft.update({k:v for k,v in report.items() if k not in ('status',)})
             draft['warnings']=[*response.get('warnings',[]),*report.get('warnings',[])]
             draft['image_url']=f"/api/projects/{session['project']}/chat/sessions/{session['id']}/drafts/{did}/image"
@@ -731,11 +773,15 @@ class ChatHarness:
             for i in issues:i.setdefault('id',uid('warn'))
             data_report=report.get('data_report',{})
             from chart_transform import verify_distribution
-            transform=verify_distribution(self.host.project_path(session['project']),record['chart'],context,response,report)
+            from paired_plot import verify_paired,scope_mismatch
+            transform=(scope_mismatch(context,report) or
+                       verify_paired(self.host.project_path(session['project']),record['chart'],context,response,report) or
+                       verify_distribution(self.host.project_path(session['project']),record['chart'],context,response,report))
             if transform:
                 draft['chart_transform']=transform
                 draft['warnings'].extend(transform.get('warnings',[]))
-            transformed=bool(transform and transform['status']=='pass')
+            transformed=bool(transform and (transform['status']=='pass' or
+                (transform.get('status')=='presentation_review' and transform.get('data_integrity_verified'))))
             font_issue=self.font_effect_issue(report)
             visual_issue=None if response.get('interpreted_request',{}).get('operation')=='normalize' else self.visual_effect_issue(context,response,report)
             # Accepting the displayed layout intentionally keeps the same pixels.
@@ -756,6 +802,10 @@ class ChatHarness:
             elif transform and transform['status']!='pass':
                 draft.update(status='validation_failed',reason=transform['reason'])
                 if transform['status']=='unverified':draft['review_blocker']='transform_unverified'
+                if transform.get('kind')=='paired_plot':draft['review_blocker']='paired_unverified'
+                if transform.get('code')=='source_scope_mismatch':draft['review_blocker']='source_scope_mismatch'
+                if transform.get('status')=='presentation_review' and transform.get('data_integrity_verified'):
+                    draft.update(status='needs_clarification',review_blocker='paired_presentation')
             elif (data_report.get('status') in ('fail','changed','conflict') or
                   (not transformed and (data_report.get('changed') or data_report.get('removed')))):
                 draft.update(status='validation_failed',reason='候选改变了原有绘图数据或映射，需要明确审阅；本轮未替换正式图。')
@@ -948,7 +998,7 @@ class ChatHarness:
         path=self.path(project,sid)
         with lock(path),lock(self.host.project_path(project)):
             session=self.load(project,sid)
-            if session.get('status')=='closed':raise ValueError('此会话已结束，请新建会话')
+            if session.get('status')=='closed':session['status']='open'
             if session.get('status')=='running':raise ValueError('请等待本轮生成结束')
             draft=next((d for d in session['drafts'] if d['id']==did),None)
             if not draft:raise ValueError('候选不存在')
@@ -956,21 +1006,30 @@ class ChatHarness:
                 if draft['status'] in ('applied','discarded') or not draft.get('proposal'):
                     raise ValueError('请选择尚未应用的候选重新检查')
                 record=next(r for r in session['charts'] if r['chart_id']==draft['chart_id'])
-                self.ensure_current_base(session,record)
+                self.refresh_action_base(session,record)
                 origin=next(t for t in session['turns'] if t['id']==draft['turn_id'])
                 parent=next((d for d in session['drafts'] if d['id']==draft.get('parent_draft_id')),None)
                 if draft.get('parent_draft_id') and not parent:raise ValueError('原候选的父版本已不存在，请重新生成')
                 context=self.context(session,record,origin,parent,session.get('layout_exceptions',{}).get(draft['chart_id']))
+                if draft.get('reference_features'):
+                    context['reference_features']=draft['reference_features']
                 proposal=json.loads(json.dumps(draft['proposal']))
                 from chat_agent import ECHO_FIELDS
                 for key in ECHO_FIELDS:proposal[key]=context[key]
-                validate_response(context,proposal)
                 checked=self.build_draft(session,record,origin,parent,context,proposal)
+                if context.get('reference_features'):
+                    budget={'used':0};context['_model_attempt_budget']=budget
+                    session['progress']={'stage':'comparing_reference','chart_id':draft['chart_id']}
+                    self.compare_reference_features(session,context,checked,budget)
+                    session.pop('progress',None)
+                    checked['visual_recheck_model_calls']=budget.get('calls',[])
+                    from edit_contract import finish_summary
+                    finish_summary(checked)
                 _,revision=self.snapshot(project,record['chart'])
                 if revision!=context['base_revision']:
                     checked.update(status='revision_conflict',reason='检查期间正式版本或依赖已变化，请重新生成')
                 checked['rechecked_from']=draft['id'];session['drafts'].append(checked)
-                if checked['status']=='preview_ready' or (checked.get('review_blocker')=='layout_conflict' and self.can_continue_draft(checked)):
+                if self.can_continue_draft(checked):
                     session['active_drafts'][draft['chart_id']]=checked['id']
             elif action=='discard':
                 if draft['status']=='applied':raise ValueError('正式版不能作为候选丢弃')
@@ -980,30 +1039,23 @@ class ChatHarness:
                 if not self.can_continue_draft(draft):raise ValueError('该版本不能作为继续修改的起点')
                 self.resolve_parent(session,draft['chart_id'],{draft['chart_id']:did})
                 session['active_drafts'][draft['chart_id']]=did
-            elif action=='apply':
-                style=draft.get('chart_type_style') or {}
-                if style.get('runtime_sha256'):
-                    from chart_type_defaults import runtime_signature
-                    if style['runtime_sha256']!=runtime_signature():
-                        raise ValueError('revision_conflict：换图型样式规则已更新，请重新检查候选后再应用。')
-                if draft['status']!='preview_ready':raise ValueError('该候选仍有未解决问题，不能应用')
-                if (draft.get('edit_contract') or {}).get('blocking'):
-                    raise ValueError('该候选尚有未满足或未核实的参数要求，请重新检查后再应用。')
+            elif action in ('apply','apply-reviewed'):
+                if not self.can_continue_draft(draft):raise ValueError('该版本没有可应用的候选代码')
                 record=next(r for r in session['charts'] if r['chart_id']==draft['chart_id'])
-                _,revision=self.ensure_current_base(session,record)
-                if revision!=draft['base_revision']:raise ValueError('revision_conflict：候选基于另一正式版本，未覆盖当前图')
-                origin=next((turn for turn in session['turns'] if turn['id']==draft.get('turn_id')),None)
-                if origin and origin.get('operation')=='chat_edit':
-                    from chat_parameters import parse_requests
-                    if parse_requests(origin['user_message']):
-                        from edit_contract import verify_requirements
-                        measured=verify_requirements(origin['user_message'],draft)
-                        if measured['blocking']:
-                            raise ValueError('该候选的最终导出尚未满足本轮参数要求；请点击重新检查此版后再应用。')
-                        draft['edit_contract']=measured
-                    axis_issue=self.axis_requirement_issue({'user_message':origin['user_message']},draft)
-                    if axis_issue:
-                        raise ValueError('该候选尚未满足坐标轴要求，未应用：'+axis_issue)
+                _,revision=self.refresh_action_base(session,record)
+                draft['application_checks_advisory']={'at':time.time(),'previous_status':draft['status'],
+                    'candidate_base_revision':draft.get('base_revision'),'current_revision':revision}
+                # Missing images are execution failures, not a quality gate. Try
+                # rendering the exact code once; keep formal files if it fails.
+                if not draft.get('image_path') or not Path(draft['image_path']).is_file():
+                    from chat_runner import render_candidate
+                    render=self.renderer or render_candidate
+                    output=path.parent/'drafts'/draft['id']/uid('application')
+                    report=render(self.host.project_path(project),'charts/'+draft['chart']+'.py',draft['code'],output)
+                    draft.update(report)
+                    if not draft.get('image_path') or not Path(draft['image_path']).is_file():
+                        raise ValueError('候选代码执行后未生成可用图片；可以继续修改此代码后再应用。')
+                    draft['image_url']=f"/api/projects/{project}/chat/sessions/{sid}/drafts/{did}/image"
                 official_image=record.get('_image')
                 if not official_image:
                     baseline_draft=next((d for d in session['drafts'] if d['chart_id']==draft['chart_id'] and d['base_revision']==draft['base_revision'] and d.get('parent_draft_id') is None and d.get('baseline_image_path')),None)
