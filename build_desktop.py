@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parent
 
 
 def stage_application(destination):
+    from private_projects import names
+    private = names(ROOT)
     destination.mkdir(parents=True, exist_ok=True)
     excluded = {'build_desktop.py', 'desktop_launcher.py', 'export_shared_projects.py'}
     for source in ROOT.glob('*.py'):
@@ -21,6 +23,7 @@ def stage_application(destination):
     for name in ('static', 'skills', 'projects'):
         def ignored(folder, names):
             return [n for n in names if (n.startswith('.') and n != '.gitattributes')
+                    or (Path(folder) == ROOT/'projects' and n in private)
                     or n == '__pycache__' or n.endswith(('.pyc', '.log'))
                     or n in ('previews', 'chart_metadata')]
         shutil.copytree(ROOT/name, destination/name, ignore=ignored)

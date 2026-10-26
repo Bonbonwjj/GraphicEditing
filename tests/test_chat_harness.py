@@ -16,6 +16,128 @@ BASE=(ROOT/'docs/chat-acceptance/inputs/01.json')
 
 
 class HarnessTests(unittest.TestCase):
+    def test_partial_candidate_keeps_unmet_request_visible_and_does_not_apply(self):
+        original=self.h.agent
+        def partial(context):
+            response=original(context)
+            response['summary']='部分完成：已调整线宽，未更换不可用字体。'
+            response['warnings']=['未完成：指定字体在本机不可用。']
+            response['interpreted_request']['deferred_operations']=[{'request':'更换字体','reason':'字体不可用'}]
+            return response
+        self.h.agent=partial
+        before=(self.project/'charts/b.py').read_bytes()
+        result=self.turn({'user_message':'change line width'})
+        draft=result['drafts'][-1]
+        self.assertEqual(draft['status'],'preview_ready')
+        self.assertTrue(draft['summary'].startswith('部分完成'))
+        self.assertIn('未完成：指定字体在本机不可用。',draft['warnings'])
+        self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
+
+    def test_thumbnail_cache_is_invalidated_by_image_content(self):
+        from PIL import Image
+        import io
+        from chat_harness import chat_image_thumbnail
+        chat_image_thumbnail.cache_clear()
+        def image(color):
+            stream=io.BytesIO();Image.new('RGB',(12,12),color).save(stream,format='PNG');return stream.getvalue()
+        red=image('red');blue=image('blue')
+        first=chat_image_thumbnail(red)
+        self.assertEqual(first,chat_image_thumbnail(red))
+        self.assertEqual(chat_image_thumbnail.cache_info().hits,1)
+        self.assertNotEqual(first,chat_image_thumbnail(blue))
+        chat_image_thumbnail.cache_clear()
+
+    def test_save_and_recoverable_delete_preserve_applied_project(self):
+        sid=self.session['id']
+        self.turn({'user_message':'change line width'})
+        original=(self.project/'charts/b.py').read_bytes()
+        saved=self.h.manage('test',sid,'save',{'title':'配色方案'})
+        self.assertEqual(saved['title'],'配色方案');self.assertTrue(saved['saved_at'])
+        self.assertEqual(self.h.history('test')[0]['title'],'配色方案')
+        with self.assertRaises(ValueError):self.h.manage('test',sid,'delete',{})
+        self.assertTrue(self.h.path('test',sid).exists())
+        result=self.h.manage('test',sid,'delete',{'confirm_session_id':sid})
+        self.assertTrue(result['recoverable']);self.assertEqual(self.h.list('test'),[])
+        self.assertEqual(self.h.history('test'),[])
+        self.assertEqual((self.project/'charts/b.py').read_bytes(),original)
+        recovered=list((self.project/'.chat/deleted_sessions').glob('*/session.json'))
+        self.assertEqual(len(recovered),1)
+        self.assertTrue(json.loads(recovered[0].read_text())['drafts'])
+
+    def test_cannot_delete_running_session_or_other_session(self):
+        import threading
+        from chat_harness import lock
+        sid=self.session['id'];held=threading.Event();release=threading.Event()
+        def running():
+            with lock(self.h.path('test',sid)):held.set();release.wait(3)
+        worker=threading.Thread(target=running);worker.start();self.assertTrue(held.wait(1))
+        try:
+            with self.assertRaisesRegex(ValueError,'仍在运行'):
+                self.h.manage('test',sid,'delete',{'confirm_session_id':sid})
+        finally:release.set();worker.join(2)
+        with self.assertRaises(ValueError):self.h.manage('test',sid,'delete',{'confirm_session_id':'other'})
+        self.assertTrue(self.h.path('test',sid).exists())
+
+    def test_plain_answer_preserves_active_draft_without_rendering(self):
+        self.turn({'user_message':'change line width'})
+        previous=self.h.load('test',self.session['id'])
+        original=(self.project/'charts/b.py').read_bytes()
+        def answer(context):
+            return {**{k:context[k] for k in ('request_id','edit_session_id','turn_id','parent_draft_id','chart_id','base_revision','user_message')},
+                    'status':'answer','message':'散点图用点表示坐标。','proposed_files':[]}
+        self.h.agent=answer
+        with patch.object(self.h,'renderer') as render,patch('chat_runner.inspect_chart_fonts') as fonts:
+            result=self.turn({'user_message':'散点图是什么？当前字体是什么？请解释，不要修改。'})
+        render.assert_not_called();fonts.assert_not_called()
+        self.assertEqual(result['turns'][-1]['results'][0]['status'],'answer')
+        self.assertEqual(result['turns'][-1]['results'][0]['message'],'散点图用点表示坐标。')
+        current=self.h.load('test',self.session['id'])
+        self.assertEqual(current['active_drafts'],previous['active_drafts'])
+        self.assertEqual(current['drafts'],previous['drafts'])
+        self.assertEqual((self.project/'charts/b.py').read_bytes(),original)
+
+    def test_stop_waiting_model_preserves_applied_chart_and_ignores_late_response(self):
+        import threading
+        started=threading.Event();release=threading.Event();out=[]
+        original=self.h.agent
+        def slow_agent(context):
+            started.set();release.wait(5)
+            return original(context)
+        self.h.agent=slow_agent
+        worker=threading.Thread(target=lambda:out.append(self.turn({'user_message':'change line width'})))
+        before=(self.project/'charts/b.py').read_bytes()
+        worker.start()
+        try:
+            self.assertTrue(started.wait(2))
+            self.assertTrue(self.h.stop('test',self.session['id'])['stopping'])
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(out[0]['turns'][-1]['results'][-1]['status'],'cancelled')
+            self.assertEqual(out[0]['status'],'open')
+            self.assertEqual(out[0]['drafts'],[])
+            self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
+        finally:
+            release.set();worker.join(2)
+        self.assertFalse(self.h.stop('test',self.session['id'])['stopping'])
+        self.assertEqual(self.h.load('test',self.session['id'])['drafts'],[])
+        self.h.agent=original
+        self.assertEqual(self.turn({'user_message':'change line width'})['status'],'open')
+
+    def test_non_font_context_does_not_render_font_preflight(self):
+        session=self.h.load('test',self.session['id'])
+        with patch('chat_runner.inspect_chart_fonts') as inspect:
+            context=self.h.context(session,session['charts'][0],
+                                   {'id':'test-turn','operation':'chat_edit','user_message':'将图c更改为散点图'},None,None)
+        inspect.assert_not_called()
+        self.assertEqual(context['current_font_audit']['status'],'deferred_to_candidate_validation')
+
+    def test_font_request_keeps_font_preflight(self):
+        session=self.h.load('test',self.session['id'])
+        with patch('chat_runner.inspect_chart_fonts',return_value={'fonts':[]}) as inspect:
+            self.h.context(session,session['charts'][0],
+                           {'id':'test-turn','operation':'chat_edit','user_message':'将字体改为 Arial'},None,None)
+        inspect.assert_called_once()
+
     def test_prompt_csv_scope_keeps_only_selected_panel_rows(self):
         files={
             'charts/target.py':{'path':'charts/target.py','content':"read_csv('data/panels.csv')\npanel_id = 'target'",'sha256':'source'},

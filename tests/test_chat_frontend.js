@@ -24,12 +24,13 @@ function environment() {
     },
     IntersectionObserver: class { observe() {} unobserve() {} },
     fetch() { throw Error('Unexpected network'); }, setInterval() {},
+    AbortController, setTimeout, clearTimeout,
   };
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
   const init = source.indexOf('(async()=>{try{if(window.syncTeamOnOpen)');
   assert(init > 0, 'Locate automatic page initialization');
   source = source.slice(0, init);
-  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats };';
+  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, pollChatProgress, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, fetchGalleryImage, galleryRequests };';
   vm.runInNewContext(source, sandbox);
   const app = sandbox.app;
   app.state.project = 'project';
@@ -191,11 +192,69 @@ async function testSubmitHandler() {
   assert(elements.get('messages').innerHTML.includes('Which legend?'));
 }
 
+async function testProgressWhilePostPending() {
+  const {app, sandbox, elements}=environment();
+  const context=app.chatContext(), initial=session();
+  app.state.chatKey=context.key;app.storeSession(context,initial);
+  let finishPost, finishPoll;
+  const running={...initial,status:'running',progress:{stage:'model_request'}};
+  const completed={...initial,status:'open',turns:[{user_message:'scatter',results:[]}]};
+  sandbox.fetch=async (url, options)=>{
+    if(options?.method==='POST')return new Promise(resolve=>{finishPost=()=>resolve({ok:true,json:async()=>completed});});
+    return {ok:true,json:async()=>running};
+  };
+  const work=app.generateChat({user_message:'scatter'});
+  await ready(()=>finishPost);
+  assert.equal(app.state.chatSessions.get(context.key).status,'open');
+  await app.pollChatProgress();
+  assert(elements.get('messages').innerHTML.includes('等待模型生成代码'));
+  assert(elements.get('messages').innerHTML.includes('已等待'));
+  // A slow GET must not resurrect "running" after the POST finished.
+  sandbox.fetch=async()=>new Promise(resolve=>{finishPoll=()=>resolve({ok:true,json:async()=>running});});
+  const polling=app.pollChatProgress();await ready(()=>finishPoll);
+  finishPost();await work;finishPoll();await polling;
+  assert.equal(app.state.chatSessions.get(context.key).status,'open');
+  assert.equal(app.state.chatBusy.size,0);
+  assert(!elements.get('messages').innerHTML.includes('chatProgress'));
+}
+
+async function testGalleryAbortReleasesOldRequests() {
+  const {app,sandbox}=environment();
+  sandbox.fetch=(_url,{signal})=>new Promise((_resolve,reject)=>{
+    signal.addEventListener('abort',()=>{const error=new Error('cancelled');error.name='AbortError';reject(error);});
+  });
+  const pending=app.fetchGalleryImage('/old-project/preview');
+  assert.equal(app.galleryRequests.size,1);
+  for(const controller of app.galleryRequests)controller.abort();
+  await assert.rejects(pending,{name:'AbortError'});
+  assert.equal(app.galleryRequests.size,0);
+  sandbox.fetch=async()=>({ok:true,blob:async()=>'new-image'});
+  assert.equal(await app.fetchGalleryImage('/new-project/preview'),'new-image');
+  assert.equal(app.galleryRequests.size,0);
+}
+
+function testConversationRendersAsAnswerWithoutDraftControls() {
+  const {app,elements}=environment();
+  const context=app.chatContext(),value=session();
+  value.turns=[{id:'question',user_message:'散点图是什么？',results:[{
+    chart:'B',status:'answer',message:'<script>不是代码执行</script> 散点图说明。'}]}];
+  value.drafts=[];app.state.chatKey=context.key;app.storeSession(context,value);app.renderChat();
+  const html=elements.get('messages').innerHTML;
+  assert(html.includes('result-answer'));
+  assert(html.includes('&lt;script&gt;'));
+  assert(!html.includes('<script>'));
+  assert(!html.includes('无法完成'));
+  assert(!html.includes('data-draft-action'));
+}
+
 (async () => {
+  await testGalleryAbortReleasesOldRequests();
+  testConversationRendersAsAnswerWithoutDraftControls();
   testCards();
   testClarificationQuestion();
   await testTargetIsolation();
   await testSubmitHandler();
   await testFinalizeRefresh();
+  await testProgressWhilePostPending();
   console.log('PASS: cards, check limitations, closed sessions, scoped layout warnings, target isolation, compose isolation, submit handler, session creation and finalize refresh.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -12,8 +12,8 @@ with (project / "data" / "trajectories.csv").open(newline="", encoding="utf-8") 
 
 t = [float(r["time_s"]) for r in rows]
 fig, ax = plt.subplots(figsize=(4.5, 3.2))
-ax.plot(t, [float(r["target_x"]) for r in rows], label="Target", linewidth=1.7, color='red')
-ax.plot(t, [float(r["hand_x"]) for r in rows], label="Hand", linewidth=1.7)
+ax.plot(t, [float(r["target_x"]) for r in rows], label="Target", color="red")
+ax.plot(t, [float(r["hand_x"]) for r in rows], label="Hand", color="yellow")
 ax.set(xlabel="Time (s)", ylabel="Horizontal position (a.u.)", title="Interception timing")
 ax.legend(frameon=False)
 finish_figure(fig, os.environ["CHART_OUTPUT"])

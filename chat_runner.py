@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -18,6 +19,10 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import time
+from contextvars import copy_context
+if __name__ != '__main__':
+    import chat_cancellation as cancellation
 
 ROOT = Path(__file__).resolve().parent
 TIMEOUT_SECONDS = 45
@@ -119,12 +124,22 @@ def _validate_sources(entry, files):
 
 
 def _snapshot(project, destination, overrides, entry=None):
+    from native_project import selection
+    native_id = selection(project, entry, overrides) if entry else None
     total = 0
     hashes = {}
-    for dirname, suffixes in (("", {".py", ".json"}), ("charts", {".py"}), ("lib", {".py"}), ("data", {".csv", ".tsv", ".json"})):
+    assets = {'.csv','.tsv','.json','.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp'}
+    if native_id:
+        assets |= {'.md','.txt','.svg','.ttf','.otf','.pptx'}
+    for dirname, suffixes in (("", {".py", ".json"}), ("charts", {".py"}), ("lib", {".py"}), ("data", assets)):
         source_root = project / dirname
         if source_root.is_symlink():
             raise CandidateRenderError("Symlinked project directories are not allowed", "scope_rejected")
+        if native_id and dirname in ('lib', 'data'):
+            native_root = source_root / 'native'
+            source_root = native_root / native_id
+            if native_root.is_symlink() or source_root.is_symlink():
+                raise CandidateRenderError("Symlinked native directories are not allowed", "scope_rejected")
         if not source_root.exists():
             continue
         candidates = source_root.glob("*") if dirname == "" else source_root.rglob("*")
@@ -134,6 +149,8 @@ def _snapshot(project, destination, overrides, entry=None):
             if not source.is_file() or source.suffix.lower() not in suffixes:
                 continue
             relative = source.relative_to(project).as_posix()
+            if native_id and dirname in ('lib','data') and not relative.startswith(dirname+'/native/'+native_id+'/'):
+                continue
             if dirname == "charts" and entry is not None and relative != entry and relative not in overrides:
                 continue
             size = source.stat().st_size
@@ -208,7 +225,27 @@ def _docker_command(work, snapshot, environment, name):
                       "python", "-s", "-B", "/work/worker.py", "--worker", "/work/config.json"]
 
 
-def _one_render(project, entry, files, directory):
+def _native_sandbox_command(command, work, snapshot, writable, environment_root):
+    """Linux native code sees only immutable inputs/runtime and a scratch dir."""
+    bubblewrap = shutil.which('bwrap')
+    if not bubblewrap:
+        raise CandidateRenderError('Linux 原生绘图需要 bubblewrap 系统沙箱；未自动退回无沙箱执行。', 'sandbox_unavailable')
+    args = [bubblewrap,'--unshare-all','--die-with-parent','--new-session',
+            '--tmpfs','/tmp','--proc','/proc','--dev','/dev']
+    roots = {Path('/usr'),Path('/lib'),Path('/lib64'),Path(sys.base_prefix).resolve(),environment_root}
+    for root in sorted(roots):
+        if root.exists():
+            args += ['--ro-bind',str(root),str(root)]
+    if Path('/etc/fonts').is_dir():
+        args += ['--ro-bind','/etc/fonts','/etc/fonts']
+    for path in (work/'packages',work/'worker.py',work/'config.json'):
+        args += ['--ro-bind',str(path),str(path)]
+    args += ['--bind',str(writable),str(writable),'--chdir',str(snapshot),'--',*command]
+    return args
+
+
+def _one_render(project, entry, files, directory, strict_io=False):
+    cancellation.check()
     backend = isolation_backend()
     if backend == "local-python":
         from local_execution import require_trust
@@ -227,7 +264,7 @@ def _one_render(project, entry, files, directory):
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py"):
+    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "native_plot_runtime.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
     profile_relative = Path("skills/chart-normalization/assets/style-profile.v1.json")
     target = package_root / profile_relative
@@ -241,9 +278,14 @@ def _one_render(project, entry, files, directory):
     profile_data = json.loads((ROOT / profile_relative).read_text(encoding="utf-8"))
     panel_gap_multiple = float(profile_data["global"]["multi_panel_min_gap_label_axis_multiple"])
     config = {"project": str(snapshot), "entry": entry, "package_root": str(package_root),
+              "strict_io": strict_io or (project / 'data/plot-data/manifest.json').is_file() or (project / 'validation/direct.json').is_file(),
               "output": str(writable / "figure.png"), "metadata": str(writable / "metadata.json"),
               "input_hashes": input_hashes, "panel_gap_multiple": panel_gap_multiple,
               "bundle": (project / "data_sources.json").is_file() and any(item.get("kind") == "plot_bundle" for item in json.loads((project / "data_sources.json").read_text(encoding="utf-8")).get("sources", []))}
+    config['native'] = (snapshot/'native-project.json').is_file()
+    if config['native']:
+        config['strict_io'] = True
+    render_timeout = 150 if config['native'] else TIMEOUT_SECONDS
     config_path = work / "config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
     if backend == "docker":
@@ -269,7 +311,15 @@ def _one_render(project, entry, files, directory):
         environment.pop("PATH", None)
         command = _docker_command(work, snapshot, environment, container_name)
     if backend == "local-python":
-        command = [sys.executable, "-s", "-B", str(runner), "--worker", str(config_path)]
+        executable = sys.executable
+        if config['native']:
+            native_python = ROOT/('.native-venv/Scripts/python.exe' if os.name == 'nt' else '.native-venv/bin/python')
+            if not native_python.is_file():
+                raise CandidateRenderError('请先安装独立绘图环境：python -m venv .native-venv；再用该环境的 pip install -r requirements-native.txt', 'environment_missing')
+            executable = str(native_python)
+        command = [executable, "-s", "-B", str(runner), "--worker", str(config_path)]
+        if config['native'] and sys.platform.startswith('linux'):
+            command = _native_sandbox_command(command,work,snapshot,writable,native_python.parent.parent)
         environment["PATH"] = os.environ.get("PATH", "")
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
@@ -284,8 +334,14 @@ def _one_render(project, entry, files, directory):
         with log_path.open("wb") as log, subprocess.Popen(command, cwd=snapshot, env=(os.environ.copy() if backend == "docker" else environment), stdin=subprocess.DEVNULL, stdout=log,
                               stderr=log, start_new_session=(os.name != "nt")) as process:
             try:
-                process.wait(timeout=TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired as exc:
+                deadline=time.monotonic()+render_timeout
+                while process.poll() is None:
+                    cancellation.check()
+                    if time.monotonic()>=deadline:
+                        raise subprocess.TimeoutExpired(command,render_timeout)
+                    time.sleep(.1)
+                cancellation.check()
+            except (subprocess.TimeoutExpired, cancellation.Cancelled) as exc:
                 if backend == "docker":
                     try:
                         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
@@ -297,7 +353,8 @@ def _one_render(project, entry, files, directory):
                 else:
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-                raise CandidateRenderError("Rendering exceeded 45 seconds", "render_timeout") from exc
+                if isinstance(exc,cancellation.Cancelled):raise
+                raise CandidateRenderError(f"Rendering exceeded {render_timeout} seconds", "render_timeout") from exc
     except OSError as exc:
         raise CandidateRenderError("OS sandbox could not be started: " + str(exc), "sandbox_unavailable") from exc
     finally:
@@ -332,6 +389,9 @@ def _one_render(project, entry, files, directory):
     if bundle_signature(project) != bundle_revision:
         raise CandidateRenderError("Bundle 数据在渲染期间发生变化，请重试", "scope_rejected")
     report["image_bytes"] = output.read_bytes()
+    if config['native'] and backend == 'local-python' and sys.platform.startswith('linux'):
+        report['render_backend'] = 'bubblewrap'
+        report['os_sandbox'] = True
     report["stderr"] = error
     return report
 
@@ -417,8 +477,11 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         raise CandidateRenderError("Symlinked output directories are not allowed", "scope_rejected")
     with tempfile.TemporaryDirectory(prefix="chat-candidate-") as temporary:
         temp = Path(temporary)
-        baseline = _one_render(project, entry, baseline_files or {}, temp / "baseline")
-        candidate = _one_render(project, entry, files, temp / "candidate")
+        # Separate snapshots, workers and timeouts; never skip either validation render.
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            before = workers.submit(copy_context().run, _one_render, project, entry, baseline_files or {}, temp / "baseline")
+            after = workers.submit(copy_context().run, _one_render, project, entry, files, temp / "candidate")
+            baseline, candidate = before.result(), after.result()
         output.mkdir(parents=True, exist_ok=True)
         target = output / "candidate.png"
         if target.exists():
@@ -430,6 +493,8 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
             stream.write(baseline.pop("image_bytes"))
         visual_change = _visual_change(baseline_target, target, baseline.get('layout_signature') or {},
                                        candidate.get('layout_signature') or {})
+        native_isolation = bool(baseline.get('os_sandbox') and candidate.get('os_sandbox')
+                                and baseline.get('render_backend') == candidate.get('render_backend') == 'bubblewrap')
         report = {"image_path": str(target.resolve()), "baseline_image_path": str(baseline_target.resolve()), "layout": candidate["layout"],
                   "baseline_layout": baseline["layout"], "data_report": compare_reports(baseline, candidate),
                   "visual_change": visual_change,
@@ -440,10 +505,15 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "normalization_report": candidate.get("normalization_report"),
                   "distribution_inputs": candidate.get("distribution_inputs", []),
                   "candidate_artists": candidate.get("artists", []),
+                  "baseline_artists": baseline.get("artists", []),
+                  "unsupported_artists": baseline.get("unsupported_artists", []) + candidate.get("unsupported_artists", []),
                   "font_audit": candidate.get("font_audit"),
                   "baseline_font_audit": baseline.get("font_audit"),
                   "warnings": _runtime_warnings(candidate.get("stderr")),
-                  "isolation": {"backend": isolation_backend(), "readonly_snapshot": isolation_backend() != "local-python", "network": "python-audit-hook" if isolation_backend() == "local-python" else "denied", "os_sandbox": isolation_backend() != "local-python"}}
+                  "isolation": {"backend": 'bubblewrap' if native_isolation else isolation_backend(),
+                                "readonly_snapshot": native_isolation or isolation_backend() != "local-python",
+                                "network": "denied" if native_isolation or isolation_backend() != "local-python" else "python-audit-hook",
+                                "os_sandbox": native_isolation or isolation_backend() != "local-python"}}
         substitutions=(report.get("font_audit") or {}).get("substitutions", [])
         if substitutions:
             replacements=sorted({f"{item['requested_family']} → {item['selected_family']}" for item in substitutions})
@@ -479,6 +549,54 @@ def _distribution_values(obj, dimension):
     if hasattr(obj, 'get_paths'):
         return [_number_array(path.vertices[:, dimension]) for path in obj.get_paths()]
     return _number_array(obj.get_path().vertices[:, dimension])
+
+
+def _point_signature(obj, kind):
+    """Hash ALL ordered pairs, not the three-point diagnostic sample.
+
+    Custom transforms, masked/nonfinite values and invisible scatter points fail
+    closed. This is observed-artist evidence, not a sandbox/security boundary.
+    """
+    import numpy as np
+    if kind not in ('line', 'scatter'):
+        return None
+    transform = obj.get_transform() if kind == 'line' else obj.get_offset_transform()
+    if transform != obj.axes.transData:
+        return None
+    points = (np.ma.column_stack((obj.get_xdata(orig=False), obj.get_ydata(orig=False)))
+              if kind == 'line' else np.ma.asarray(obj.get_offsets()))
+    if (points.ndim != 2 or points.shape[1] != 2 or not len(points)
+            or np.ma.getmaskarray(points).any() or not np.isfinite(points).all()):
+        return None
+    if not obj.get_visible():
+        return None
+    alpha = obj.get_alpha()
+    if alpha is not None and np.any(np.asarray(alpha) <= 0):
+        return None
+    if kind == 'scatter':
+        sizes = np.asarray(obj.get_sizes())
+        if not sizes.size or not np.isfinite(sizes).all() or np.any(sizes <= 0):
+            return None
+        if not obj.get_paths() or any(not len(path.vertices) for path in obj.get_paths()):
+            return None
+        colors = [np.asarray(obj.get_facecolors()), np.asarray(obj.get_edgecolors())]
+        # Require a visible face or edge for every point, not just one sample.
+        visible = np.zeros(len(points), dtype=bool)
+        for index, color in enumerate(colors):
+            painted = np.zeros(len(points), dtype=bool)
+            if len(color) == 1:
+                painted |= color[0, 3] > 0
+            elif len(color) == len(points):
+                painted |= color[:, 3] > 0
+            if index == 1:
+                widths = np.asarray(obj.get_linewidths())
+                if widths.size not in (1, len(points)) or not np.isfinite(widths).all():
+                    return None
+                painted &= widths > 0
+            visible |= painted
+        if not visible.all():
+            return None
+    return _number_array(points)
 
 
 def _capture(fig, renderer, panel_gap_multiple=2.0):
@@ -585,6 +703,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
                         "data_hash": hashlib.sha256(joined.encode()).hexdigest(),
                         "data": data, "visibility": visibility, "style": style,
                         "semantic_role": role, "role_evidence": evidence,
+                        "point_signature": _point_signature(obj, kind),
                         "distribution_mutated": (hasattr(obj, '_chat_initial_numeric') and
                             obj._chat_initial_numeric != data.get('rendered_values')),
                         "errorbar_component": component,
@@ -708,6 +827,18 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
                                             box.x1 + tolerance / 2, box.y1 + tolerance / 2)
                 if text["box"].overlaps(expanded):
                     issue("text_spine_overlap", [text["key"], prefix + ".spine_" + name], "Text intersects an axis spine")
+    for ii, image in enumerate(fig.images):
+        values = np.asarray(np.ma.getdata(image.get_array()))
+        mask = np.ma.getmaskarray(image.get_array())
+        artist('figure.image_'+str(ii), 'raster_image', {
+            'shape':list(values.shape),'dtype':str(values.dtype),
+            'pixels_sha256':hashlib.sha256(values.tobytes()).hexdigest(),
+            'mask_sha256':hashlib.sha256(mask.tobytes()).hexdigest(),
+            'origin':image.origin}, image)
+        records[-1]['style']['pixel_offset'] = [float(image.ox),float(image.oy)]
+        region = Bbox.from_bounds(image.ox,image.oy,values.shape[1],values.shape[0])
+        if image.get_visible() and outside(region,canvas):
+            issue('image_clipping',['figure.image_'+str(ii)],'Native raster panel exceeds figure bounds')
     for ti, text in enumerate(fig.texts):
         collect_text(text, "figure.text_" + str(ti), "figure", None)
     for li, legend in enumerate(fig.legends):
@@ -810,7 +941,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
     if not records:
         unsupported.append("No supported data artist was captured")
         limitations.append(unsupported[-1])
-    return {"artists": records, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
+    return {"artists": records, "unsupported_artists": unsupported, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
             "distribution_inputs": distribution_inputs,
             "normalization_report": getattr(fig, "_normalization_report", None),
             "render_size_px": [round(canvas.width), round(canvas.height)],
@@ -826,12 +957,13 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
 
 def _worker_main(config_path):
     import runpy
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     if os.name != "nt":
         import resource
-        resource.setrlimit(resource.RLIMIT_CPU, (30, 35))
+        cpu_limit = 120 if config.get('native') else 30
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit+5))
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_IMAGE_BYTES, MAX_IMAGE_BYTES))
         resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     sys.dont_write_bytecode = True
     sys.path.insert(0, config["package_root"])
     sys.path.insert(0, config["project"])
@@ -853,6 +985,7 @@ def _worker_main(config_path):
     Figure.show = lambda self, *args, **kwargs: None
     original = Figure.savefig
     captured = []
+    saved_outputs = []
     artifacts = {}
     if config.get("bundle"):
         import bundle_runtime
@@ -862,6 +995,7 @@ def _worker_main(config_path):
                 captured[:] = [report]
         bundle_runtime.OUTPUT_OBSERVER = observe_output
     def savefig(fig, fname, *args, **kwargs):
+        saved_outputs.append(str(fname))
         if isinstance(fname, (str, os.PathLike)) and (config.get("bundle") or Path(fname).resolve() == Path(config["output"])):
             font_audit = audit_figure_fonts(fig)
             draws = []
@@ -882,14 +1016,42 @@ def _worker_main(config_path):
             return result
         return original(fig, fname, *args, **kwargs)
     Figure.savefig = savefig
+    if config.get('native'):
+        import native_plot_runtime
+        native_plot_runtime.SAVE_TARGET = savefig
+        native_plot_runtime.SAVE_INTERMEDIATE = original
+    # This audit guard is defense-in-depth, NOT an OS sandbox. For extracted
+    # renderers deny ordinary reads outside the package/runtime and dependencies.
+    read_roots = [Path(config['package_root']).resolve(), Path(config['output']).parent.resolve(),
+                  Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()]
+    from matplotlib import font_manager
+    font_paths = {Path(f.fname).resolve() for f in font_manager.fontManager.ttflist}
+    write_paths = {Path(config['output']).resolve(), Path(config['metadata']).resolve()}
+    mpl_path = Path(os.environ['MPLCONFIGDIR']).resolve()
+    native_work = Path(config['output']).parent.resolve()/'native-work'
     # Extra protection and clearer error messages; not a substitute for Seatbelt.
     def audit(event, args):
         if event.startswith(("socket.", "subprocess.", "ctypes.")) or event in {"os.system", "os.fork", "os.posix_spawn", "os.exec", "pty.spawn"}:
             raise PermissionError("Chart runner denied network/process/native-memory access: " + event)
+        if config.get('strict_io') and event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
+            path = Path(os.fsdecode(args[0])).resolve()
+            flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+            writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+            if writing and path not in write_paths and not path.is_relative_to(mpl_path) and not (config.get('native') and path.is_relative_to(native_work)):
+                raise PermissionError('Renderer may write only its selected output')
+            if not writing and path not in font_paths and not any(path.is_relative_to(root) for root in read_roots):
+                if str(path) not in ('/etc/localtime', '/etc/timezone', '/dev/null'):
+                    raise PermissionError('Renderer attempted a read outside its package/runtime')
+        if config.get('strict_io') and event in {'os.remove','os.rename','os.rmdir','os.mkdir','os.link','os.symlink','os.chmod','os.truncate'}:
+            if args and isinstance(args[0], (str, bytes, os.PathLike)):
+                mutation = Path(os.fsdecode(args[0])).resolve()
+                if not mutation.is_relative_to(mpl_path) and not (config.get('native') and mutation.is_relative_to(native_work)):
+                    raise PermissionError('Renderer may not change its package or unrelated files')
     sys.addaudithook(audit)
     runpy.run_path(str(Path(config["project"]) / config["entry"]), run_name="__main__")
     if not captured:
         raise RuntimeError("Script must save its target figure to CHART_OUTPUT")
+    captured[-1]['output_count'] = len(saved_outputs)
     def json_scalar(value):
         import numpy as np
         if isinstance(value, np.generic):

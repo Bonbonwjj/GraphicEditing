@@ -41,6 +41,87 @@ def simple_distribution_request(message):
     return None
 
 
+def requested_scatter(message):
+    # Only an explicit conversion grants this exception; mentioning scatter is insufficient.
+    pattern = (r'(?:改为|改成|转换为|转换成|转成|换成|换为|变成)\s*'
+               r'(?:一个|一张)?\s*(?:scatter(?:\s*plot)?|散点图)'
+               r'|(?:change|convert|switch|turn)\b[^.!?。！？]{0,60}?\b(?:to|into)\s+(?:a\s+)?scatter(?:\s*plot)?')
+    match = re.search(pattern, message, re.I)
+    if not match:
+        return False
+    clause = re.split(r'[,;，；。.!?！？]', message[:match.start()])[-1]
+    return not re.search(r'不要|不想|无需|别|不改|do\s+not|don.t|never|\bnot\b', clause + match.group(), re.I)
+
+
+def verify_scatter(context, report):
+    return _verify_points(context,report,'scatter')
+
+
+def requested_line(message):
+    pattern=(r'(?:更改为|修改为|改为|改成|转换为|转换成|转成|换成|换为|变成)\s*'
+             r'(?:一个|一张)?\s*(?:无节点标记的)?(?:折线图|折线|line\s*(?:plot|chart))'
+             r'|(?:change|convert|switch|turn)\b[^.!?。！？]{0,60}?\b(?:to|into)\s+(?:a\s+)?line\s*(?:plot|chart)')
+    match=re.search(pattern,message,re.I)
+    if not match:return False
+    clause=re.split(r'[,;，；。.!?！？]',message[:match.start()])[-1]
+    return not re.search(r'不要|不想|无需|别|不改|do\s+not|don.t|never|\bnot\b',clause+match.group(),re.I)
+
+
+def verify_line(context, report):
+    return _verify_points(context,report,'line')
+
+
+def _verify_points(context, report, target):
+    """Verify either mark conversion using every ordered x/y pair, not samples."""
+    predicate=requested_scatter if target=='scatter' else requested_line
+    if not predicate(context.get('user_message', '')):
+        return None
+    source='line' if target=='scatter' else 'scatter'
+    result = {'kind': target, 'status': 'unverified', 'warnings': [], 'matches': []}
+    def stop(reason, status='fail'):
+        return {**result, 'status': status, 'reason': reason}
+    before, after = report.get('baseline_artists'), report.get('candidate_artists')
+    if not before or not after or report.get('unsupported_artists'):
+        return stop('缺少完整绘图元素记录或含不支持的元素，不能自动放行图型转换。', 'unverified')
+    data = report.get('data_report') or {}
+    if data.get('status') in ('fail', 'changed', 'conflict') or data.get('axes_changes'):
+        return stop('图型转换同时改变了坐标范围、轴尺度或数据，未放行。')
+    def annotations(signature):
+        return sorted((t['key'], t['text']) for t in (signature or {}).get('texts', []))
+    if annotations(report.get('baseline_layout_signature')) != annotations(report.get('layout_signature')):
+        return stop('图型转换改变了标题、轴标签、组名或标注，请保留原有科学含义。')
+    remaining = list(after)
+    for old in before:
+        # First preserve unrelated artists, including existing error bars/annotations.
+        same = [a for a in remaining if all(a.get(k) == old.get(k)
+                for k in ('key', 'kind', 'label', 'data_hash', 'visibility', 'point_signature'))]
+        if len(same) == 1:
+            remaining.remove(same[0])
+            continue
+        label = old.get('label') or ''
+        axis = old['key'].split('.')[0]
+        targets = [a for a in remaining if a.get('kind') == target and a.get('label') == label
+                   and a['key'].split('.')[0] == axis]
+        if (old.get('kind') != source or old.get('semantic_role') != 'data_artist'
+                or not label or label.startswith('_') or len(targets) != 1
+                or sum(a.get('label') == label and a['key'].split('.')[0] == axis for a in before) != 1):
+            return stop('转换前后的数据组无法唯一对应，或删除/修改了其他绘图元素。')
+        new = targets[0]
+        left, right = old.get('point_signature'), new.get('point_signature')
+        if not left or not right:
+            return stop('无法核对全部坐标：存在缺失值、自定义变换、隐藏点或旧版记录。', 'unverified')
+        if (left.get('shape') != right.get('shape') or not left.get('sha256')
+                or left['sha256'] != right.get('sha256') or old.get('visibility') != new.get('visibility')):
+            return stop('散点与原折线的完整坐标、点数、顺序或可见性不一致；未放行。')
+        result['matches'].append({'axis': axis, 'label': label, 'count': left['shape'][0],
+                                  'sha256': left['sha256']})
+        remaining.remove(new)
+    if remaining or not result['matches']:
+        return stop('未检测到可核对的目标图型转换，或出现额外数据元素。')
+    direction='折线→散点' if target=='scatter' else '散点→折线'
+    return {**result, 'status': 'pass', 'reason': direction+'：各组全部坐标、点数、顺序、坐标轴和标注核对通过。'}
+
+
 def verify_distribution(project, chart, context, proposal, report):
     """Return None for ordinary edits, otherwise a pass/fail/unverified report."""
     kind = requested_distribution(context.get('user_message', ''))

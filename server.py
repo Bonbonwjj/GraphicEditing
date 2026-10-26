@@ -21,6 +21,7 @@ from generic_importer import import_generic
 from bundle_importer import PlotBundleAdapter, import_plot_bundle
 from data_sources import resolve_allowed_path
 from git_support import git_status, record_change
+from project_standardizer import list_standardized_projects, manual_add_project, standardize_project
 from shared_modules import MAX_SHARED_MODULE_SOURCE, apply_module, discover_modules, module_revision_source, read_module_history, resolve_module
 import llm_client
 from llm_workflows import edit_chart
@@ -155,9 +156,14 @@ def skill_files(skill_id):
 
 def preview_signature(p, source):
     files = [*p.glob('*.py'), *p.glob('data_sources.json'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
+    from native_project import selection
+    native_id=selection(p,'charts/_signature.py',{'charts/_signature.py':source})
+    if native_id:
+        files=[*p.glob('*.py'),p/'native-project.json',
+               *((p/'data/native'/native_id).rglob('*')),*((p/'lib/native'/native_id).rglob('*'))]
     dependencies=[]
     for f in sorted(set(files)):
-        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json') and '__pycache__' not in f.parts:
+        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json','.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp','.svg','.ttf','.otf','.pptx','.md','.txt') and '__pycache__' not in f.parts:
             if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):raise ValueError('External project dependency')
             dependencies.append((f.relative_to(p).as_posix(),hashlib.sha256(f.read_bytes()).hexdigest()))
     from bundle_bindings import signature as bundle_signature
@@ -165,6 +171,9 @@ def preview_signature(p, source):
     if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
     for f in (ROOT/'studio_style.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
+    if native_id:
+        for f in (ROOT/'native_plot_runtime.py',ROOT/'chat_runner.py',ROOT/'requirements-native.txt'):
+            dependencies.append(('@platform/'+f.name,hashlib.sha256(f.read_bytes()).hexdigest()))
     return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
 
 
@@ -289,6 +298,22 @@ def copy_uploaded_images(upload, p):
 
 
 def render(p, source, suffix=".png", library_path=None):
+    if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file():
+        # Extracted charts use the same read-only snapshot/audits for previews
+        # and chat candidates. Do not give them the server's credential env.
+        if suffix != '.png':
+            raise ValueError('该工程的提取契约当前输出 PNG；请使用图片下载，SVG/PDF 需单独适配绘图程序。')
+        from chat_runner import _one_render
+        with tempfile.TemporaryDirectory(prefix='plot-preview-') as temp:
+            entry = 'charts/_plot_forge_preview.py'
+            overrides = {entry:source}
+            if library_path:
+                for helper in Path(library_path).rglob('*.py'):
+                    overrides['lib/'+helper.relative_to(library_path).as_posix()] = helper.read_text(encoding='utf-8')
+            report = _one_render(p, entry, overrides, Path(temp)/'render')
+            image = RenderedImage(report['image_bytes'])
+            image.naming = report['naming']
+            return image
     if isolation_backend() == "local-python":
         require_trust(p)
     with tempfile.TemporaryDirectory(prefix="chart-studio-") as d:
@@ -331,13 +356,17 @@ def git(*args):
 
 
 def list_projects():
+    from project_preparation import can_open
     result = []
     for p in sorted(PROJECTS.iterdir()):
         if (p / "project.json").is_file():
+            if not can_open(p):
+                continue
             meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
             excluded = set(meta.get("non_chart_scripts", []))
             charts = [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded]
             result.append({"id": p.name, **meta, "chart_metadata": {c: chart_naming(p, c) for c in charts},
+                           "render_formats": ['png'] if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file() else ['png','svg','pdf'],
                            "charts": [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded],
                            "modules": discover_modules(p), "data_sources": project_data_sources(p),
                            "data": [f.relative_to(p / "data").as_posix() for f in sorted((p / "data").rglob("*")) if f.is_file() and f.suffix.lower() in {".csv", ".tsv", ".json"}]})
@@ -502,6 +531,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         parts = [x for x in path.split("/") if x]
+        from workspace_api import handle as handle_workspace
+        if handle_workspace(self, path, PROJECTS, preview_lock=preview_lock):
+            return
         from ly_api import handle_data_sources
         if path.startswith("/api/data-sources/"):
             return handle_data_sources(self, path)
@@ -534,6 +566,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
+        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css'):
+            return self.bytes_response((STATIC / Path(path).name).read_bytes(),
+                'text/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
             name = Path(path).name
             mime = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
@@ -556,6 +591,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response(test_model_connection())
                 return self.json_response(save_model_config(self.body_json()))
             return self.json_response({'error': 'Model config route not found'}, 404)
+        if path == "/api/project-standardizer":
+            if self.command == "GET":
+                return self.json_response({"root": str(PROJECTS), "projects": list_standardized_projects(PROJECTS)})
+            if self.command == "POST":
+                body = self.body_json()
+                src = str(body.get("source_dir", "")).strip()
+                name = str(body.get("project_name", "")).strip()
+                if not name:
+                    name = Path(src).name.strip() if src else "standardized_project"
+                target = standardize_project(src or name, name, PROJECTS)
+                return self.json_response({"project": target.name, "path": str(target), "status": "ready", "root": str(PROJECTS)})
+        if path == "/api/project-standardizer/manual":
+            if self.command == "POST":
+                body = self.body_json()
+                name = str(body.get("project_name", "")).strip()
+                if not name:
+                    raise ValueError("必须填写项目名称")
+                target = manual_add_project(name, PROJECTS)
+                return self.json_response({"project": target.name, "path": str(target), "status": "pending_standardization", "root": str(PROJECTS)})
         if self.command == "GET" and path == "/api/projects":
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
                                        "llm_enabled": bool(effective_model_config()['api_key']) or llm_client.is_configured()})
@@ -575,6 +629,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response(CHAT.create(project, body.get("charts"), body.get("reference_charts", [])))
             if len(parts) == 6 and self.command == "GET":
                 return self.json_response(CHAT.get(project, parts[5]))
+            if len(parts) == 7 and self.command == "POST" and parts[6] == "stop":
+                self.body_json()
+                return self.json_response(CHAT.stop(project, parts[5]))
+            if len(parts) == 7 and self.command == "POST" and parts[6] in ('save','delete'):
+                self.check_local_json()
+                return self.json_response(CHAT.manage(project,parts[5],parts[6],self.body_json()))
             if len(parts) == 7 and self.command == "POST" and parts[6] in ("turns", "normalize"):
                 return self.json_response(CHAT.turn(project, parts[5], self.body_json(), normalize=parts[6] == "normalize"))
             if len(parts) == 9 and parts[6] == "drafts":
@@ -871,6 +931,23 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": str(e)}, 400)
 
     def do_POST(self):
+        path = unquote(urlparse(self.path).path)
+        parts=[part for part in path.split('/') if part]
+        if (len(parts)==7 and parts[:2]==['api','projects']
+                and parts[3:5]==['chat','sessions'] and parts[6] in ('stop','save','delete')):
+            # Cancellation only signals an existing turn; it must not queue
+            # behind the SYNC lock held by that very turn. route() still applies
+            # the normal local Host/Origin and exact project/session checks.
+            return self.post_locked()
+        if path.startswith('/api/workspace/projects/') and path.endswith('/delete'):
+            # A destructive request must not wait behind an ongoing model/render
+            # operation and then unexpectedly delete the newly completed work.
+            if not SYNC.lock.acquire(blocking=False):
+                return self.json_response({'error': '工作台正在处理任务，请完成后重新确认删除'}, 409)
+            try:
+                return self.post_locked()
+            finally:
+                SYNC.lock.release()
         with SYNC.lock:
             self.post_locked()
 

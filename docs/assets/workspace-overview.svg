@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="530" viewBox="0 0 1080 530">
+<style>text{font-family:'Noto Sans CJK SC',sans-serif;fill:#24394d;font-size:19px}.title{font-size:23px;font-weight:700}.small{font-size:16px;fill:#526b80}.white{fill:white}.box{fill:#f0f5f9;stroke:#cfdae4;stroke-width:2}</style>
+<rect x="1" y="1" width="1078" height="528" rx="18" fill="white" stroke="#cfdae4"/>
+<path d="M18 1H1062Q1079 1 1079 18V74H1V18Q1 1 18 1" fill="#173d57"/>
+<text x="25" y="47" class="title white">Plot Forge</text><text x="505" y="45" class="white">模型配置　　团队协作　　主题与状态</text>
+<rect x="20" y="94" width="205" height="412" rx="10" class="box"/>
+<text x="40" y="132" class="title">项目资源</text>
+<text x="40" y="180">工程 A</text><text x="63" y="218">fig1</text><text x="63" y="255">fig2</text><text x="40" y="316">新建与导入</text><text x="40" y="358">代码拆分</text><text x="40" y="400">标准化 Skill</text>
+<rect x="243" y="94" width="510" height="412" rx="10" class="box"/>
+<text x="264" y="132" class="title">图集与编辑工作区</text>
+<text x="265" y="171" class="small">图片预览　｜　绘图代码　｜　数据</text>
+<rect x="265" y="193" width="466" height="231" rx="8" fill="white" stroke="#cfdae4"/>
+<path d="M310 220V385H690" fill="none" stroke="#526b80" stroke-width="3"/>
+<path d="M325 360L390 330L455 340L520 277L585 285L660 240" fill="none" stroke="#248a9a" stroke-width="5"/>
+<g fill="#248a9a"><circle cx="325" cy="360" r="6"/><circle cx="390" cy="330" r="6"/><circle cx="455" cy="340" r="6"/><circle cx="520" cy="277" r="6"/><circle cx="585" cy="285" r="6"/><circle cx="660" cy="240" r="6"/></g>
+<text x="266" y="468" class="small">此处展示已应用版本，不被未完成候选覆盖</text>
+<rect x="771" y="94" width="289" height="412" rx="10" class="box"/>
+<text x="792" y="132" class="title">对话改图</text><text x="792" y="174" class="small">选择目标与参照图</text>
+<rect x="792" y="195" width="246" height="61" rx="9" fill="#dcebf5"/><text x="808" y="231" font-size="17">输入修改要求</text>
+<rect x="792" y="272" width="246" height="106" rx="9" fill="white" stroke="#cfdae4"/><text x="808" y="309">候选图与检查结果</text><text x="808" y="346" class="small">继续修改　／　应用此版</text>
+<text x="792" y="422" class="small">保存会话　删除会话</text><text x="792" y="461" class="small">生成期间可停止本轮</text>
+</svg>

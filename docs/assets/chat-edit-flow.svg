@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="485" viewBox="0 0 1080 485">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#637d91"/></marker></defs>
+<style>text{font-family:'Noto Sans CJK SC',sans-serif;fill:#24394d;font-size:20px}.s{font-size:16px;fill:#526b80}.b{fill:#edf4f9;stroke:#c8d8e4;stroke-width:2}.line{fill:none;stroke:#637d91;stroke-width:2;marker-end:url(#a)}</style>
+<rect width="1080" height="485" rx="16" fill="#fafcfe"/>
+<text x="35" y="40" class="s">本机准备</text><text x="430" y="40" class="s">已配置的模型服务</text><text x="785" y="40" class="s">本机执行与审阅</text>
+<rect x="35" y="65" width="280" height="85" rx="12" class="b"/><text x="65" y="100">选定 fig 与当前版本</text><text x="65" y="130" class="s">输入指令，保留修改起点</text>
+<path d="M315 107H395" class="line"/>
+<rect x="400" y="65" width="280" height="85" rx="12" class="b"/><text x="433" y="100">生成局部代码修改</text><text x="433" y="130" class="s">普通问答仅返回文字</text>
+<path d="M680 107H760" class="line"/>
+<rect x="765" y="65" width="280" height="85" rx="12" class="b"/><text x="794" y="100">并行绘制原版与候选</text><text x="794" y="130" class="s">检查数据、范围与画面</text>
+<path d="M905 150V205" class="line"/>
+<rect x="765" y="210" width="280" height="85" rx="12" fill="#fff3dd" stroke="#d4b36f" stroke-width="2"/><text x="797" y="246">展示候选及警告</text><text x="797" y="276" class="s">可继续修改或审阅结果</text>
+<path d="M765 253H685" class="line"/>
+<rect x="400" y="210" width="280" height="85" rx="12" fill="#e1f0eb" stroke="#7eb69f" stroke-width="2"/><text x="435" y="246">用户点击应用此版</text><text x="435" y="276" class="s">通过所需校验后更新正式图</text>
+<path d="M905 295V345H715V180H540V155" class="line" stroke-dasharray="6 5"/>
+<text x="630" y="372" class="s">继续修改：重新生成并再次验证</text>
+<text x="35" y="430" class="s">停止本轮：取消本机后续处理，保留已应用版本；云端已产生的用量无法撤销。</text>
+<text x="35" y="463" class="s">虚线表示审阅或修改环节，不表示绕过数据校验或自动应用。</text>
+</svg>

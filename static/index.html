@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=23"></head>
+<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=23"><link rel="stylesheet" href="/static/workspace.css?v=4"></head>
 <body>
 <header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><span id="teamSyncStatus" role="status">等待同步团队版本</span><button id="collaborationButton" type="button">团队协作</button><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
-  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="uploadPackage" type="button">⬆ 上传 CSV / Python 项目</button><button id="importBundleButton" type="button">⬆ 导入 Border / Group Bundle</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></aside>
+  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="standardizeProject" type="button">📁 标准化已有目录</button><button id="uploadPackage" type="button">⬆ 上传 CSV / Python 项目</button><button id="importBundleButton" type="button">⬆ 导入 Border / Group Bundle</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></aside>
   <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHARTS</div><h1 id="chartTitle">请选择一个项目</h1><p id="description">从左侧项目目录打开项目，预览其中的全部图表。</p></div><div class="actions"><button id="refresh" disabled>重新渲染当前图</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">CSV 数据</button></div>
     <div id="figurePane" class="content"><div class="galleryToolbar"><div><strong id="galleryTitle">项目图集</strong><span id="galleryCount" class="dim">0 张图</span></div><div class="galleryActions"><label class="selectAllLabel"><input id="selectAllCharts" type="checkbox"> 全选</label><span id="selectedCount" class="dim">已选 0 张</span><button id="batchNormalize" type="button" class="primary" disabled>批量标准化</button><button id="batchEdit" type="button" class="primary" disabled>批量对话修改</button></div></div><div id="gallery" class="gallery"><div class="galleryEmpty">选择左侧的项目，查看全部图表。</div></div><p class="hint" id="figureHint">勾选一张或多张图后可标准化；点击图卡下方按钮可查看代码与 CSV 数据。</p></div>
@@ -15,11 +15,87 @@
     <div class="chatHead"><span class="spark">✦</span><strong>对话改图</strong><span class="dim" id="chatState">候选预览</span></div>
     <div id="chatTargets" class="chatTargets">尚未选择图表</div>
     <div class="chatContextBar"><label for="chatSessionPicker">当前目标会话</label><select id="chatSessionPicker" aria-label="选择当前目标的修改会话"><option value="">新会话</option></select><button id="newChatSession" type="button">新建</button></div>
+    <div class="chatContextBar"><input id="chatSessionTitle" maxlength="100" aria-label="会话名称" placeholder="会话名称（可选）"><button id="saveChatSession" type="button">保存会话</button><button id="deleteChatSession" type="button">删除会话</button></div>
+    <p class="hint">对话自动保存在本机；保存可命名，删除移入本机回收目录，不影响已应用的图。</p>
     <details class="chatReferences"><summary id="chatReferenceSummary">参照图 · 只读（0）</summary><div id="chatReferenceChoices"></div><p class="hint">选择参照图后，在消息中说明参照哪些外观属性。参照图本身不会被修改。</p></details>
     <div id="messages" aria-live="polite"><div class="bubble assistant">选中要修改的图，输入要求。新图先显示在这里；点击“应用此版”后才会更新中央图集。</div></div>
-    <form id="chatForm"><textarea id="prompt" placeholder="输入改图需求，可继续修改上一候选…" rows="3" aria-label="改图需求"></textarea><div class="sendRow"><span id="chatSendHint">Enter 发送 · Shift + Enter 换行</span><button id="sendChat" class="primary" type="submit">生成候选 ↗</button></div></form>
+    <form id="chatForm"><textarea id="prompt" placeholder="输入改图需求，可继续修改上一候选…" rows="3" aria-label="改图需求"></textarea><div class="sendRow"><span id="chatSendHint">Enter 发送 · Shift + Enter 换行</span><button id="stopChat" type="button" hidden>停止本轮</button><button id="sendChat" class="primary" type="submit">生成候选 ↗</button></div></form>
   </div></aside>
 </div>
+
+<dialog id="standardizeDialog" class="uploadDialog">
+  <div class="dialogHead"><strong>打开工程 · 一次准备，持续改图</strong><button id="closeStandardize" type="button">返回工作台</button></div>
+  <p class="hint">使用 plot-code-extraction Skill 分离科学计算与绘图。新导入工程默认仅保存在本机，不参与团队同步。</p>
+  <label>操作<select id="workspaceMode"><option value="open">打开已拆分工程</option><option value="new">新建 / 继续拆分</option></select></label>
+  <label><span id="workspaceRecentLabel">已拆分工程</span><select id="workspaceRecent"><option value="">选择工程…</option></select></label>
+  <div class="modelConfigActions"><button id="workspaceResume" type="button">打开选中的工程</button><button id="workspaceDelete" type="button" disabled>删除选中的工程…</button></div>
+  <section id="workspaceDeletePanel" hidden>
+    <strong>确认删除本机工程副本</strong><pre id="workspaceDeleteScope"></pre>
+    <p class="hint">此操作不可撤销，会删除该副本内的代码、数据副本、预览、对话候选及修改历史。需要保留改图结果时，请先下载标准工程备份。不会删除原始工程或已下载的备份。团队工程的删除可能在后续手动发布时同步给团队，或在拉取时恢复，请谨慎操作。</p>
+    <label>输入完整工程名称确认<input id="workspaceDeleteName" autocomplete="off" spellcheck="false"></label>
+    <div class="modelConfigActions"><button id="workspaceDeleteConfirm" type="button" disabled>永久删除工作副本</button><button id="workspaceDeleteCancel" type="button">取消</button></div>
+  </section>
+  <hr>
+  <section id="workspaceNewFields" hidden>
+  <label>新建工程名称<input id="standardizeProjectName" placeholder="例如：demo_project"></label>
+  <label>源项目目录<input id="projectSourcePath" placeholder="例如：/data/my_plot_project 或 /mnt/nas/project_x"></label>
+  <div class="modelConfigActions"><button id="workspaceBrowse" type="button">选择文件夹</button><button id="workspaceInspect" type="button">检查文件清单（不运行）</button></div>
+  <p class="hint">支持 Python 工程和已解压的标准备份目录。只复制支持的源码及数据格式；跳过隐藏目录、符号链接和疑似凭据文件，不代替原始全量备份。</p>
+  <details><summary>本机备份文件清单（实际发送范围见下方分析预览）</summary><pre id="workspaceInventory">请先检查目录。备份操作不发送代码或数据。</pre></details>
+  <label class="modelVision"><input id="workspaceTrust" type="checkbox"> 恢复标准工程时：我已审阅其 Python 代码，允许本机执行绘图。未启用 Docker / Seatbelt 时不是 OS 沙箱。</label>
+  <button class="primary" id="startStandardize" type="button">新建工程并规划拆分</button>
+  </section>
+  <section id="workspacePreparation" hidden>
+    <hr><strong id="workspaceProjectTitle"></strong><p id="workspacePreparationState" role="status" aria-live="polite"></p>
+    <label>当前工程显示名称<input id="workspaceRenameName" maxlength="100"></label>
+    <button id="workspaceRename" type="button">保存工程名称</button>
+    <p class="hint">重命名立即更新工程列表和标题；工程 ID、备份目录和已有修改记录保持不变。</p>
+    <section id="workspaceNativePanel" hidden>
+      <strong>已识别独立绘图包 · 本机拆分</strong>
+      <p class="hint">直接保留已有绘图代码和冻结数据，为 7 张图分别建立改图入口。不调用模型，不产生模型 token 用量。</p>
+      <label class="modelVision"><input id="workspaceNativeConsent" type="checkbox"> 我信任该工程，允许在本机临时副本中逐图运行和验证。Linux 原生绘图使用 bubblewrap 系统沙箱；其他平台以当前渲染配置为准。</label>
+      <button id="workspaceNativeStart" class="primary" type="button">本机拆分并验证全部图</button>
+      <progress id="workspaceNativeProgress" max="7" value="0" aria-label="已验证图数"></progress>
+    </section>
+    <section id="workspaceBatchPanel">
+      <hr><strong>整文件夹拆分 · 同一工程汇总</strong>
+      <p class="hint">无需逐个选择目录。先在本机规划全部源码，再经确认逐批发送。共享依赖可能重复发送；某一批成功不代表全部完成。超限和依赖不明的批次不会跳过。</p>
+      <button id="workspaceBatchPlan" type="button">规划整个文件夹（不发送源码）</button>
+      <p id="workspaceBatchSummary" role="status" aria-live="polite"></p>
+      <details><summary>全部批次、覆盖文件与处理状态</summary><pre id="workspaceBatchDetails"></pre></details>
+      <label class="modelVision"><input id="workspaceBatchConsent" type="checkbox"> 我已检查全部批次，允许逐批发送列出的完整源码和工程文件名；不发送原始数据内容。此操作会产生多次模型请求。</label>
+      <button id="workspaceBatchStart" class="primary" type="button" disabled>开始 / 继续整工程拆分</button>
+      <section id="workspaceBatchProgress" hidden>
+        <p id="workspaceBatchProgressText" role="status" aria-live="polite"></p>
+        <progress id="workspaceBatchProgressBar" max="1" value="0" aria-label="分析已返回批次"></progress>
+        <p id="workspaceBatchProgressConnection" class="hint"></p>
+      </section>
+      <a id="workspaceBatchDownload" hidden>下载全部批次提取方案</a>
+      <section id="workspaceBatchValidation" hidden>
+      <label>统一导出目录（每批为 batch_ID 子目录）<input id="workspaceBatchRoot" placeholder="例如：/data/my_export，每个 batch_ID 目录含 manifest.json"></label>
+      <label class="modelVision"><input id="workspaceBatchValidateConsent" type="checkbox"> 已审阅各批次导出和绘图代码，允许本机验证。默认本机 Python 不是 OS 沙箱。所有批次通过后才汇总为可改图工程。</label>
+      <button id="workspaceBatchFinalize" type="button" disabled>验证全部批次并汇总</button>
+      </section>
+    </section>
+    <details id="workspaceAdvanced"><summary>高级：仅拆分指定图组（非整工程）</summary>
+    <section id="workspaceAnalysisPanel">
+      <label>本次分析的图组目录 / 入口文件<select id="workspaceAnalysisScope"><option value="">整个工程</option></select></label>
+      <p id="workspaceAnalysisSummary" role="status" aria-live="polite">正在统计源码…</p>
+      <p class="hint">大工程请显式选择一个图组，后续图组可另建副本准备。自动补入能静态识别的本地依赖，不截断文件；动态依赖仍须核实。只准备选定范围，不表示整个工程已完成提取。</p>
+      <details><summary>实际拟发送源码与依赖检查</summary><pre id="workspaceAnalysisFiles"></pre></details>
+    </section>
+    <label class="modelVision"><input id="workspaceConsent" type="checkbox"> 允许发送分析预览中列出的完整 Python 源码，以及工程内代码 / 数据文件名；不发送原始数据内容。变更范围后须重新确认。</label>
+    <button id="workspaceAnalyze" type="button">用 Skill 分析并生成提取方案</button>
+    </details>
+    <a id="workspacePlan" hidden>下载导出程序与绘图代码</a>
+    <p id="workspaceRunHint" class="hint" hidden>先审阅下载的 *_export.py，将其放在原工程根目录，使用原分析环境运行：python &lt;name&gt;_export.py --output &lt;新的 plot-data 目录&gt;。不要覆盖原始数据。生成程序仍须人工检查，提取验证不能证明全部科学计算正确。</p>
+    <label id="workspaceBundleLabel">本机导出的 plot-data 目录<input id="workspaceBundlePath" placeholder="包含 manifest.json 的目录"></label>
+    <label id="workspaceExecutionLabel" class="modelVision"><input id="workspaceValidateConsent" type="checkbox"> 已审阅独立绘图代码，允许在本机快照中试绘；默认 Python 运行权限与当前用户相同。</label>
+    <div class="modelConfigActions"><button id="workspaceFinalize" type="button">验证数据并准备改图</button><button id="workspaceEnter" class="primary" type="button">进入对话改图</button><a id="workspaceBackup" hidden>下载标准工程备份</a></div>
+    <details><summary>准备与验证详情</summary><pre id="workspaceDetails"></pre></details>
+  </section>
+  <p id="workspaceMessage" role="status" aria-live="polite"></p>
+</dialog>
 
 <dialog id="uploadDialog" class="uploadDialog">
   <div class="dialogHead"><strong>上传代码与数据</strong><button id="closeUpload" type="button">关闭</button></div>
@@ -40,20 +116,35 @@
 <dialog id="chooseSkillDialog"><div class="dialogHead"><strong>选择标准化 Skill</strong><button id="closeChooseSkill" type="button">关闭</button></div><p id="chooseSkillTarget" class="hint"></p><div id="chooseSkillList"></div></dialog>
 <dialog id="historyDialog"><div class="dialogHead"><strong id="historyTitle">图片历史</strong><button id="closeHistory" type="button">关闭</button></div><p class="hint">保存所有图片版本；代码仅保留最早版本、上一轮版本和当前文件。</p><div id="history"></div><button id="finalizeHistory" type="button" class="dangerAction">修改完成，清理旧历史</button></dialog>
 <dialog id="modelConfigDialog" aria-labelledby="modelConfigTitle">
-  <div class="dialogHead"><strong id="modelConfigTitle">模型 API 配置</strong><button id="closeModelConfig" type="button">关闭</button></div>
+  <div class="dialogHead"><strong id="modelConfigTitle">模型连接 · API / ChatGPT 订阅</strong><button id="closeModelConfig" type="button">关闭</button></div>
   <p class="modelConfigHelp">规范化 Agent 和 Chat 改图 Agent 使用同一份配置。密钥优先加密保存在本机；系统存储不可用时仅在当前会话生效，重启后需重新输入。页面不会回显密钥。</p>
   <button id="useCdscPreset" type="button" class="modelPreset">使用默认模型与地址</button>
   <form id="modelConfigForm">
+    <label>连接方式<select id="modelProvider"><option value="api">API Key（独立 API 计费或本地服务）</option><option value="chatgpt">ChatGPT 订阅（官方授权，取决于账户开放情况）</option></select></label>
+    <section id="chatgptSettings" hidden>
+      <p class="hint">只在 auth.openai.com 官方窗口登录，不在本应用输入 ChatGPT 密码、Cookie 或 Session Token。Pro 不保证此预览功能已对你的账户开放；不可用时不会自动改走付费 API。</p>
+      <div class="modelConfigActions"><button id="chatgptConnect" type="button">登录 ChatGPT</button><button id="chatgptSwitch" type="button">连接其他账户</button><button id="chatgptDisconnect" type="button">退出并撤销连接</button></div>
+      <a id="chatgptLoginLink" target="_blank" rel="noopener noreferrer" hidden>在 OpenAI 官方页面继续登录</a>
+      <p id="chatgptStatus" role="status" aria-live="polite"></p>
+      <label>账户可用模型<select id="chatgptModelSelect"><option value="">登录后读取可用模型…</option></select></label><button id="chatgptLoadModels" type="button">读取可用模型</button>
+      <label class="modelVision"><input id="chatgptCodeConsent" type="checkbox"> 允许发送本次任务所需的代码、绘图数据与对话给 OpenAI。关闭此项可保存登录，但不能分析或改图。</label>
+      <p class="hint">密钥仅进系统凭据库；不可用时仅保存在后台内存，重启需重新登录。请求使用 store:false，但这不等于零留存或不用于训练；请核对账户数据控制和单位政策。敏感工程请使用本地模型。</p>
+    </section>
+    <div id="apiProviderFields">
+    <label>API 服务地址<select id="apiEndpointPreset"><option value="local">本地 / 内网（之前的默认地址）</option><option value="siliconflow">硅基流动 SiliconFlow</option><option value="custom">自定义 Chat Completions 地址</option></select></label>
     <label for="modelApiUrl">完整 Chat Completions 地址<input id="modelApiUrl" type="url" required autocomplete="url" placeholder="https://…/v1/chat/completions"></label>
+    <p id="apiDestinationNotice" class="modelConfigHelp" role="status"></p>
+    <p class="modelConfigHelp">按所选地址连接网络，不根据 Key 猜测服务商。切换地址须重新输入该服务的 Key；不会自动探测或将旧 Key 发到新地址。模型名称请填写该服务实际支持的名称。</p>
     <p id="modelTransportNotice" class="modelConfigHelp" hidden>正在使用 HTTP：API Key 和请求内容会通过此连接传输，请确认这是你信任的本机或内网服务。</p>
     <label for="modelName">模型名称<input id="modelName" required autocomplete="off" placeholder="填写服务端提供的模型名称"></label>
     <label for="modelMaxOutputTokens">Chat 改图最大输出 token<input id="modelMaxOutputTokens" type="number" min="1024" max="65536" step="1" required value="16384"></label>
     <label for="modelApiKey">API Key<input id="modelApiKey" type="password" autocomplete="new-password" placeholder="首次配置请输入；留空则保留现有密钥"></label>
+    </div>
     <label class="modelVision"><input id="modelVision" type="checkbox"> 改图时将当前图和参照图传给支持视觉的模型</label>
     <p id="modelConfigState" role="status" aria-live="polite"></p>
     <div class="modelConfigActions"><button id="saveModelConfig" class="primary" type="submit">保存配置</button><button id="testModelConfig" type="button">测试已保存配置</button><button id="clearModelConfig" type="button">清除配置</button></div>
   </form>
-  <p class="modelConfigHelp">本机和内网 IP 的 HTTP 地址可以直接保存，无需设置环境变量。请填写服务端给出的完整接口路径和模型名称；输出 token 上限及图片输入按模型实际能力设置。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
+  <p id="modelApiHelp" class="modelConfigHelp">本机和内网 IP 的 HTTP 地址可以直接保存，无需设置环境变量。请填写服务端给出的完整接口路径和模型名称；输出 token 上限及图片输入按模型实际能力设置。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
 </dialog>
 
 
@@ -95,4 +186,4 @@
 <details><summary>恢复历史版本到编辑器（仍需验证和确认）</summary><div id="moduleHistory"></div></details>
 </dialog>
 
-<script src="/static/collaboration.js?v=4"></script><script src="/static/app.js?v=23"></script><script src="/static/ly_features.js?v=1"></script></body></html>
+<script src="/static/collaboration.js?v=4"></script><script src="/static/app.js?v=30"></script><script src="/static/ly_features.js?v=1"></script><script src="/static/workspace.js?v=10"></script></body></html>

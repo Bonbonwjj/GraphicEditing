@@ -1,4 +1,5 @@
 const $ = id => document.getElementById(id);
+const chatStartedAt = new Map();
 const state = {projects: [], project: null, chart: null, detail: null, openProjects: new Set(), selectedCharts: new Set(), previews: new Map(), galleryVersion: 0, skills: [], historyChart: null, chatKey: '', chatDisplayProject: null, chatSessions: new Map(), chatSessionLists: new Map(), chatLoads: new Map(), projectChatHistory: new Map(), projectChatLoaded: new Set(), projectChatLoads: new Map(), projectChatErrors: new Map(), chatBusy: new Set(), chatReferences: new Map(), chatErrors: new Map(), chatPending: new Map(), chatPolling: new Set(), detailRequest: 0};
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const savedTheme=localStorage.getItem('plot-forge-theme')||'dark';
@@ -103,7 +104,7 @@ function renderDraftReview(draft){
   const transform=draft.chart_transform;
   if(transform){
     body+=`<section><strong>图型转换数据核对</strong><p>${esc(transform.reason||transform.status)}</p></section>`;
-    body+=reviewList('原始样本与分组',transform.matches,item=>`${item.path} · ${item.group_column} / ${item.value_column}：${asList(item.groups).map(g=>`${g.label}（${g.count} 个样本）`).join('，')}`);
+    body+=reviewList('原始样本与分组',transform.matches,item=>['scatter','line'].includes(transform.kind)?`${item.label}：${item.count} 个坐标逐点一致（${item.axis}）`:`${item.path} · ${item.group_column} / ${item.value_column}：${asList(item.groups).map(g=>`${g.label}（${g.count} 个样本）`).join('，')}`);
   }
   const visual=draft.visual_change;
   if(visual){
@@ -161,6 +162,8 @@ function renderDraftReview(draft){
   return body?`<details class="draftReview"><summary>修改理解与检查结果</summary>${body}</details>`:'';
 }
 const statusNames={preview_ready:'候选 · 待审阅',candidate:'候选',needs_clarification:'需要你确认',needs_context:'需要补充上下文',cannot_complete:'无法完成',validation_failed:'检查未通过',font_unverified:'字体效果未达要求',no_visible_change:'图像变化未达要求',axis_unmet:'坐标轴未达要求',render_failed:'渲染失败',agent_failed:'生成失败',scope_rejected:'超出允许范围',revision_conflict:'正式版本已变化',applied:'已应用',discarded:'已放弃',already_compliant:'已满足要求'};
+statusNames.cancelled='已停止';
+statusNames.answer='回复';
 function renderDraft(draft,session,context,interactive=true){
   const active=interactive&&session.active_drafts?.[draft.chart_id]===draft.id;
   const open=interactive&&session.status!=='closed';
@@ -179,7 +182,7 @@ function renderDraft(draft,session,context,interactive=true){
 function renderChat(){
   const context=chatContext(),activeSession=state.chatSessions.get(context.key),list=state.chatSessionLists.get(context.key)||[];
   state.chatDisplayProject=context.project;
-  $('chatSessionPicker').innerHTML=list.length?list.map((s,i)=>`<option value="${esc(s.id)}" ${s.id===activeSession?.id?'selected':''}>${esc(s.created_at?new Date(s.created_at).toLocaleString('zh-CN'):'会话 '+(list.length-i))} · ${(s.turns||[]).length} 轮</option>`).join(''):'<option value="">发送后创建会话</option>';
+  $('chatSessionPicker').innerHTML=list.length?list.map((s,i)=>`<option value="${esc(s.id)}" ${s.id===activeSession?.id?'selected':''}>${esc(s.title||(s.created_at?new Date(s.created_at).toLocaleString('zh-CN'):'会话 '+(list.length-i)))}${s.saved_at?' · 已保存':''} · ${(s.turns||[]).length} 轮</option>`).join(''):'<option value="">发送后创建会话</option>';
   const byId=new Map((state.projectChatHistory.get(context.project)||[]).map(session=>[session.id,session]));
   if(activeSession)byId.set(activeSession.id,activeSession);
   const timeline=[];
@@ -196,6 +199,7 @@ function renderChat(){
     for(const result of turn.results||[]){
       const draft=(session.drafts||[]).find(item=>item.id===result.draft_id);
       if(draft){if(result.status==='already_compliant'&&result.reason)html+=`<div class="bubble assistant">${esc(readable(result.reason))}</div>`;html+=renderDraft(draft,session,context,interactive);rendered.add(draft.id);}
+      else if(result.status==='answer')html+=`<div class="bubble assistant result-answer"><strong>回复</strong>${esc(result.message||'')}</div>`;
       else html+=`<div class="bubble assistant result-${esc(result.status)}"><strong>${esc(result.display_name||chartName(context.project,result.chart))} · ${esc(statusNames[result.status]||result.status)}</strong>${esc(readable(result.summary||result.reason||result.question||result.message))}${result.question&&readable(result.question)!==readable(result.summary||result.reason||result.question||result.message)?'<p>'+esc(readable(result.question))+'</p>':''}${warningsHTML(result)}</div>`;
     }
     for(const draft of (session.drafts||[]).filter(item=>item.turn_id===turn.id&&!rendered.has(item.id)))html+=renderDraft(draft,session,context,interactive);
@@ -205,7 +209,7 @@ function renderChat(){
   if(state.projectChatErrors.has(context.project))html+=`<div class="bubble error">读取项目 Chat 历史失败：${esc(state.projectChatErrors.get(context.project))}</div>`;
   if(state.chatErrors.has(context.key))html+=`<div class="bubble error">${esc(state.chatErrors.get(context.key))}</div>`;
   if(state.chatPending.has(context.key)&&activeSession?.turns?.at(-1)?.user_message!==state.chatPending.get(context.key))html+=`<div class="bubble user">${esc(state.chatPending.get(context.key))}</div>`;
-  if(state.chatBusy.has(context.key)||activeSession?.status==='running'){const phase={preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[activeSession?.progress?.stage]||'正在准备';html+=`<div class="bubble assistant chatProgress">${esc(phase)}…<br>中央图集继续保留已应用版本。</div>`;}
+  if(state.chatBusy.has(context.key)||activeSession?.status==='running'){const phase={preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[activeSession?.progress?.stage]||'正在提交请求';const started=chatStartedAt.get(context.key)||activeSession?.progress?.started_at*1000;const elapsed=started?` · 已等待 ${Math.max(0,Math.floor((Date.now()-started)/1000))} 秒`:'';html+=`<div class="bubble assistant chatProgress">${esc(phase)}…${esc(elapsed)}<br>中央图集继续保留已应用版本。</div>`;}
   $('messages').innerHTML=html;
   $('messages').querySelectorAll('.draftImage').forEach(img=>img.onerror=()=>{img.hidden=true;img.nextElementSibling.hidden=false;img.parentElement.removeAttribute('href');});
   $('messages').querySelectorAll('[data-draft-action]').forEach(button=>button.onclick=()=>draftAction(button.dataset.draftAction,button.dataset.draftId));
@@ -232,9 +236,73 @@ async function retryStaleTurn(index){
     await generateChat({user_message:turn.user_message},'turns',context);
   }catch(error){state.chatErrors.set(context.key,error.message);if(context.key===state.chatKey)renderChat();}
 }
+async function pollChatProgress(){
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  // A new POST is still pending while the cached session remains "open".
+  if(!session||(!state.chatBusy.has(context.key)&&session.status!=='running')||state.chatPolling.has(context.key))return;
+  state.chatPolling.add(context.key);
+  try{
+    const updated=await api(sessionEndpoint(context,session.id));
+    // A completed POST or a different session must win over a late GET.
+    if(state.chatSessions.get(context.key)===session){
+      storeSession(context,updated);
+      if(state.chatKey===context.key)renderChat();
+    }
+  }catch(error){
+    state.chatErrors.set(context.key,'会话暂时无法同步：'+error.message);
+    if(state.chatKey===context.key)renderChat();
+  }finally{state.chatPolling.delete(context.key);}
+}
+
+$('stopChat').onclick=async()=>{
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  if(!session)return;
+  $('stopChat').disabled=true;$('stopChat').textContent='正在停止…';
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{
+    const result=await api(sessionEndpoint(context,session.id,'stop'),{method:'POST',
+      headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
+    alertStatus(result.message);
+    void pollChatProgress();
+  }catch(error){state.chatErrors.set(context.key,error.name==='AbortError'?'停止请求未能在 8 秒内确认，请重试；不要重复提交改图。':error.message);renderChat();}
+  finally{clearTimeout(timer);$('stopChat').disabled=false;$('stopChat').textContent='停止本轮';}
+};
+const updateChatControlsBeforeStop=updateChatControls;
+updateChatControls=function(){
+  updateChatControlsBeforeStop();
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  $('stopChat').hidden=!(session&&(state.chatBusy.has(context.key)||session.status==='running'));
+  const disabled=!session||state.chatBusy.has(context.key)||session.status==='running'||state.chatLoads.has(context.key);
+  $('saveChatSession').disabled=disabled;$('deleteChatSession').disabled=disabled;$('chatSessionTitle').disabled=disabled;
+  if($('chatSessionTitle').dataset.sessionId!==session?.id){$('chatSessionTitle').dataset.sessionId=session?.id||'';$('chatSessionTitle').value=session?.title||'';}
+};
+
+async function manageChatSession(action){
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  if(!session||state.chatBusy.has(context.key)||session.status==='running')return;
+  if(action==='delete'&&!confirm('删除当前会话及其未应用候选？已应用的图、代码、数据不变。记录移入本机回收目录。'))return;
+  state.chatBusy.add(context.key);updateChatControls();
+  try{
+    const result=await postJSON(sessionEndpoint(context,session.id,action),action==='save'?{title:$('chatSessionTitle').value}:{confirm_session_id:session.id});
+    if(action==='save'){storeSession(context,result);alertStatus('会话已保存，可从会话列表重新打开');}
+    else{
+      for(const [key,value] of state.chatSessions)if(value.id===session.id)state.chatSessions.delete(key);
+      for(const [key,list] of state.chatSessionLists)state.chatSessionLists.set(key,list.filter(s=>s.id!==session.id));
+      state.projectChatHistory.set(context.project,(state.projectChatHistory.get(context.project)||[]).filter(s=>s.id!==session.id));
+      state.chatErrors.delete(context.key);
+      await refreshProjectChats(context.project);
+      alertStatus('会话已移入本机回收目录；正式图表未改变');
+    }
+  }catch(error){state.chatErrors.set(context.key,error.message);}
+  finally{state.chatBusy.delete(context.key);if(state.chatKey===context.key)renderChat();}
+}
+$('saveChatSession').onclick=()=>manageChatSession('save');
+$('deleteChatSession').onclick=()=>manageChatSession('delete');
+
 async function generateChat(body,action='turns',context=chatContext()){
   if(!context.key||state.chatBusy.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return false;
   state.chatBusy.add(context.key);state.chatErrors.delete(context.key);
+  chatStartedAt.set(context.key,Date.now());
   state.chatPending.set(context.key,body.user_message||'使用 '+body.skill_id+' 生成标准化候选');
   if(context.project===state.project)renderChat();
   let session;
@@ -261,6 +329,7 @@ async function generateChat(body,action='turns',context=chatContext()){
     return false;
   }finally{
     state.chatBusy.delete(context.key);state.chatPending.delete(context.key);
+    chatStartedAt.delete(context.key);
     if(context.project===state.project)renderChat();
   }
 }
@@ -275,9 +344,43 @@ function drawGallery(){state.galleryVersion++;galleryQueue.length=0;document.que
   document.querySelectorAll('.chartCard').forEach(card=>{const chart=card.dataset.chart;card.querySelector('.chartCheck').onchange=e=>{e.stopPropagation();e.target.checked?state.selectedCharts.add(chart):state.selectedCharts.delete(chart);updateSelection();};card.querySelector('.chartOpen').onclick=()=>select(state.project,chart);card.querySelector('.cardDetail').onclick=()=>openChartDetails(state.project,chart,'code');card.querySelector('.cardData').onclick=()=>openChartDetails(state.project,chart,'data');card.querySelector('.cardHistory').onclick=()=>openHistory(state.project,chart);card.querySelector('.cardFinalize').onclick=()=>finalizeChart(state.project,chart);const cached=state.previews.get(state.project+'/'+chart);if(cached){card.querySelector('.chartImage').innerHTML=`<img src="${cached}" alt="${esc(chart)} 图像预览">`;fitChartCanvas(card,card.querySelector('img'));}else galleryObserver.observe(card);});updateSelection();}
 async function openChartDetails(project,chart,view){await select(project,chart,view);}
 const galleryQueue=[];let galleryActive=0;
+const galleryRequests=new Set();
+async function fetchGalleryImage(url){
+  const controller=new AbortController();galleryRequests.add(controller);
+  const timer=setTimeout(()=>controller.abort(),165000);
+  try{
+    const response=await fetch(url,{signal:controller.signal});
+    if(!response.ok){const body=await response.json();throw new Error(body.error||`HTTP ${response.status}`);}
+    return await response.blob();
+  }finally{clearTimeout(timer);galleryRequests.delete(controller);}
+}
+const drawGalleryBeforeCancellation=drawGallery;
+drawGallery=function(){
+  for(const controller of galleryRequests)controller.abort();
+  drawGalleryBeforeCancellation();
+};
 function runGalleryQueue(){while(galleryActive<2&&galleryQueue.length){const item=galleryQueue.shift();galleryActive++;loadCard(item).finally(()=>{galleryActive--;runGalleryQueue();});}}
 const galleryObserver=new IntersectionObserver(entries=>{for(const entry of entries){if(!entry.isIntersecting)continue;galleryObserver.unobserve(entry.target);galleryQueue.push({card:entry.target,project:state.project,chart:entry.target.dataset.chart,version:state.galleryVersion});}runGalleryQueue();},{root:null,rootMargin:'350px'});
-async function loadCard({card,project,chart,version,force=false,requested=false}){if(version!==state.galleryVersion)return;const requestId=String(Number(card.dataset.previewRequest||0)+1);card.dataset.previewRequest=requestId;const slot=card.querySelector('.chartImage');if(!force&&!requested&&projectInfo(project)?.data_source_type==='plot_bundle'&&(!projectInfo(project)?.chart_metadata?.[chart]||projectInfo(project).chart_metadata[chart].status==='pending')){slot.innerHTML='<span class="chartLoading">点击图卡按需生成 Bundle 图片</span>';return;}slot.innerHTML='<span class="chartLoading">正在读取图片…</span>';try{const r=await fetch(chartEndpoint(project,chart,'preview')+'?v='+Date.now()+(force?'&force=1':''));if(!r.ok){const e=await r.json();throw new Error(e.error||`HTTP ${r.status}`);}const url=URL.createObjectURL(await r.blob());if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId){URL.revokeObjectURL(url);return;}const key=project+'/'+chart,prior=state.previews.get(key);if(prior)URL.revokeObjectURL(prior);state.previews.set(key,url);slot.innerHTML='';const img=document.createElement('img');img.src=url;img.alt=chart+' 图像预览';img.loading='lazy';fitChartCanvas(card,img);slot.append(img);}catch(e){if(version===state.galleryVersion&&card.dataset.previewRequest===requestId){slot.innerHTML='';const message=document.createElement('span');message.className='chartError';message.textContent='渲染失败：'+e.message;slot.append(message);}}}
+async function loadCard({card,project,chart,version,force=false,requested=false}){
+  if(version!==state.galleryVersion)return;
+  const requestId=String(Number(card.dataset.previewRequest||0)+1);card.dataset.previewRequest=requestId;
+  const slot=card.querySelector('.chartImage');
+  if(!force&&!requested&&projectInfo(project)?.data_source_type==='plot_bundle'&&(!projectInfo(project)?.chart_metadata?.[chart]||projectInfo(project).chart_metadata[chart].status==='pending')){slot.innerHTML='<span class="chartLoading">点击图卡按需生成 Bundle 图片</span>';return;}
+  slot.innerHTML='<span class="chartLoading">正在读取图片；缓存失效时需重新绘制…</span>';
+  try{
+    const blob=await fetchGalleryImage(chartEndpoint(project,chart,'preview')+'?v='+Date.now()+(force?'&force=1':''));
+    const url=URL.createObjectURL(blob);
+    if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId){URL.revokeObjectURL(url);return;}
+    const key=project+'/'+chart,prior=state.previews.get(key);if(prior)URL.revokeObjectURL(prior);state.previews.set(key,url);
+    slot.innerHTML='';const img=document.createElement('img');img.src=url;img.alt=chart+' 图像预览';img.loading='lazy';fitChartCanvas(card,img);slot.append(img);
+  }catch(e){
+    if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId)return;
+    slot.innerHTML='';const message=document.createElement('span');message.className='chartError';
+    message.textContent=e.name==='AbortError'?'图片读取超时或已取消，请重试。':'渲染失败：'+e.message;
+    const retry=document.createElement('button');retry.type='button';retry.textContent='重新读取图片';
+    retry.onclick=event=>{event.stopPropagation();loadCard({card,project,chart,version,requested:true});};slot.append(message,retry);
+  }
+}
 async function preview(force=false){if(!state.chart)return;const card=[...document.querySelectorAll('.chartCard')].find(x=>x.dataset.chart===state.chart);if(card)await loadCard({card,project:state.project,chart:state.chart,version:state.galleryVersion,force,requested:true});await refreshChartNames();alertStatus('已渲染 · '+new Date().toLocaleTimeString('zh-CN'));}
 async function select(project,chart,view='figure'){const request=++state.detailRequest;showProject(project);state.chart=chart;state.detail=null;drawTree();const p=projectInfo(project);$('breadcrumb').textContent=`${p.name.toUpperCase()} / CHARTS / ${chart.toUpperCase()}`;$('chartTitle').textContent=chartName(project,chart);$('description').textContent=p.description||`项目共 ${p.charts.length} 张图`;$('filename').textContent=chart+'.py';$('refresh').disabled=false;$('svg').hidden=false;$('pdf').hidden=false;$('svg').href=endpoint('svg');$('pdf').href=endpoint('pdf');document.querySelectorAll('.chartCard').forEach(card=>card.classList.toggle('active',card.dataset.chart===chart));updateSelection();if(view==='code')$('editor').value='正在加载代码…';if(view==='data')$('dataInfo').textContent='正在加载 CSV 数据…';tab(view);if(view!=='figure')document.querySelector('main').scrollTo({top:0,behavior:'smooth'});try{const detail=await api(chartEndpoint(project,chart,'detail'));if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;state.detail=detail;$('editor').value=state.detail.code;drawHistory();drawData();tab(view);if(view==='figure'){const card=[...document.querySelectorAll('.chartCard')].find(x=>x.dataset.chart===chart);card?.scrollIntoView({block:'nearest',behavior:'smooth'});if(p.data_source_type==='plot_bundle'&&card)await loadCard({card,project,chart,version:state.galleryVersion,requested:true});}alertStatus('已选择 '+chartName(project,chart));return true;}catch(e){if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;alertStatus(e.message);if(view==='code')$('editor').value=e.message;if(view==='data')$('dataInfo').textContent=e.message;return false;}}
 async function post(action,body){return api(endpoint(action),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
@@ -318,6 +421,29 @@ $('newProject').onclick=e=>{e.stopPropagation();const open=$('createMenu').class
 document.addEventListener('click',e=>{if(!e.target.closest('.createMenuWrap'))closeCreateMenu();});
 $('createProject').onclick=async()=>{closeCreateMenu();const id=prompt('项目 ID（英文字母、数字、下划线或连字符）：');if(!id)return;const name=prompt('项目显示名称：',id)||id;try{await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name})});await reloadProjects();showProject(id);alertStatus('已创建项目 '+id);}catch(e){alert(e.message);}};
 async function newChart(project){if(!project){alert('请先创建或选中项目。');return;}const name=prompt('新图名称（英文字母、数字或下划线）：');if(!name)return;try{await api(`/api/projects/${encodeURIComponent(project)}/charts`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await reloadProjects();await select(project,name);}catch(e){alert(e.message);}}
+
+$('standardizeProject').onclick=()=>{
+  closeCreateMenu();
+  $('standardizeProjectName').value='';
+  $('projectSourcePath').value='';
+  $('standardizeDialog').showModal();
+};
+$('closeStandardize').onclick=()=>$('standardizeDialog').close();
+$('startStandardize').onclick=async()=>{
+  const projectName=$('standardizeProjectName').value.trim();
+  const sourceDir=$('projectSourcePath').value.trim();
+  if(!projectName){alert('请填写项目名称。');return;}
+  if(!sourceDir){alert('请填写源项目目录。');return;}
+  try{
+    const result=await api('/api/project-standardizer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_name:projectName,source_dir:sourceDir})});
+    $('standardizeDialog').close();
+    await reloadProjects();
+    if(result.project){
+      showProject(result.project);
+      alertStatus(`已标准化：${result.project}`);
+    }
+  }catch(err){alertStatus(err.message); bubble(err.message,'error');}
+};
 
 $('uploadPackage').onclick=()=>{
   closeCreateMenu();
@@ -375,4 +501,4 @@ let refreshingNames=false;
 setInterval(async()=>{if(refreshingNames||!state.projects.some(p=>Object.values(p.chart_metadata||{}).some(m=>m.status==='pending')))return;refreshingNames=true;try{await refreshChartNames();}catch(e){console.warn('Chart names unavailable',e);}finally{refreshingNames=false;}},5000);
 
 // Reconnect to a persisted generation after reloading the page or returning to its targets.
-setInterval(async()=>{const context=chatContext(),session=state.chatSessions.get(context.key);if(!session||session.status!=='running'||state.chatPolling.has(context.key))return;state.chatPolling.add(context.key);try{const updated=await api(sessionEndpoint(context,session.id));const current=state.chatSessions.get(context.key);if(current?.id===session.id&&!(current.status!=='running'&&updated.status==='running')){const changed=current.status!==updated.status||current.progress?.stage!==updated.progress?.stage||current.turns?.at(-1)?.results?.length!==updated.turns?.at(-1)?.results?.length;if(changed){storeSession(context,updated);if(state.chatKey===context.key)renderChat();}}}catch(error){state.chatErrors.set(context.key,'会话暂时无法同步：'+error.message);}finally{state.chatPolling.delete(context.key);}},3000);
+setInterval(pollChatProgress,1500);

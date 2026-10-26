@@ -221,7 +221,7 @@ def normalize_source(source, data_schema, style_profile, related_sources=None, s
             return local
     model_auth = model_auth or {}
     key = model_auth.get('api_key') or os.environ.get("OPENAI_API_KEY")
-    if not key:
+    if not key and model_auth.get('provider') != 'chatgpt':
         raise ValueError('尚未配置模型 API 密钥；请点击页面顶部的「API 配置」保存密钥。')
     url = validate_url(model_auth.get('api_url') or os.environ.get("LLM_API_URL", "https://api.siliconflow.cn/v1/chat/completions"))
     model_profile, template_candidates = relevant_style_profile(source, style_profile)
@@ -280,11 +280,12 @@ def normalize_source(source, data_schema, style_profile, related_sources=None, s
           f"templates={','.join(template_candidates) or 'all'}, max_tokens={payload['max_tokens']}", flush=True)
     started = time.monotonic()
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                     headers={"Authorization": "Bearer " + key,
+                                     headers={"Authorization": "Bearer " + (key or ''),
                                               "Content-Type": "application/json"}, method="POST")
     outcome = 'incomplete'
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        from model_transport import open_completion
+        with open_completion(request, timeout=120, settings=model_auth) as response:
             completion = json.load(response)
             choice = completion["choices"][0]
             if choice.get('finish_reason') == 'length':

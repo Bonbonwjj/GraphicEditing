@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="490" viewBox="0 0 1080 490">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#637d91"/></marker></defs>
+<style>text{font-family:'Noto Sans CJK SC',sans-serif;fill:#24394d;font-size:20px}.s{font-size:16px;fill:#526b80}.b{fill:#edf4f9;stroke:#c8d8e4;stroke-width:2}.line{fill:none;stroke:#637d91;stroke-width:2;marker-end:url(#a)}</style>
+<rect width="1080" height="490" rx="16" fill="#fafcfe"/>
+<rect x="35" y="35" width="235" height="72" rx="12" class="b"/><text x="63" y="79">选择本机工程目录</text>
+<path d="M270 71H340" class="line"/>
+<rect x="345" y="35" width="300" height="72" rx="12" class="b"/><text x="378" y="79">检查文件并识别工程</text>
+<path d="M645 71H735" class="line"/>
+<rect x="740" y="35" width="300" height="72" rx="12" fill="#e1f0eb" stroke="#7eb69f" stroke-width="2"/><text x="775" y="79">已拆分：直接打开</text>
+<path d="M495 107V150" class="line"/>
+<rect x="345" y="155" width="300" height="62" rx="12" class="b"/><text x="378" y="194">未拆分：建立本机副本</text>
+<path d="M345 186H180V255" class="line"/><path d="M645 186H855V255" class="line"/>
+<rect x="35" y="260" width="400" height="88" rx="12" class="b"/><text x="63" y="298">通用工程：规划并分批模型提取</text><text x="63" y="326" class="s">确认外发范围，审阅方案后本机导出数据</text>
+<rect x="645" y="260" width="400" height="88" rx="12" class="b"/><text x="674" y="298">受支持冻结包：本机专用适配</text><text x="674" y="326" class="s">保留原生源码与冻结输入，不请求模型重写</text>
+<path d="M235 348V389H405" class="line"/><path d="M845 348V389H675" class="line"/>
+<rect x="410" y="360" width="260" height="62" rx="12" fill="#e1f0eb" stroke="#7eb69f" stroke-width="2"/><text x="439" y="399">验证通过后进入改图</text>
+<text x="170" y="466" class="s">分析返回不等于准备完成；失败项仍需处理，原始目录保持不变。</text>
+</svg>

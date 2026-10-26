@@ -119,6 +119,12 @@ def _preferences():
 
 def effective():
     saved = _preferences()
+    if saved.get('provider') == 'chatgpt':
+        return {'provider': 'chatgpt', 'api_key': '', 'api_url': 'https://api.openai.com/v1/responses',
+                'model': saved.get('model', ''), 'key_source': 'chatgpt', 'keyring_available': True,
+                'vision_enabled': bool(saved.get('vision_enabled', False)),
+                'max_output_tokens': DEFAULT_MAX_OUTPUT_TOKENS,
+                'allow_code_upload': saved.get('allow_code_upload') is True}
     secret, source, keyring_available = _secret()
     key = secret or os.environ.get('OPENAI_API_KEY', '')
     url = saved.get('api_url') or os.environ.get('LLM_API_URL') or DEFAULT_URL
@@ -133,6 +139,11 @@ def effective():
 
 def public():
     settings = effective()
+    if settings.get('provider') == 'chatgpt':
+        from chatgpt_auth import public as auth_status
+        status = auth_status()
+        return {k: v for k, v in dict(settings, api_key=None, api_profile=_preferences().get('api_profile', {}), key_configured=status['sharing'],
+                                    chatgpt=status, storage=status['storage']).items() if k != 'api_key'}
     return {'api_url': settings['api_url'], 'model': settings['model'],
             'key_configured': bool(settings['api_key']), 'key_source': settings['key_source'],
             'storage': 'Windows 用户加密 (DPAPI)' if settings['key_source'] == 'windows_encrypted' else 'Windows Credential Manager' if os.name == 'nt' else 'macOS Keychain', 'keyring_available': settings['keyring_available'],
@@ -159,6 +170,32 @@ def _write_preferences(api_url, model, vision_enabled, max_output_tokens):
 def save(body):
     if not isinstance(body, dict):
         raise ValueError('模型配置格式不正确')
+    provider = body.get('provider', 'api')
+    if provider not in ('api', 'chatgpt'):
+        raise ValueError('不支持的模型连接方式')
+    if provider == 'chatgpt':
+        model = body.get('model', '')
+        if not isinstance(model, str) or not model.strip() or len(model) > 200:
+            raise ValueError('请选择当前 ChatGPT 账户可用的模型')
+        for field in ('allow_code_upload', 'vision_enabled'):
+            if not isinstance(body.get(field, False), bool):
+                raise ValueError('发送权限格式无效')
+        # No OAuth token is stored here. Do not change an existing API key.
+        value = {'provider': 'chatgpt', 'model': model.strip(),
+                 'allow_code_upload': body.get('allow_code_upload', False),
+                 'vision_enabled': body.get('vision_enabled', False)}
+        previous = _preferences()
+        value['api_profile'] = previous.get('api_profile', {}) if previous.get('provider') == 'chatgpt' else {
+            k: previous[k] for k in ('api_url','model','vision_enabled','max_output_tokens') if k in previous}
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix='.model-api-', suffix='.tmp', dir=CONFIG_PATH.parent)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                json.dump(value, stream)
+            Path(name).replace(CONFIG_PATH)
+        finally:
+            Path(name).unlink(missing_ok=True)
+        return public()
     api_url = validate_url(body.get('api_url'))
     model = body.get('model')
     if not isinstance(model, str) or not model.strip() or len(model) > 200:
@@ -180,6 +217,11 @@ def save(body):
         old_secret = None
     if not supplied and not old_secret:
         raise ValueError('首次保存时请输入 API Key')
+    previous = _preferences()
+    previous_api = previous.get('api_profile', {}) if previous.get('provider') == 'chatgpt' else previous
+    previous_url = previous_api.get('api_url') or os.environ.get('LLM_API_URL') or DEFAULT_URL
+    if not supplied and api_url != previous_url:
+        raise ValueError('API 地址已变更，请重新输入目标服务的 API Key；不会将原密钥发送到新地址')
     if supplied:
         _store_secret(supplied)
     try:
@@ -216,6 +258,14 @@ def clear():
 
 def test_connection():
     settings = effective()
+    if settings.get('provider') == 'chatgpt':
+        from model_transport import open_completion
+        req = request.Request(settings['api_url'], data=json.dumps({'model': settings['model'],
+            'messages': [{'role': 'user', 'content': 'Reply OK.'}]}).encode(), method='POST')
+        started = time.monotonic()
+        with open_completion(req, 30, settings, probe=True) as stream:
+            json.load(stream)
+        return {'connected': True, 'model': settings['model'], 'elapsed_ms': round((time.monotonic()-started)*1000)}
     if not settings['api_key']:
         raise ValueError('请先保存 API Key')
     url = validate_url(settings['api_url'])

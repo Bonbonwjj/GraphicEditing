@@ -11,5 +11,7 @@ dependencies:
   - scipy>=1.11,<2
   - pillow>=10,<13
   - keyring>=24,<26
+  - pyjwt>=2.10,<3
+  - cryptography
   - pyinstaller>=6,<7
   - conda-pack>=0.8,<1

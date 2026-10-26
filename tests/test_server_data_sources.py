@@ -98,6 +98,7 @@ class ProjectListingTests(unittest.TestCase):
             (project / "charts").mkdir(parents=True)
             (project / "data").mkdir()
             module = project / "lib" / "behavior_analysis" / "group" / "visualization.py"
+            (project / "charts" / "plot.py").write_text("# existing split figure\n", encoding="utf-8")
             module.parent.mkdir(parents=True)
             module.write_text("COLOR = 'red'\n", encoding="utf-8")
             (project / "project.json").write_text(
