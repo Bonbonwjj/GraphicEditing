@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
-const state = {projects: [], project: null, chart: null, detail: null, openProjects: new Set(), selectedCharts: new Set(), previews: new Map(), galleryVersion: 0, skills: [], historyChart: null, chatKey: '', chatDisplayProject: null, chatSessions: new Map(), chatSessionLists: new Map(), chatLoads: new Map(), projectChatHistory: new Map(), projectChatLoaded: new Set(), projectChatLoads: new Map(), projectChatErrors: new Map(), chatBusy: new Set(), chatReferences: new Map(), chatImageReferences: new Map(), chatImageUploading: new Set(), chatErrors: new Map(), chatPending: new Map(), chatPolling: new Set(), detailRequest: 0};
+const chatStartedAt = new Map();
+const state = {projects: [], project: null, chart: null, detail: null, openProjects: new Set(), selectedCharts: new Set(), previews: new Map(), galleryVersion: 0, skills: [], historyChart: null, chatKey: '', chatDisplayProject: null, chatSessions: new Map(), chatSessionLists: new Map(), chatLoads: new Map(), projectChatHistory: new Map(), projectChatLoaded: new Set(), projectChatLoads: new Map(), projectChatErrors: new Map(), chatBusy: new Set(), chatReferences: new Map(), chatErrors: new Map(), chatPending: new Map(), chatPolling: new Set(), detailRequest: 0};
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const savedTheme=localStorage.getItem('plot-forge-theme')||'dark';
 document.documentElement.dataset.theme=savedTheme;
@@ -15,37 +16,13 @@ function alertStatus(s) { $('status').textContent = s; }
 function bubble(s, cls='assistant') { const e=document.createElement('div'); e.className='bubble '+cls; e.textContent=s; $('messages').append(e); $('messages').scrollTop=$('messages').scrollHeight; }
 function updateModelTransportNotice(){const notice=$("modelTransportNotice");if(notice)notice.hidden=!$("modelApiUrl").value.trim().toLowerCase().startsWith("http://");}
 $("modelApiUrl").oninput=updateModelTransportNotice;
-function showModelConfig(config){updateModelTransportNotice();state.modelConnectionRevision=(state.modelConnectionRevision||0)+1;state.modelConfigured=!!config.key_configured;renderModelConnection(config.key_configured?{status:'checking',message:'正在检测已保存的API连接…'}:{status:'unconfigured',message:'尚未配置API Key'});refreshModelConnection();$('modelConfigButton').title=config.key_configured?'模型 API 已配置':'配置模型 API';$('modelApiUrl').value=config.api_url||'';updateModelTransportNotice();$('modelName').value=config.model||'';$('modelMaxOutputTokens').value=config.max_output_tokens||16384;$('modelApiKey').value='';$('modelVision').checked=!!config.vision_enabled;state.modelPreset=config.intranet_preset||null;$('useCdscPreset').disabled=!state.modelPreset;$('useCdscPreset').hidden=!state.modelPreset;const source=config.key_source==='session'?'当前会话可用：系统密钥存储不可用，重启后台后需重新输入 API Key':config.key_source==='windows_encrypted'?'已使用 Windows 用户加密保存，重启后仍可使用':config.keyring_available===false?'本机钥匙串暂不可用，请从普通终端启动工作台':config.key_source==='keychain'?'已保存在本机钥匙串':config.key_source==='environment'?'已由运行环境配置':'尚未配置 API Key';$('modelConfigState').textContent=source;$('modelConfigState').className=config.key_configured?'ok':'';$('testModelConfig').disabled=!config.key_configured;$('clearModelConfig').disabled=!['keychain','windows_encrypted','session'].includes(config.key_source);if(config.key_configured)document.querySelectorAll('.configNotice').forEach(e=>e.remove());}
-function renderModelConnection(connection){
-  state.modelConnection=connection;
-  const labels={unconfigured:'未配置',checking:'检测中',connected:'已连接',reachable:'服务可达',error:'连接异常',stale:'状态待更新',offline:'网络离线',unknown:'尚未检测'};
-  const label=labels[connection.status]||'状态未知',badge=$('modelConfigBadge'),detail=$('modelConnectionState');
-  badge.textContent=label;badge.dataset.status=connection.status;
-  const checked=connection.checked_at?` · 检测于 ${new Date(connection.checked_at*1000).toLocaleTimeString()}`:'';
-  const text=label+'：'+(connection.message||label)+checked;
-  detail.textContent=text;detail.className=connection.status==='error'||connection.status==='offline'?'error':connection.status==='connected'?'ok':'';
-  $('modelConfigButton').title=text;
-}
-async function refreshModelConnection(){
-  if(state.modelConnectionPending||!state.modelConfigured||document.hidden)return;
-  if(typeof navigator!=='undefined'&&navigator.onLine===false){renderModelConnection({status:'offline',message:'浏览器检测到网络离线，恢复网络后自动重试。'});return;}
-  state.modelConnectionPending=true;const revision=state.modelConnectionRevision;
-  try{const connection=await api('/api/model-config/connection');if(revision===state.modelConnectionRevision&&state.modelConfigured)renderModelConnection(connection);}
-  catch(error){if(revision===state.modelConnectionRevision&&state.modelConfigured)renderModelConnection({status:'unknown',message:'无法取得连接状态：'+error.message});}
-  finally{state.modelConnectionPending=false;}
-}
-setInterval(()=>refreshModelConnection(),3000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshModelConnection();});
-if(typeof window!=='undefined'&&window.addEventListener){
-  window.addEventListener('offline',()=>renderModelConnection({status:'offline',message:'网络离线，恢复后自动重试。'}));
-  window.addEventListener('online',()=>refreshModelConnection());
-}
+function showModelConfig(config){updateModelTransportNotice();$('modelConfigBadge').textContent=config.key_configured?'已配置':'未配置';$('modelConfigButton').title=config.key_configured?'模型 API 已配置':'配置模型 API';$('modelApiUrl').value=config.api_url||'';updateModelTransportNotice();$('modelName').value=config.model||'';$('modelMaxOutputTokens').value=config.max_output_tokens||16384;$('modelApiKey').value='';$('modelVision').checked=!!config.vision_enabled;state.modelPreset=config.intranet_preset||null;$('useCdscPreset').disabled=!state.modelPreset;$('useCdscPreset').hidden=!state.modelPreset;const source=config.key_source==='session'?'当前会话可用：系统密钥存储不可用，重启后台后需重新输入 API Key':config.key_source==='windows_encrypted'?'已使用 Windows 用户加密保存，重启后仍可使用':config.keyring_available===false?'本机钥匙串暂不可用，请从普通终端启动工作台':config.key_source==='keychain'?'已保存在本机钥匙串':config.key_source==='environment'?'已由运行环境配置':'尚未配置 API Key';$('modelConfigState').textContent=source;$('modelConfigState').className=config.key_configured?'ok':'';$('testModelConfig').disabled=!config.key_configured;$('clearModelConfig').disabled=!['keychain','windows_encrypted','session'].includes(config.key_source);if(config.key_configured)document.querySelectorAll('.configNotice').forEach(e=>e.remove());}
 async function loadModelConfig(){const config=await api('/api/model-config');showModelConfig(config);return config;}
 $('modelConfigButton').onclick=async()=>{try{await loadModelConfig();$('modelConfigDialog').showModal();}catch(e){alertStatus('无法读取模型配置：'+e.message);}};
 $('closeModelConfig').onclick=()=>$('modelConfigDialog').close();
 $('useCdscPreset').onclick=()=>{if(!state.modelPreset)return;$('modelApiUrl').value=state.modelPreset.api_url;updateModelTransportNotice();$('modelName').value=state.modelPreset.model||$('modelName').value;$('modelConfigState').className='';$('modelConfigState').textContent='已填入默认模型与地址；请填写本机 API Key 并保存。HTTP 连接会传输 API Key 和请求内容。';};
 $('modelConfigForm').onsubmit=async e=>{e.preventDefault();const save=$('saveModelConfig');save.disabled=true;$('modelConfigState').textContent='正在安全保存到本机…';try{const config=await api('/api/model-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_url:$('modelApiUrl').value.trim(),model:$('modelName').value.trim(),max_output_tokens:Number($('modelMaxOutputTokens').value),api_key:$('modelApiKey').value,vision_enabled:$('modelVision').checked})});showModelConfig(config);$('modelConfigState').textContent=config.key_source==='session'?'配置已在当前会话生效，可测试连接或改图；系统密钥存储不可用，重启后台后需重新输入 API Key。':'已保存。规范化和对话改图可直接使用；可点击“测试已保存配置”。';alertStatus('模型 API 配置已保存');}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{save.disabled=false;$('modelApiKey').value='';}};
-$('testModelConfig').onclick=async()=>{const button=$('testModelConfig');button.disabled=true;$('modelConfigState').className='';$('modelConfigState').textContent='正在连接模型服务…';renderModelConnection({status:'checking',message:'正在验证模型API…'});try{const result=await api('/api/model-config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});$('modelConfigState').className='ok';$('modelConfigState').textContent=`连接成功：${result.model}（${result.elapsed_ms} ms）`;await refreshModelConnection();}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{button.disabled=false;refreshModelConnection();}};
+$('testModelConfig').onclick=async()=>{const button=$('testModelConfig');button.disabled=true;$('modelConfigState').className='';$('modelConfigState').textContent='正在连接模型服务…';try{const result=await api('/api/model-config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});$('modelConfigState').className='ok';$('modelConfigState').textContent=`连接成功：${result.model}（${result.elapsed_ms} ms）`;}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}finally{button.disabled=false;}};
 $('clearModelConfig').onclick=async()=>{if(!confirm('清除保存在本机的模型 API Key 和地址、模型配置？'))return;try{const config=await api('/api/model-config',{method:'DELETE',headers:{'Content-Type':'application/json'}});showModelConfig(config);$('modelConfigState').textContent='页面保存的配置已清除。';alertStatus('模型 API 配置已清除');}catch(err){$('modelConfigState').className='error';$('modelConfigState').textContent=err.message;}};
 function tab(name) { document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); for(const n of ['figure','code','data']) $(n+'Pane').classList.toggle('hide',n!==name); }
 function toggleProject(id){
@@ -81,8 +58,8 @@ function drawData() { $('dataInfo').innerHTML=state.detail.data.map(d=>`<section
 function projectInfo(id){return state.projects.find(p=>p.id===id);}
 function chartName(project,chart){return projectInfo(project)?.chart_metadata?.[chart]?.display_name||chart;}
 function orderedCharts(p){const groups=new Map();for(const chart of p?.charts||[]){const key=p.chart_metadata?.[chart]?.group_key||'fallback:'+chart;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(chart);}return [...groups.values()].flat();}
-function syncChartNames(){const p=projectInfo(state.project);if(!p)return;for(const chart of orderedCharts(p)){const card=[...$('gallery').children].find(c=>c.dataset.chart===chart);if(!card)continue;const name=chartName(state.project,chart);card.querySelector('.chartName').textContent=name;card.querySelector('.chartName').title=name+' · '+chart+'.py';card.querySelector('.chartCheck').setAttribute('aria-label','选择 '+name);card.querySelector('.chartOpen').setAttribute('aria-label','打开 '+name);const image=card.querySelector('img');if(image)image.alt=name+' 图像预览';$('gallery').append(card);}if(state.chart)$('chartTitle').textContent=chartName(state.project,state.chart);updateSelection();}
-async function refreshChartNames(){const r=await api('/api/projects');for(const p of state.projects){const fresh=r.projects.find(x=>x.id===p.id);if(fresh)p.chart_metadata=fresh.chart_metadata;}syncChartNames();}
+function syncChartNames(){const p=projectInfo(state.project);if(!p)return;for(const chart of orderedCharts(p)){const card=[...$('gallery').children].find(c=>c.dataset.chart===chart);if(!card)continue;const name=chartName(state.project,chart);card.querySelector('.chartName').textContent=name;card.querySelector('.chartName').title=name+' · '+chart+'.py';card.querySelector('.chartCheck').setAttribute('aria-label','选择 '+name);card.querySelector('.chartOpen').setAttribute('aria-label','打开 '+name);const diagnostic=(p.chart_diagnostic_previews||[]).includes(chart);let note=card.querySelector('.chartImportWarning');if(diagnostic){if(!note){note=document.createElement('p');note.className='chartImportWarning';card.append(note);}note.textContent='布局警告预览：'+(p.chart_warnings?.[chart]||'后续原程序检查未完成');}else if(note)note.remove();const image=card.querySelector('img');if(image)image.alt=name+(diagnostic?' 布局警告预览':' 图像预览');$('gallery').append(card);}if(state.chart)$('chartTitle').textContent=chartName(state.project,state.chart);updateSelection();}
+async function refreshChartNames(){const r=await api('/api/projects');for(const p of state.projects){const fresh=r.projects.find(x=>x.id===p.id);if(fresh){p.chart_metadata=fresh.chart_metadata;p.chart_warnings=fresh.chart_warnings||{};p.chart_diagnostic_previews=fresh.chart_diagnostic_previews||[];}}syncChartNames();}
 function updateSelection(){const p=projectInfo(state.project),total=p?.charts.length||0,count=state.selectedCharts.size;$('selectedCount').textContent=`已选 ${count} 张`;$('selectAllCharts').checked=total>0&&count===total;$('selectAllCharts').indeterminate=count>0&&count<total;$('selectAllCharts').disabled=!total;document.querySelectorAll('.chartCard').forEach(card=>{const selected=state.selectedCharts.has(card.dataset.chart);card.classList.toggle('selected',selected);const box=card.querySelector('.chartCheck');if(box)box.checked=selected;});syncChatContext();}
 
 function selectAllCharts(on){state.selectedCharts=new Set(on?(projectInfo(state.project)?.charts||[]):[]);updateSelection();}
@@ -102,52 +79,15 @@ async function loadProjectChatHistory(project){
   try{return await task;}catch(error){state.projectChatErrors.set(project,error.message);if(state.project===project)renderChat();throw error;}finally{state.projectChatLoads.delete(project);}
 }
 function syncChatContext(){const context=chatContext(),changed=state.chatKey!==context.key,projectChanged=state.chatDisplayProject!==context.project;state.chatKey=context.key;$('chatTargets').innerHTML=context.charts.length?`<strong>修改目标 · ${context.charts.length} 张 · ${esc(projectInfo(context.project)?.name||'')}</strong><div class="targetChips">${context.charts.map(chart=>`<span title="${esc(chart)}.py">${esc(chartName(context.project,chart))}</span>`).join('')}</div>`:'尚未选择图表';renderChatReferences();if(changed||projectChanged)renderChat();if(changed&&context.key)loadChatSessions(context).catch(error=>{state.chatErrors.set(context.key,error.message);if(state.chatKey===context.key)renderChat();});if(context.project&&!state.projectChatLoaded.has(context.project)&&!state.projectChatLoads.has(context.project))loadProjectChatHistory(context.project).catch(()=>{});updateChatControls();}
-async function loadChatSessions(context,preferredId){if(state.chatLoads.has(context.key))return state.chatLoads.get(context.key);if(state.chatSessionLists.has(context.key))return state.chatSessions.get(context.key);const task=(async()=>{const r=await api(sessionEndpoint(context)+'?charts='+encodeURIComponent(context.charts.join(',')));const list=(r.sessions||[]).filter(s=>!s.charts||sessionMatches(s,context));state.chatSessionLists.set(context.key,list);if(list.length){const chosen=list.find(s=>s.id===preferredId)||list[0];const session=Array.isArray(chosen.turns)&&Array.isArray(chosen.drafts)?chosen:await api(sessionEndpoint(context,chosen.id));storeSession(context,session);if(!state.chatReferences.has(context.key))state.chatReferences.set(context.key,new Set(referenceRoutes(session)));if(!state.chatImageReferences.has(context.key))state.chatImageReferences.set(context.key,session.reference_images||[]);}if(state.chatKey===context.key){renderChatReferences();renderChat();}return state.chatSessions.get(context.key);})();state.chatLoads.set(context.key,task);updateChatControls();try{return await task;}finally{state.chatLoads.delete(context.key);if(state.chatKey===context.key)updateChatControls();}}
+async function loadChatSessions(context,preferredId){if(state.chatLoads.has(context.key))return state.chatLoads.get(context.key);if(state.chatSessionLists.has(context.key))return state.chatSessions.get(context.key);const task=(async()=>{const r=await api(sessionEndpoint(context)+'?charts='+encodeURIComponent(context.charts.join(',')));const list=(r.sessions||[]).filter(s=>!s.charts||sessionMatches(s,context));state.chatSessionLists.set(context.key,list);if(list.length){const chosen=list.find(s=>s.id===preferredId)||list[0];const session=Array.isArray(chosen.turns)&&Array.isArray(chosen.drafts)?chosen:await api(sessionEndpoint(context,chosen.id));storeSession(context,session);if(!state.chatReferences.has(context.key))state.chatReferences.set(context.key,new Set(referenceRoutes(session)));}if(state.chatKey===context.key){renderChatReferences();renderChat();}return state.chatSessions.get(context.key);})();state.chatLoads.set(context.key,task);updateChatControls();try{return await task;}finally{state.chatLoads.delete(context.key);if(state.chatKey===context.key)updateChatControls();}}
 async function ensureChatSession(context){await loadChatSessions(context);let session=state.chatSessions.get(context.key);if(!session||session.status==='closed'){session=await postJSON(sessionEndpoint(context),{charts:context.charts,reference_charts:selectedReferences(context.key)});storeSession(context,session);}return session;}
-function selectedChatImages(context=chatContext()){
-  return state.chatImageReferences.get(context.key)||state.chatSessions.get(context.key)?.reference_images||[];
-}
-function referenceImageHistoryHTML(images){
-  return asList(images).length?'<div class="chatReferenceHistory">'+asList(images).map((image,index)=>`<a href="${esc(image.image_url)}" target="_blank" rel="noopener"><img src="${esc(image.image_url)}" alt="参考图 ${index+1}：${esc(image.name)}" loading="lazy"><span>参考图 ${index+1} · ${esc(image.name)}</span></a>`).join('')+'</div>':'';
-}
-function renderChatImageAttachments(){
-  const context=chatContext(),images=selectedChatImages(context);
-  $('chatImageAttachments').innerHTML=images.map((image,index)=>`<div class="chatImageAttachment"><img src="${esc(image.image_url)}" alt="参考图 ${index+1}：${esc(image.name)}"><span title="${esc(image.name)}">参考图 ${index+1} · ${esc(image.name)}</span><button type="button" data-remove-reference-image="${esc(image.reference_id)}" aria-label="移除参考图 ${index+1}">×</button></div>`).join('');
-  $('chatImageHint').hidden=!images.length;
-  $('chatImageAttachments').querySelectorAll('[data-remove-reference-image]').forEach(button=>button.onclick=()=>{
-    if(state.chatBusy.has(context.key)||state.chatImageUploading.has(context.key))return;
-    state.chatImageReferences.set(context.key,selectedChatImages(context).filter(r=>r.reference_id!==button.dataset.removeReferenceImage));renderChatImageAttachments();updateChatControls();
-  });
-}
-async function uploadChatReferenceFiles(files,context=chatContext()){
-  if(!context.key||state.chatBusy.has(context.key)||state.chatImageUploading.has(context.key))return;
-  files=[...files];if(!files.length)return;
-  if(selectedChatImages(context).length+files.length>3){alertStatus('最多添加 3 张参考图片');return;}
-  if(files.some(file=>!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>6000000)){alertStatus('请选择不超过 6 MB 的 PNG、JPEG 或 WebP 图片');return;}
-  state.chatImageUploading.add(context.key);updateChatControls();
-  try{
-    for(const file of files){
-      const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('图片读取失败'));reader.readAsDataURL(file);});
-      const image=await postJSON(`/api/projects/${encodeURIComponent(context.project)}/chat/reference-images`,{name:file.name,data_url:data});
-      state.chatImageReferences.set(context.key,[...selectedChatImages(context),image]);
-    }
-    if(state.chatKey===context.key)alertStatus('参考图已添加，可输入希望借鉴的样式');
-  }catch(error){state.chatErrors.set(context.key,error.message);if(state.chatKey===context.key)renderChat();}
-  finally{state.chatImageUploading.delete(context.key);if(state.chatKey===context.key){renderChatImageAttachments();updateChatControls();}}
-}
-$('addChatReferenceImage').onclick=()=>$('chatReferenceImageFile').click();
-$('chatReferenceImageFile').onchange=async event=>{const files=[...event.target.files];event.target.value='';await uploadChatReferenceFiles(files);};
-$('prompt').onpaste=event=>{
-  const files=[...(event.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));
-  if(files.length){event.preventDefault();uploadChatReferenceFiles(files);}
-};
-function renderChatReferences(){renderChatImageAttachments();const context=chatContext(),refs=new Set(selectedReferences());const available=orderedCharts(projectInfo(context.project)).filter(c=>!context.charts.includes(c));state.chatReferences.set(context.key,new Set([...refs].filter(c=>available.includes(c))));$('chatReferenceChoices').innerHTML=available.length?available.map(c=>`<label><input type="checkbox" data-reference="${esc(c)}" ${refs.has(c)?'checked':''}> <span title="${esc(c)}.py">${esc(chartName(context.project,c))}</span></label>`).join(''):'<p class="hint">当前项目没有其他可参照的图。</p>';$('chatReferenceSummary').textContent=`参照图 · 只读（${selectedReferences().length}）`;$('chatReferenceChoices').querySelectorAll('input').forEach(box=>box.onchange=()=>{const set=new Set(selectedReferences());box.checked?set.add(box.dataset.reference):set.delete(box.dataset.reference);state.chatReferences.set(state.chatKey,set);$('chatReferenceSummary').textContent=`参照图 · 只读（${set.size}）`;});updateChatControls();}
-function updateChatControls(){const context=chatContext(),session=state.chatSessions.get(context.key),busy=state.chatBusy.has(context.key)||session?.status==='running'||state.chatImageUploading.has(context.key),loading=state.chatLoads.has(context.key),phase=state.chatImageUploading.has(context.key)?'上传参考图片':{reading_reference:'读取参考图特征',comparing_reference:'对照参考图关键特征',preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[session?.progress?.stage];$('sendChat').disabled=!context.key||busy||loading;$('addChatReferenceImage').disabled=!context.key||busy||loading;$('chatReferenceImageFile').disabled=!context.key||busy||loading;$('chatImageAttachments').querySelectorAll('button').forEach(b=>b.disabled=busy||loading);$('sendChat').textContent=busy?(state.chatImageUploading.has(context.key)?'正在上传…':'正在生成…'):'生成候选 ↗';$('chatState').textContent=busy?(phase||'生成中'):loading?'读取会话…':'先预览，再应用';$('chatSendHint').textContent=busy?'本轮完成后可继续对话；切换图不会混入结果':'Enter 发送 · Shift + Enter 换行';$('newChatSession').disabled=!context.key||busy||loading;$('chatSessionPicker').disabled=busy||loading||!(state.chatSessionLists.get(context.key)||[]).length;$('batchNormalize').disabled=!state.selectedCharts.size||busy||loading;$('batchEdit').disabled=!state.selectedCharts.size||busy;$('chatReferenceChoices').querySelectorAll('input').forEach(x=>x.disabled=busy||loading);$('messages').querySelectorAll('[data-draft-action],[data-layout-override],[data-retry-turn],[data-shared-module]').forEach(x=>x.disabled=x.dataset.blocked==='true'||busy||loading);}
+function renderChatReferences(){const context=chatContext(),refs=new Set(selectedReferences());const available=orderedCharts(projectInfo(context.project)).filter(c=>!context.charts.includes(c));state.chatReferences.set(context.key,new Set([...refs].filter(c=>available.includes(c))));$('chatReferenceChoices').innerHTML=available.length?available.map(c=>`<label><input type="checkbox" data-reference="${esc(c)}" ${refs.has(c)?'checked':''}> <span title="${esc(c)}.py">${esc(chartName(context.project,c))}</span></label>`).join(''):'<p class="hint">当前项目没有其他可参照的图。</p>';$('chatReferenceSummary').textContent=`参照图 · 只读（${selectedReferences().length}）`;$('chatReferenceChoices').querySelectorAll('input').forEach(box=>box.onchange=()=>{const set=new Set(selectedReferences());box.checked?set.add(box.dataset.reference):set.delete(box.dataset.reference);state.chatReferences.set(state.chatKey,set);$('chatReferenceSummary').textContent=`参照图 · 只读（${set.size}）`;});updateChatControls();}
+function updateChatControls(){if(typeof renderPanelControls==='function')renderPanelControls();const context=chatContext(),session=state.chatSessions.get(context.key),busy=state.chatBusy.has(context.key)||session?.status==='running',loading=state.chatLoads.has(context.key),phase={preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[session?.progress?.stage];$('sendChat').disabled=!context.key||busy||loading;$('sendChat').textContent=busy?'正在生成…':'生成候选 ↗';$('chatState').textContent=busy?(phase||'生成中'):loading?'读取会话…':'先预览，再应用';$('chatSendHint').textContent=busy?'本轮完成后可继续对话；切换图不会混入结果':'Enter 发送 · Shift + Enter 换行';$('newChatSession').disabled=!context.key||busy||loading;$('chatSessionPicker').disabled=busy||loading||!(state.chatSessionLists.get(context.key)||[]).length;$('batchNormalize').disabled=!state.selectedCharts.size||busy||loading;$('batchEdit').disabled=!state.selectedCharts.size||busy;$('chatReferenceChoices').querySelectorAll('input').forEach(x=>x.disabled=busy||loading);$('messages').querySelectorAll('[data-draft-action],[data-layout-override],[data-retry-turn]').forEach(x=>x.disabled=x.dataset.blocked==='true'||busy||loading);}
 function readable(value){if(value===null||value===undefined)return '';if(typeof value==='string'){return value.replace(/^Agent request failed: /,'').replace('模型没有返回改图方案；请重试或更换模型。','模型生成阶段：模型没有返回可用的改图方案；图片和代码均未修改。').replace('Interpreted operation targets a different chart','目标校验阶段：模型将修改说明指向了别的图，系统已拦截；图片和代码均未修改。').replace('Operation must specify element, property, current value and desired change','意图结构校验阶段：模型的修改说明缺少“目标元素、属性、当前值、期望变化”中的至少一项；图片和代码均未修改。');}if(Array.isArray(value))return value.map(readable).filter(Boolean).join('\n');return value.message||value.reason||value.summary||value.description||JSON.stringify(value);}
 function asList(value){return Array.isArray(value)?value:value?[value]:[];}
 function warningList(record){const issues=[...asList(record.warnings),...asList(record.layout?.issues)];return [...new Map(issues.map(x=>[readable(x),x])).values()];}
 function warningIds(record){return [...new Set(asList(record.layout?.issues).map(x=>typeof x==='object'&&(x.warning_id||x.issue_id||x.id)).filter(Boolean))];}
-function warningsHTML(record){const warnings=warningList(record);return warnings.length?`<details class="draftWarnings"><summary>请留意 <span>（${warnings.length} 条）</span></summary><ul>${warnings.map(x=>`<li>${esc(readable(x))}</li>`).join('')}</ul></details>`:'';}
+function warningsHTML(record){const warnings=warningList(record);return warnings.length?`<details class="draftWarnings" open><summary>请留意 <span>（${warnings.length} 条）</span></summary><ul>${warnings.map(x=>`<li>${esc(readable(x))}</li>`).join('')}</ul></details>`:'';}
 function reviewList(title, items, format=readable){const values=asList(items).map(format).filter(Boolean);return values.length?`<section><strong>${esc(title)}</strong><ul>${values.map(value=>`<li>${esc(value)}</li>`).join('')}</ul></section>`:'';}
 function renderDraftReview(draft){
   const proposal=draft.proposal||{},interpreted=proposal.interpreted_request||{},layout=draft.layout||{},checks=proposal.normalization_checks;
@@ -156,31 +96,15 @@ function renderDraftReview(draft){
     const quotes=asList(operation.source_quotes).join('；'),element=operation.target_element||operation.element;
     return [quotes?'原话：“'+quotes+'”':'',element?'对象：'+readable(element):'',operation.property?'属性：'+readable(operation.property):'',operation.current_value!==undefined?'原值：'+readable(operation.current_value):'',operation.desired_change!==undefined?'拟改为：'+readable(operation.desired_change):''].filter(Boolean).join('\n')||readable(operation);
   });
-  body+=reviewList('检查原因与处理建议',draft.diagnostics,item=>[item.title,item.reason,item.next_action,
-    ...asList(item.evidence).map(e=>`${e.label}：${e.count} 项；${asList(e.objects).join('，')}`)].filter(Boolean).join('\n'));
-  body+=reviewList('本轮出图检查记录',draft.check_history,item=>{
-    const notes=asList(item.diagnostics).map(d=>`${d.title}：${d.reason||''}`).join('；');
-    return (statusNames[item.status]||item.status)+(notes?' · '+notes:'');
-  });
-  const checkLabels={presentation_review:'展示待调整，数据已核对',pass:'通过',fail:'不一致',mismatch:'存在差异',unverified:'无法自动确认',not_requested:'本轮未请求',explained:'已由样本核对解释',conflict:'存在冲突',accepted:'已明确接受',no_blocker:'未发现阻断项',unmet:'未满足',already_met:'已满足'};
-  body+=reviewList('逐项检查结果',draft.check_results,item=>`${item.name} · ${checkLabels[item.status]||item.status}：${item.reason}`);
   body+=reviewList('需要保留',interpreted.preserve,item=>typeof item==='object'&&item!==null?readable(item.details||item.constraints||item.description||item):readable(item));
   body+=reviewList('预期效果（仍需对照候选审阅）',proposal.expected_effects,effect=>{
     if(typeof effect!=='object'||effect===null)return readable(effect);
     return [readable(effect.observable_change||effect.description||effect.summary),effect.preservation_checks?'保留检查：'+readable(effect.preservation_checks):'',effect.review_required?'需审阅：'+readable(effect.review_required):''].filter(Boolean).join('\n')||readable(effect);
   });
-  if(draft.edit_contract){
-    body+=reviewList('本轮需求验收（最终导出实测）',draft.edit_contract.requirements,item=>[
-      item.request,'结果：'+({pass:'通过',fail:'未达到',unverified:'需进一步核对'}[item.status]||item.status),
-      item.expected!==undefined?'目标：'+readable(item.expected):'',item.actual!==undefined?'导出值：'+readable(item.actual):'',item.tick_spacing?'刻度值：'+readable(item.tick_spacing.ticks)+'；相邻间隔：'+readable(item.tick_spacing.intervals):'',item.reason
-    ].filter(Boolean).join('\n'));
-    body+=`<p>${esc(draft.edit_contract.scope||'')}</p>`;
-  }
   const transform=draft.chart_transform;
   if(transform){
     body+=`<section><strong>图型转换数据核对</strong><p>${esc(transform.reason||transform.status)}</p></section>`;
-    body+=reviewList('已定位的数据来源',transform.source_evidence?.sources,item=>`${item.path} · 分组列 ${item.group_column} · 数值列 ${asList(item.value_columns).join('、')}：${asList(item.groups).map(g=>`${g.label}（${g.count} 条）`).join('，')}`);
-    body+=reviewList('原始样本与分组',transform.matches,item=>`${item.path} · ${item.group_column} / ${item.value_column}：${asList(item.groups).map(g=>`${g.label}（${g.count} 个样本）`).join('，')}`);
+    body+=reviewList('原始样本与分组',transform.matches,item=>['scatter','line'].includes(transform.kind)?`${item.label}：${item.count} 个坐标逐点一致（${item.axis}）`:`${item.path} · ${item.group_column} / ${item.value_column}：${asList(item.groups).map(g=>`${g.label}（${g.count} 个样本）`).join('，')}`);
   }
   const visual=draft.visual_change;
   if(visual){
@@ -237,52 +161,28 @@ function renderDraftReview(draft){
   }
   return body?`<details class="draftReview"><summary>修改理解与检查结果</summary>${body}</details>`:'';
 }
-const statusNames={manual_review:'需人工审阅',intent_unmet:'本轮要求未实现',intent_unverified:'本轮要求无法自动确认',preview_ready:'候选 · 待审阅',candidate:'候选',needs_clarification:'需要你确认',needs_context:'需要补充上下文',needs_shared_module:'需要共享模块候选',cannot_complete:'无法完成',validation_failed:'检查未通过',font_unverified:'字体效果未达要求',no_visible_change:'图像变化未达要求',axis_unmet:'坐标轴未达要求',render_failed:'渲染失败',agent_failed:'生成失败',scope_rejected:'超出允许范围',revision_conflict:'正式版本已变化',applied:'已应用',discarded:'已放弃',already_compliant:'已满足要求'};
-function referenceVisualHTML(draft){
-  const features=draft.reference_features?.features||[];
-  if(!features.length)return '';
-  const comparison=draft.reference_comparison||{},items=new Map(asList(comparison.items).map(i=>[i.feature_id,i]));
-  const labels={match:'一致',different:'有差异',unverified:'尚未确认',not_applicable:'不适用／按当前数据处理'};
-  const overall=labels[comparison.status]||'等待核对';
-  return `<details class="referenceVisualReview" open><summary>读图与关键特征对照 · ${esc(overall)}</summary><p class="hint">先读取参考图，再核对实际出图。外观差异不阻断继续修改或应用；数据与版本检查独立执行。</p>${comparison.reason?`<p>${esc(comparison.reason)}</p>`:''}<table><thead><tr><th>参考图特征</th><th>候选图对照</th></tr></thead><tbody>${features.map(f=>{const item=items.get(f.feature_id)||{};return `<tr><td><strong>${esc(f.name)}</strong><p>${esc(f.expected)}</p><small>读图依据：${esc(f.evidence)}</small>${f.transfer==='data_dependent'?'<small>需当前数据支持</small>':''}</td><td><strong>${esc(labels[item.status]||'尚未确认')}</strong><p>${esc(item.observed||'尚未读取候选图片')}</p><small>${esc(item.reason||'视觉核对尚未完成')}</small></td></tr>`;}).join('')}</tbody></table><p class="hint">模型视觉核对供审阅，不代表像素级相同或科学含义已获确认。</p></details>`;
-}
+const statusNames={preview_ready:'候选 · 待审阅',candidate:'候选',needs_clarification:'需要你确认',needs_context:'需要补充上下文',cannot_complete:'无法完成',validation_failed:'检查未通过',font_unverified:'字体效果未达要求',no_visible_change:'图像变化未达要求',axis_unmet:'坐标轴未达要求',render_failed:'渲染失败',agent_failed:'生成失败',scope_rejected:'超出允许范围',revision_conflict:'正式版本已变化',applied:'已应用',discarded:'已放弃',already_compliant:'已满足要求'};
+statusNames.cancelled='已停止';
+statusNames.answer='回复';
 function renderDraft(draft,session,context,interactive=true){
   const active=interactive&&session.active_drafts?.[draft.chart_id]===draft.id;
-  const open=interactive;
-  const codeAvailable=typeof draft.code==='string'?!!draft.code.trim():Object.values(draft.code||{}).some(v=>typeof v==='string'&&v.trim());
-  const ready=open&&(draft.can_apply??codeAvailable);
-  const continuable=open&&(draft.can_continue??codeAvailable);
-  const overrides=warningIds(draft),layoutOverride=interactive&&session.status!=='closed'&&overrides.length&&draft.status==='needs_clarification';
+  const open=interactive&&session.status!=='closed';
+  const ready=open&&(draft.can_apply??(!!draft.image_url&&!!draft.code&&!['applied','discarded','rendering'].includes(draft.status)));
+  const continuable=open&&(draft.can_continue??(!!draft.image_url&&!!draft.code))&&!['applied','discarded','rendering'].includes(draft.status);
+  const overrides=warningIds(draft),layoutOverride=false;
   const files=typeof draft.code==='string'?{'候选代码.py':draft.code}:draft.code||{};
   const name=esc(draft.display_name||chartName(context.project,draft.chart));
-  const diagnosis=asList(draft.diagnostics)[0];
-  const statusLabel=esc(diagnosis?.title||statusNames[draft.status]||draft.status);
-  const nextAction=diagnosis?.next_action?`<p class="draftActionHint">${esc(diagnosis.next_action)}</p>`:'';
-  const style=draft.chart_type_style;
-  const styleNote=style?`<p class="draftActionHint">样式依据：标准化 Skill v${esc(style.version)} · ${esc(style.name)}。${style.overrides?.length?'已按本轮明确要求允许覆盖相应默认项。':''}样式依据不替代数据与布局检查。</p>`:'';
   const image=draft.image_url,previous=draft.baseline_image_url;
   const preview=image?`<div class="draftPreview"><div class="draftPreviewLabel">修改后版本 · 点击图片查看大图</div><a class="draftImageLink" href="${esc(image)}" target="_blank" rel="noopener" title="打开修改后的完整图片"><img class="draftImage" loading="lazy" src="${esc(image)}" alt="${name} 修改后预览"><span class="draftImageMissing" hidden>本轮未生成可用图片，请查看下方原因。</span></a>${previous?`<details class="draftPrevious"><summary>查看上一版的图</summary><a class="draftImageLink" href="${esc(previous)}" target="_blank" rel="noopener" title="打开上一版完整图片"><img class="draftImage" loading="lazy" src="${esc(previous)}" alt="${name} 修改前预览"><span class="draftImageMissing" hidden>上一版图片暂时无法读取。</span></a></details>`:''}</div>`:'';
-  const chooseReason=interactive?'此版本没有可继续修改的候选代码':'请先打开此会话';
-  const applyReason=interactive?'此版本没有可应用的候选代码':'请先打开此会话';
-  const actions=open&&Object.keys(files).length?`<div class="draftActions"><button data-draft-action="activate" data-draft-id="${esc(draft.id)}" data-blocked="${!continuable}" ${continuable?'':`disabled title="${chooseReason}"`}>选此版本继续更改</button><button class="primary" data-draft-action="apply" data-draft-id="${esc(draft.id)}" data-blocked="${!ready}" ${ready?'':`disabled title="${applyReason}"`}>应用此版</button><button data-draft-action="discard" data-draft-id="${esc(draft.id)}" data-blocked="${!open}" ${open?'':'disabled title="请先打开此会话"'}>放弃</button>${draft.status==='validation_failed'?`<button data-draft-action="recheck" data-draft-id="${esc(draft.id)}" data-blocked="false">重新检查此版</button>`:''}${layoutOverride?`<button class="layoutOverride" data-layout-override="${esc(draft.id)}">仍按要求执行</button>`:''}</div>${!ready&&open?`<p class="draftActionHint">${continuable?'可继续修改；应用时将尝试生成缺失的图片。':'此版没有可操作的候选代码。'}</p>`:''}${layoutOverride?'<p class="hint">请先展开“请留意”查看布局问题；点击表示接受所列冲突，其他要求继续保留。</p>':''}`:'';
-  return `<article class="draftCard ${active?'activeDraft':''}" data-draft="${esc(draft.id)}"><div class="draftHeader"><strong>${name}</strong><span class="draftStatus">${statusLabel}${active?' · 继续修改的起点':''}</span></div>${preview}${actions}${Object.keys(files).length?'<p class="draftActionHint">以下检查仅作提示，不限制应用或继续修改。</p>':''}<p class="draftSummary">${esc(readable(draft.summary))}</p>${styleNote}${referenceVisualHTML(draft)}${warningsHTML(draft)}${draft.reason?`<p class="draftReason">${esc(readable(draft.reason))}</p>`:''}${nextAction}${renderDraftReview(draft)}${Object.keys(files).length?`<details class="draftCode"><summary>查看候选代码（${Object.keys(files).length} 个文件）</summary>${Object.entries(files).map(([path,code])=>`<strong>${esc(path)}</strong><pre>${esc(typeof code==='object'?code.content:code)}</pre>`).join('')}</details>`:''}</article>`;
-}
-function renderModuleHandoff(result,project,interactive){
-  const handoff=result.module_handoff;
-  if(!handoff)return '';
-  return `<section class="moduleHandoff"><strong>需要共享模块候选 · ${esc(handoff.path)}</strong><p>${esc(handoff.notice)}</p><details><summary>可能受影响的图（${asList(handoff.affected_charts).length}）</summary><ul>${asList(handoff.affected_charts).map(chart=>`<li>${esc(chartName(project,chart))}</li>`).join('')}</ul></details>${interactive?`<button type="button" data-shared-module="${esc(handoff.module_id)}" data-module-chart="${esc(handoff.chart)}" data-module-prompt="${esc(handoff.prompt)}">进入共享模块候选（验证全部图）</button>`:''}</section>`;
-}
-function renderTurnMetrics(result){
-  if(result.model_usage_scope==='normalization')return `<p class="hint">标准化路径暂未报告模型调用用量${Number.isFinite(result.elapsed_seconds)?` · 用时 ${esc(result.elapsed_seconds)} 秒`:''}</p>`;
-  if(result.model_attempts===undefined)return '';
-  const calls=asList(result.model_calls),reported=calls.filter(c=>Number.isInteger(c.total_tokens));
-  const usage=result.model_attempts===0?'未调用模型':reported.length?`服务端已报告 ${reported.reduce((sum,c)=>sum+c.total_tokens,0)} token${reported.length<result.model_attempts?'（部分调用）':''}`:'服务端未报告实际 token';
-  return `<p class="hint">本图本轮模型调用 ${esc(result.model_attempts)} 次 · ${esc(usage)}${Number.isFinite(result.elapsed_seconds)?` · 用时 ${esc(result.elapsed_seconds)} 秒`:''}</p>`;
+  const chooseReason=interactive?'此版本缺少可用图片或代码':'请先打开此会话';
+  const applyReason=interactive?'此版本缺少可用图片或代码':'请先打开此会话';
+  const actions=open&&image&&!['applied','discarded'].includes(draft.status)?`<div class="draftActions"><button data-draft-action="activate" data-draft-id="${esc(draft.id)}" data-blocked="${!continuable}" ${continuable?'':`disabled title="${chooseReason}"`}>选此版本继续更改</button><button class="primary" data-draft-action="apply" data-draft-id="${esc(draft.id)}" data-blocked="${!ready}" ${ready?'':`disabled title="${applyReason}"`}>应用此版</button><button data-draft-action="discard" data-draft-id="${esc(draft.id)}" data-blocked="${!open}" ${open?'':'disabled title="请先打开此会话"'}>放弃</button>${draft.status==='validation_failed'?`<button data-draft-action="recheck" data-draft-id="${esc(draft.id)}" data-blocked="false">重新检查此版</button>`:''}${layoutOverride?`<button class="layoutOverride" data-layout-override="${esc(draft.id)}">仍按要求执行</button>`:''}</div>${!ready&&open?`<p class="draftActionHint">${continuable?'此版可继续修改；应用所需的图片或代码尚不可用。':'此版尚未生成可用图片或代码；请查看下方原因。'}</p>`:''}${layoutOverride?'<p class="hint">请先展开“请留意”查看布局问题；点击表示接受所列冲突，其他要求继续保留。</p>':''}`:'';
+  return `<article class="draftCard ${active?'activeDraft':''}" data-draft="${esc(draft.id)}"><div class="draftHeader"><strong>${name}</strong><span class="draftStatus">${esc(statusNames[draft.status]||draft.status)}${active?' · 继续修改的起点':''}</span></div>${preview}${actions}<p class="draftSummary">${esc(readable(draft.summary))}</p>${warningsHTML(draft)}${draft.reason?`<p class="draftReason">${esc(readable(draft.reason))}</p>`:''}${renderDraftReview(draft)}${Object.keys(files).length?`<details class="draftCode"><summary>查看候选代码（${Object.keys(files).length} 个文件）</summary>${Object.entries(files).map(([path,code])=>`<strong>${esc(path)}</strong><pre>${esc(typeof code==='object'?code.content:code)}</pre>`).join('')}</details>`:''}</article>`;
 }
 function renderChat(){
   const context=chatContext(),activeSession=state.chatSessions.get(context.key),list=state.chatSessionLists.get(context.key)||[];
   state.chatDisplayProject=context.project;
-  $('chatSessionPicker').innerHTML=list.length?list.map((s,i)=>`<option value="${esc(s.id)}" ${s.id===activeSession?.id?'selected':''}>${esc(s.created_at?new Date(s.created_at).toLocaleString('zh-CN'):'会话 '+(list.length-i))} · ${(s.turns||[]).length} 轮</option>`).join(''):'<option value="">发送后创建会话</option>';
+  $('chatSessionPicker').innerHTML=list.length?list.map((s,i)=>`<option value="${esc(s.id)}" ${s.id===activeSession?.id?'selected':''}>${esc(s.title||(s.created_at?new Date(s.created_at).toLocaleString('zh-CN'):'会话 '+(list.length-i)))}${s.saved_at?' · 已保存':''} · ${(s.turns||[]).length} 轮</option>`).join(''):'<option value="">发送后创建会话</option>';
   const byId=new Map((state.projectChatHistory.get(context.project)||[]).map(session=>[session.id,session]));
   if(activeSession)byId.set(activeSession.id,activeSession);
   const timeline=[];
@@ -294,14 +194,13 @@ function renderChat(){
     const names=(session.charts||[]).map(item=>chartName(context.project,typeof item==='string'?item:item.chart)).join('、');
     const available=(session.charts||[]).every(item=>projectInfo(context.project)?.charts.includes(typeof item==='string'?item:item.chart));
     html+=`<div class="chatTurnMeta" data-session-id="${esc(session.id)}"><span>${esc(names||'项目改图')} · ${esc(time?new Date(time).toLocaleString('zh-CN'):'历史记录')}</span>${!interactive&&available?`<button type="button" data-open-chat-session="${esc(session.id)}">打开此会话</button>`:''}</div>`;
-    html+=`<div class="bubble user">${esc(turn.user_message||turn.prompt||'生成标准化候选')}${referenceImageHistoryHTML(turn.reference_images)}</div>`;
+    html+=`<div class="bubble user">${esc(turn.user_message||turn.prompt||'生成标准化候选')}</div>`;
     const rendered=new Set();
     for(const result of turn.results||[]){
-      html+=renderModuleHandoff(result,context.project,interactive);
-      html+=renderTurnMetrics(result);
       const draft=(session.drafts||[]).find(item=>item.id===result.draft_id);
       if(draft){if(result.status==='already_compliant'&&result.reason)html+=`<div class="bubble assistant">${esc(readable(result.reason))}</div>`;html+=renderDraft(draft,session,context,interactive);rendered.add(draft.id);}
-      else html+=`<div class="bubble assistant result-${esc(result.status)}"><strong>${esc(result.display_name||chartName(context.project,result.chart))} · ${esc(result.diagnostics?.[0]?.title||statusNames[result.status]||result.status)}</strong>${esc(readable(result.summary||result.reason||result.question||result.message))}${result.question&&readable(result.question)!==readable(result.summary||result.reason||result.question||result.message)?'<p>'+esc(readable(result.question))+'</p>':''}${warningsHTML(result)}${asList(result.diagnostics).map(item=>item.next_action?'<p>'+esc(item.next_action)+'</p>':'').join('')}</div>`;
+      else if(result.status==='answer')html+=`<div class="bubble assistant result-answer"><strong>回复</strong>${esc(result.message||'')}</div>`;
+      else html+=`<div class="bubble assistant result-${esc(result.status)}"><strong>${esc(result.display_name||chartName(context.project,result.chart))} · ${esc(statusNames[result.status]||result.status)}</strong>${esc(readable(result.summary||result.reason||result.question||result.message))}${result.question&&readable(result.question)!==readable(result.summary||result.reason||result.question||result.message)?'<p>'+esc(readable(result.question))+'</p>':''}${warningsHTML(result)}</div>`;
     }
     for(const draft of (session.drafts||[]).filter(item=>item.turn_id===turn.id&&!rendered.has(item.id)))html+=renderDraft(draft,session,context,interactive);
     if(interactive&&turn.operation==='chat_edit'&&turn.results?.length&&turn.results.every(item=>item.status==='revision_conflict'))html+=`<button type="button" class="retryStale" data-retry-turn="${turnIndex}">从最新正式版重试这轮修改</button>`;
@@ -310,14 +209,10 @@ function renderChat(){
   if(state.projectChatErrors.has(context.project))html+=`<div class="bubble error">读取项目 Chat 历史失败：${esc(state.projectChatErrors.get(context.project))}</div>`;
   if(state.chatErrors.has(context.key))html+=`<div class="bubble error">${esc(state.chatErrors.get(context.key))}</div>`;
   if(state.chatPending.has(context.key)&&activeSession?.turns?.at(-1)?.user_message!==state.chatPending.get(context.key))html+=`<div class="bubble user">${esc(state.chatPending.get(context.key))}</div>`;
-  if(state.chatBusy.has(context.key)||activeSession?.status==='running'){const phase=state.chatImageUploading.has(context.key)?'上传参考图片':{reading_reference:'读取参考图特征',comparing_reference:'对照参考图关键特征',preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[activeSession?.progress?.stage]||'正在准备';html+=`<div class="bubble assistant chatProgress">${esc(phase)}…<br>中央图集继续保留已应用版本。</div>`;}
+  if(state.chatBusy.has(context.key)||activeSession?.status==='running'){const phase={preparing:'准备图表资料',model_request:'等待模型生成代码',rendering:'渲染并检查候选图',repairing:'修正候选图'}[activeSession?.progress?.stage]||'正在提交请求';const started=chatStartedAt.get(context.key)||activeSession?.progress?.started_at*1000;const elapsed=started?` · 已等待 ${Math.max(0,Math.floor((Date.now()-started)/1000))} 秒`:'';html+=`<div class="bubble assistant chatProgress">${esc(phase)}…${esc(elapsed)}<br>中央图集继续保留已应用版本。</div>`;}
   $('messages').innerHTML=html;
   $('messages').querySelectorAll('.draftImage').forEach(img=>img.onerror=()=>{img.hidden=true;img.nextElementSibling.hidden=false;img.parentElement.removeAttribute('href');});
   $('messages').querySelectorAll('[data-draft-action]').forEach(button=>button.onclick=()=>draftAction(button.dataset.draftAction,button.dataset.draftId));
-  $('messages').querySelectorAll('[data-shared-module]').forEach(button=>button.onclick=()=>{
-    if(state.chatBusy.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return;
-    window.openSharedModule(context.project,button.dataset.sharedModule,{chart:button.dataset.moduleChart,prompt:button.dataset.modulePrompt,forceAll:true});
-  });
   $('messages').querySelectorAll('[data-layout-override]').forEach(button=>button.onclick=()=>acceptLayoutException(button.dataset.layoutOverride));
   $('messages').querySelectorAll('[data-retry-turn]').forEach(button=>button.onclick=()=>retryStaleTurn(Number(button.dataset.retryTurn)));
   $('messages').querySelectorAll('[data-open-chat-session]').forEach(button=>button.onclick=()=>openProjectChatSession(button.dataset.openChatSession));
@@ -329,7 +224,7 @@ async function openProjectChatSession(id){
   state.selectedCharts=new Set((summary.charts||[]).map(item=>typeof item==='string'?item:item.chart));
   updateSelection();
   const context=chatContext();
-  try{await loadChatSessions(context,id);const session=await api(sessionEndpoint(context,id));if(state.project!==project||state.chatKey!==context.key)return;storeSession(context,session);state.chatReferences.set(context.key,new Set(referenceRoutes(session)));state.chatImageReferences.set(context.key,session.reference_images||[]);renderChatReferences();renderChat();const heading=$('messages').querySelector(`[data-session-id="${CSS.escape(id)}"]`);heading?.scrollIntoView({block:'nearest'});}catch(error){state.chatErrors.set(context.key,error.message);if(state.project===project&&state.chatKey===context.key)renderChat();}
+  try{await loadChatSessions(context,id);const session=await api(sessionEndpoint(context,id));if(state.project!==project||state.chatKey!==context.key)return;storeSession(context,session);state.chatReferences.set(context.key,new Set(referenceRoutes(session)));renderChatReferences();renderChat();const heading=$('messages').querySelector(`[data-session-id="${CSS.escape(id)}"]`);heading?.scrollIntoView({block:'nearest'});}catch(error){state.chatErrors.set(context.key,error.message);if(state.project===project&&state.chatKey===context.key)renderChat();}
 }
 async function retryStaleTurn(index){
   const context=chatContext(),session=state.chatSessions.get(context.key),turn=session?.turns?.[index];
@@ -338,18 +233,82 @@ async function retryStaleTurn(index){
     const fresh=await postJSON(sessionEndpoint(context),{charts:context.charts,reference_charts:selectedReferences(context.key)});
     storeSession(context,fresh);
     if(context.key===state.chatKey)renderChat();
-    await generateChat({user_message:turn.user_message,reference_image_ids:(turn.reference_images||[]).map(r=>r.reference_id)},'turns',context);
+    await generateChat({user_message:turn.user_message},'turns',context);
   }catch(error){state.chatErrors.set(context.key,error.message);if(context.key===state.chatKey)renderChat();}
 }
+async function pollChatProgress(){
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  // A new POST is still pending while the cached session remains "open".
+  if(!session||(!state.chatBusy.has(context.key)&&session.status!=='running')||state.chatPolling.has(context.key))return;
+  state.chatPolling.add(context.key);
+  try{
+    const updated=await api(sessionEndpoint(context,session.id));
+    // A completed POST or a different session must win over a late GET.
+    if(state.chatSessions.get(context.key)===session){
+      storeSession(context,updated);
+      if(state.chatKey===context.key)renderChat();
+    }
+  }catch(error){
+    state.chatErrors.set(context.key,'会话暂时无法同步：'+error.message);
+    if(state.chatKey===context.key)renderChat();
+  }finally{state.chatPolling.delete(context.key);}
+}
+
+$('stopChat').onclick=async()=>{
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  if(!session)return;
+  $('stopChat').disabled=true;$('stopChat').textContent='正在停止…';
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{
+    const result=await api(sessionEndpoint(context,session.id,'stop'),{method:'POST',
+      headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
+    alertStatus(result.message);
+    void pollChatProgress();
+  }catch(error){state.chatErrors.set(context.key,error.name==='AbortError'?'停止请求未能在 8 秒内确认，请重试；不要重复提交改图。':error.message);renderChat();}
+  finally{clearTimeout(timer);$('stopChat').disabled=false;$('stopChat').textContent='停止本轮';}
+};
+const updateChatControlsBeforeStop=updateChatControls;
+updateChatControls=function(){
+  updateChatControlsBeforeStop();
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  $('stopChat').hidden=!(session&&(state.chatBusy.has(context.key)||session.status==='running'));
+  const disabled=!session||state.chatBusy.has(context.key)||session.status==='running'||state.chatLoads.has(context.key);
+  $('saveChatSession').disabled=disabled;$('deleteChatSession').disabled=disabled;$('chatSessionTitle').disabled=disabled;
+  if($('chatSessionTitle').dataset.sessionId!==session?.id){$('chatSessionTitle').dataset.sessionId=session?.id||'';$('chatSessionTitle').value=session?.title||'';}
+};
+
+async function manageChatSession(action){
+  const context=chatContext(),session=state.chatSessions.get(context.key);
+  if(!session||state.chatBusy.has(context.key)||session.status==='running')return;
+  if(action==='delete'&&!confirm('删除当前会话及其未应用候选？已应用的图、代码、数据不变。记录移入本机回收目录。'))return;
+  state.chatBusy.add(context.key);updateChatControls();
+  try{
+    const result=await postJSON(sessionEndpoint(context,session.id,action),action==='save'?{title:$('chatSessionTitle').value}:{confirm_session_id:session.id});
+    if(action==='save'){storeSession(context,result);alertStatus('会话已保存，可从会话列表重新打开');}
+    else{
+      for(const [key,value] of state.chatSessions)if(value.id===session.id)state.chatSessions.delete(key);
+      for(const [key,list] of state.chatSessionLists)state.chatSessionLists.set(key,list.filter(s=>s.id!==session.id));
+      state.projectChatHistory.set(context.project,(state.projectChatHistory.get(context.project)||[]).filter(s=>s.id!==session.id));
+      state.chatErrors.delete(context.key);
+      await refreshProjectChats(context.project);
+      alertStatus('会话已移入本机回收目录；正式图表未改变');
+    }
+  }catch(error){state.chatErrors.set(context.key,error.message);}
+  finally{state.chatBusy.delete(context.key);if(state.chatKey===context.key)renderChat();}
+}
+$('saveChatSession').onclick=()=>manageChatSession('save');
+$('deleteChatSession').onclick=()=>manageChatSession('delete');
+
 async function generateChat(body,action='turns',context=chatContext()){
-  if(!context.key||state.chatBusy.has(context.key)||state.chatImageUploading.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return false;
+  if(!context.key||state.chatBusy.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return false;
   state.chatBusy.add(context.key);state.chatErrors.delete(context.key);
+  chatStartedAt.set(context.key,Date.now());
   state.chatPending.set(context.key,body.user_message||'使用 '+body.skill_id+' 生成标准化候选');
   if(context.project===state.project)renderChat();
   let session;
   try{
     session=await ensureChatSession(context);
-    if(action==='turns')body={...body,reference_charts:selectedReferences(context.key),reference_image_ids:body.reference_image_ids||selectedChatImages(context).map(r=>r.reference_id)};
+    if(action==='turns')body={...body,reference_charts:selectedReferences(context.key),target_panels:typeof panelTargetFor==='function'?panelTargetFor(context):{}};
     let result=await postJSON(sessionEndpoint(context,session.id,action),body);
     storeSession(context,result);
     const results=result.turns?.at(-1)?.results||[];
@@ -370,27 +329,66 @@ async function generateChat(body,action='turns',context=chatContext()){
     return false;
   }finally{
     state.chatBusy.delete(context.key);state.chatPending.delete(context.key);
+    chatStartedAt.delete(context.key);
     if(context.project===state.project)renderChat();
   }
 }
-async function draftAction(action,id){const context=chatContext(),session=state.chatSessions.get(context.key);if(!session||state.chatBusy.has(context.key)||session.status==='running')return;const draft=session.drafts.find(d=>d.id===id);if(!draft)return;state.chatBusy.add(context.key);state.chatErrors.delete(context.key);updateChatControls();try{const result=await postJSON(sessionEndpoint(context,session.id,`drafts/${encodeURIComponent(id)}/${action}`),{});storeSession(context,result);if(action==='apply'||action==='apply-reviewed'){const cacheKey=context.project+'/'+draft.chart,old=state.previews.get(cacheKey);if(old)URL.revokeObjectURL(old);state.previews.delete(cacheKey);await updateCard(context.project,draft.chart);if(state.project===context.project&&state.chart===draft.chart){const detail=await api(chartEndpoint(context.project,draft.chart,'detail'));if(state.project===context.project&&state.chart===draft.chart){state.detail=detail;$('editor').value=detail.code;drawHistory();drawData();}}}if(context.project===state.project)renderChat();if(state.chatKey===context.key)alertStatus((action==='apply'||action==='apply-reviewed')?'已应用候选，正式图片与代码已更新':action==='activate'?'下一轮将从所选候选继续':action==='recheck'?'已重新检查此版；参考图候选会更新视觉对照':'候选已放弃');}catch(error){state.chatErrors.set(context.key,error.message);}finally{state.chatBusy.delete(context.key);if(context.project===state.project)renderChat();}}
+async function draftAction(action,id){const context=chatContext(),session=state.chatSessions.get(context.key);if(!session||state.chatBusy.has(context.key)||session.status==='running')return;const draft=session.drafts.find(d=>d.id===id);if(!draft)return;state.chatBusy.add(context.key);state.chatErrors.delete(context.key);updateChatControls();try{const result=await postJSON(sessionEndpoint(context,session.id,`drafts/${encodeURIComponent(id)}/${action}`),{});storeSession(context,result);if(action==='apply'){const cacheKey=context.project+'/'+draft.chart,old=state.previews.get(cacheKey);if(old)URL.revokeObjectURL(old);state.previews.delete(cacheKey);await updateCard(context.project,draft.chart);if(state.project===context.project&&state.chart===draft.chart){const detail=await api(chartEndpoint(context.project,draft.chart,'detail'));if(state.project===context.project&&state.chart===draft.chart){state.detail=detail;$('editor').value=detail.code;drawHistory();drawData();if(typeof renderPanelControls==='function')renderPanelControls();}}}if(context.project===state.project)renderChat();if(state.chatKey===context.key)alertStatus(action==='apply'?'已应用候选，正式图片与代码已更新':action==='activate'?'下一轮将从所选候选继续':action==='recheck'?'已使用当前规则重新检查，未调用模型':'候选已放弃');}catch(error){state.chatErrors.set(context.key,error.message);}finally{state.chatBusy.delete(context.key);if(context.project===state.project)renderChat();}}
 async function acceptLayoutException(id){const session=state.chatSessions.get(state.chatKey),draft=session?.drafts.find(d=>d.id===id);if(!draft)return;const ids=warningIds(draft);if(!ids.length)return;const quote=`对于“${draft.display_name||draft.chart}”，我已了解上方列出的布局问题，仍按上一轮要求执行，并接受这些重叠或裁切。其他图保持不变。`;await generateChat({user_message:quote,layout_exception:{chart_id:draft.chart_id,warning_ids:ids,authorization_quote:quote}});}
 $('chatForm').onsubmit=async e=>{e.preventDefault();const message=$('prompt').value.trim(),context=chatContext();if(!message||!context.key||state.chatBusy.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return;$('prompt').value='';const ok=await generateChat({user_message:message},'turns',context);if(!ok&&state.chatKey===context.key&&!$('prompt').value)$('prompt').value=message;};
 $('prompt').onkeydown=e=>{if(e.key!=='Enter'||e.shiftKey||e.isComposing||e.keyCode===229)return;e.preventDefault();if(!e.repeat)$('chatForm').requestSubmit();};
 $('newChatSession').onclick=async()=>{const context=chatContext();if(!context.key||state.chatBusy.has(context.key)||state.chatSessions.get(context.key)?.status==='running')return;state.chatBusy.add(context.key);updateChatControls();try{const session=await postJSON(sessionEndpoint(context),{charts:context.charts,reference_charts:selectedReferences()});storeSession(context,session);state.chatErrors.delete(context.key);}catch(error){state.chatErrors.set(context.key,error.message);}finally{state.chatBusy.delete(context.key);if(state.chatKey===context.key)renderChat();}};
-$('chatSessionPicker').onchange=async e=>{const context=chatContext(),id=e.target.value;if(!id)return;state.chatBusy.add(context.key);updateChatControls();try{const session=await api(sessionEndpoint(context,id));storeSession(context,session);state.chatReferences.set(context.key,new Set(referenceRoutes(session)));state.chatImageReferences.set(context.key,session.reference_images||[]);if(state.chatKey===context.key)renderChatReferences();}catch(error){state.chatErrors.set(context.key,error.message);}finally{state.chatBusy.delete(context.key);if(state.chatKey===context.key)renderChat();}};
+$('chatSessionPicker').onchange=async e=>{const context=chatContext(),id=e.target.value;if(!id)return;state.chatBusy.add(context.key);updateChatControls();try{const session=await api(sessionEndpoint(context,id));storeSession(context,session);state.chatReferences.set(context.key,new Set(referenceRoutes(session)));if(state.chatKey===context.key)renderChatReferences();}catch(error){state.chatErrors.set(context.key,error.message);}finally{state.chatBusy.delete(context.key);if(state.chatKey===context.key)renderChat();}};
 function showProject(project,clearChart=false){const p=projectInfo(project);if(!p)return;const changed=state.project!==project;if(changed||clearChart){state.project=project;state.chart=null;state.detail=null;if(changed)state.selectedCharts.clear();if(changed)drawGallery();else document.querySelectorAll('.chartCard').forEach(card=>card.classList.remove('active'));}state.openProjects.add(project);$('breadcrumb').textContent=`${p.name.toUpperCase()} / CHARTS`;$('chartTitle').textContent=p.name;$('description').textContent=p.description||`项目中有 ${p.charts.length} 张图。可勾选多张图进行统一修改。`;$('galleryTitle').textContent=p.name;$('galleryCount').textContent=`${p.charts.length} 张图`;$('refresh').disabled=!state.chart;$('svg').hidden=!state.chart;$('pdf').hidden=!state.chart;drawTree();updateSelection();tab('figure');}
 function drawGallery(){state.galleryVersion++;galleryQueue.length=0;document.querySelectorAll('.chartCard').forEach(card=>galleryObserver.unobserve(card));const p=projectInfo(state.project);$('gallery').innerHTML=p?.charts.length?orderedCharts(p).map(chart=>`<article class="chartCard" data-chart="${esc(chart)}"><div class="chartCardTop"><label class="chartSelect"><input class="chartCheck" type="checkbox" aria-label="选择 ${esc(chart)}"> 选择</label><span class="chartName" title="${esc(chart)}">${esc(chartName(state.project,chart))}</span></div><button type="button" class="chartOpen" aria-label="打开 ${esc(chart)}"><div class="chartImage"><span class="chartLoading">等待图片…</span></div></button><div class="chartCardActions"><button type="button" class="cardDetail">查看代码与数据 ↗</button><button type="button" class="cardData">直接查看 CSV</button><button type="button" class="cardHistory">修改历史</button><button type="button" class="cardFinalize" title="保留当前代码与图片，清理这张图在应用中的旧版本文件">完成并清理</button></div></article>`).join(''):'<div class="galleryEmpty">这个项目还没有图表。展开左侧项目，可新建绘图或添加 CSV。</div>';
   document.querySelectorAll('.chartCard').forEach(card=>{const chart=card.dataset.chart;card.querySelector('.chartCheck').onchange=e=>{e.stopPropagation();e.target.checked?state.selectedCharts.add(chart):state.selectedCharts.delete(chart);updateSelection();};card.querySelector('.chartOpen').onclick=()=>select(state.project,chart);card.querySelector('.cardDetail').onclick=()=>openChartDetails(state.project,chart,'code');card.querySelector('.cardData').onclick=()=>openChartDetails(state.project,chart,'data');card.querySelector('.cardHistory').onclick=()=>openHistory(state.project,chart);card.querySelector('.cardFinalize').onclick=()=>finalizeChart(state.project,chart);const cached=state.previews.get(state.project+'/'+chart);if(cached){card.querySelector('.chartImage').innerHTML=`<img src="${cached}" alt="${esc(chart)} 图像预览">`;fitChartCanvas(card,card.querySelector('img'));}else galleryObserver.observe(card);});updateSelection();}
 async function openChartDetails(project,chart,view){await select(project,chart,view);}
 const galleryQueue=[];let galleryActive=0;
+const galleryRequests=new Set();
+async function fetchGalleryImage(url){
+  const controller=new AbortController();galleryRequests.add(controller);
+  const timer=setTimeout(()=>controller.abort(),165000);
+  try{
+    const response=await fetch(url,{signal:controller.signal});
+    if(!response.ok){const body=await response.json();throw new Error(body.error||`HTTP ${response.status}`);}
+    return await response.blob();
+  }finally{clearTimeout(timer);galleryRequests.delete(controller);}
+}
+const drawGalleryBeforeCancellation=drawGallery;
+drawGallery=function(){
+  for(const controller of galleryRequests)controller.abort();
+  drawGalleryBeforeCancellation();
+};
 function runGalleryQueue(){while(galleryActive<2&&galleryQueue.length){const item=galleryQueue.shift();galleryActive++;loadCard(item).finally(()=>{galleryActive--;runGalleryQueue();});}}
 const galleryObserver=new IntersectionObserver(entries=>{for(const entry of entries){if(!entry.isIntersecting)continue;galleryObserver.unobserve(entry.target);galleryQueue.push({card:entry.target,project:state.project,chart:entry.target.dataset.chart,version:state.galleryVersion});}runGalleryQueue();},{root:null,rootMargin:'350px'});
-async function loadCard({card,project,chart,version,force=false,requested=false}){if(version!==state.galleryVersion)return;const requestId=String(Number(card.dataset.previewRequest||0)+1);card.dataset.previewRequest=requestId;const slot=card.querySelector('.chartImage');if(!force&&!requested&&projectInfo(project)?.data_source_type==='plot_bundle'&&(!projectInfo(project)?.chart_metadata?.[chart]||projectInfo(project).chart_metadata[chart].status==='pending')){slot.innerHTML='<span class="chartLoading">点击图卡按需生成 Bundle 图片</span>';return;}slot.innerHTML='<span class="chartLoading">正在读取图片…</span>';try{const r=await fetch(chartEndpoint(project,chart,'preview')+'?v='+Date.now()+(force?'&force=1':''));if(!r.ok){const e=await r.json();throw new Error(e.error||`HTTP ${r.status}`);}const url=URL.createObjectURL(await r.blob());if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId){URL.revokeObjectURL(url);return;}const key=project+'/'+chart,prior=state.previews.get(key);if(prior)URL.revokeObjectURL(prior);state.previews.set(key,url);slot.innerHTML='';const img=document.createElement('img');img.src=url;img.alt=chart+' 图像预览';img.loading='lazy';fitChartCanvas(card,img);slot.append(img);}catch(e){if(version===state.galleryVersion&&card.dataset.previewRequest===requestId){slot.innerHTML='';const message=document.createElement('span');message.className='chartError';message.textContent='渲染失败：'+e.message;slot.append(message);}}}
+async function loadCard({card,project,chart,version,force=false,requested=false}){
+  if(version!==state.galleryVersion)return;
+  const requestId=String(Number(card.dataset.previewRequest||0)+1);card.dataset.previewRequest=requestId;
+  const slot=card.querySelector('.chartImage');
+  const importWarning=projectInfo(project)?.chart_warnings?.[chart];
+  const diagnostic=(projectInfo(project)?.chart_diagnostic_previews||[]).includes(chart);
+  if(diagnostic&&!card.querySelector('.chartImportWarning')){const note=document.createElement('p');note.className='chartImportWarning';note.textContent='布局警告预览：'+importWarning;card.append(note);}
+  if(importWarning&&!diagnostic&&!force&&!requested){slot.innerHTML='<span class="chartError">导入成功，此图试绘未通过，尚无可用预览。可查看代码和数据，修复后点击“重新渲染当前图”。</span>';const note=document.createElement('p');note.className='chartImportWarning';note.textContent='导入时试绘警告：'+importWarning.trim().split('\n').pop();note.title=importWarning;slot.append(note);return;}
+  if(!force&&!requested&&projectInfo(project)?.data_source_type==='plot_bundle'&&(!projectInfo(project)?.chart_metadata?.[chart]||projectInfo(project).chart_metadata[chart].status==='pending')){slot.innerHTML='<span class="chartLoading">点击图卡按需生成 Bundle 图片</span>';return;}
+  slot.innerHTML='<span class="chartLoading">正在读取图片；缓存失效时需重新绘制…</span>';
+  try{
+    const blob=await fetchGalleryImage(chartEndpoint(project,chart,'preview')+'?v='+Date.now()+(force?'&force=1':''));
+    const url=URL.createObjectURL(blob);
+    if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId){URL.revokeObjectURL(url);return;}
+    const key=project+'/'+chart,prior=state.previews.get(key);if(prior)URL.revokeObjectURL(prior);state.previews.set(key,url);
+    slot.innerHTML='';const img=document.createElement('img');img.src=url;img.alt=chart+(diagnostic?' 布局警告预览':' 图像预览');img.loading='lazy';fitChartCanvas(card,img);slot.append(img);
+  }catch(e){
+    if(version!==state.galleryVersion||card.dataset.previewRequest!==requestId)return;
+    slot.innerHTML='';const message=document.createElement('span');message.className='chartError';
+    message.textContent=e.name==='AbortError'?'图片读取超时或已取消，请重试。':'渲染失败：'+e.message;
+    const retry=document.createElement('button');retry.type='button';retry.textContent='重新读取图片';
+    retry.onclick=event=>{event.stopPropagation();loadCard({card,project,chart,version,requested:true});};slot.append(message,retry);
+  }
+}
 async function preview(force=false){if(!state.chart)return;const card=[...document.querySelectorAll('.chartCard')].find(x=>x.dataset.chart===state.chart);if(card)await loadCard({card,project:state.project,chart:state.chart,version:state.galleryVersion,force,requested:true});await refreshChartNames();alertStatus('已渲染 · '+new Date().toLocaleTimeString('zh-CN'));}
-async function select(project,chart,view='figure'){const request=++state.detailRequest;showProject(project);state.chart=chart;state.detail=null;drawTree();const p=projectInfo(project);$('breadcrumb').textContent=`${p.name.toUpperCase()} / CHARTS / ${chart.toUpperCase()}`;$('chartTitle').textContent=chartName(project,chart);$('description').textContent=p.description||`项目共 ${p.charts.length} 张图`;$('filename').textContent=chart+'.py';$('refresh').disabled=false;$('svg').hidden=false;$('pdf').hidden=false;$('svg').href=endpoint('svg');$('pdf').href=endpoint('pdf');document.querySelectorAll('.chartCard').forEach(card=>card.classList.toggle('active',card.dataset.chart===chart));updateSelection();if(view==='code')$('editor').value='正在加载代码…';if(view==='data')$('dataInfo').textContent='正在加载 CSV 数据…';tab(view);if(view!=='figure')document.querySelector('main').scrollTo({top:0,behavior:'smooth'});try{const detail=await api(chartEndpoint(project,chart,'detail'));if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;state.detail=detail;$('editor').value=state.detail.code;drawHistory();drawData();tab(view);if(view==='figure'){const card=[...document.querySelectorAll('.chartCard')].find(x=>x.dataset.chart===chart);card?.scrollIntoView({block:'nearest',behavior:'smooth'});if(p.data_source_type==='plot_bundle'&&card)await loadCard({card,project,chart,version:state.galleryVersion,requested:true});}alertStatus('已选择 '+chartName(project,chart));return true;}catch(e){if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;alertStatus(e.message);if(view==='code')$('editor').value=e.message;if(view==='data')$('dataInfo').textContent=e.message;return false;}}
+async function select(project,chart,view='figure'){const request=++state.detailRequest;showProject(project);state.chart=chart;state.detail=null;drawTree();const p=projectInfo(project);$('breadcrumb').textContent=`${p.name.toUpperCase()} / CHARTS / ${chart.toUpperCase()}`;$('chartTitle').textContent=chartName(project,chart);$('description').textContent=p.description||`项目共 ${p.charts.length} 张图`;$('filename').textContent=chart+'.py';$('refresh').disabled=false;$('svg').hidden=false;$('pdf').hidden=false;$('svg').href=endpoint('svg');$('pdf').href=endpoint('pdf');document.querySelectorAll('.chartCard').forEach(card=>card.classList.toggle('active',card.dataset.chart===chart));updateSelection();if(view==='code')$('editor').value='正在加载代码…';if(view==='data')$('dataInfo').textContent='正在加载 CSV 数据…';tab(view);if(view!=='figure')document.querySelector('main').scrollTo({top:0,behavior:'smooth'});try{const detail=await api(chartEndpoint(project,chart,'detail'));if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;state.detail=detail;$('editor').value=state.detail.code;drawHistory();drawData();if(typeof renderPanelControls==='function'){renderPanelControls();drawPanelSections();}tab(view);if(view==='figure'){const card=[...document.querySelectorAll('.chartCard')].find(x=>x.dataset.chart===chart);card?.scrollIntoView({block:'nearest',behavior:'smooth'});if(p.data_source_type==='plot_bundle'&&card)await loadCard({card,project,chart,version:state.galleryVersion,requested:true});}alertStatus('已选择 '+chartName(project,chart));return true;}catch(e){if(request!==state.detailRequest||state.project!==project||state.chart!==chart)return false;alertStatus(e.message);if(view==='code')$('editor').value=e.message;if(view==='data')$('dataInfo').textContent=e.message;return false;}}
 async function post(action,body){return api(endpoint(action),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
-async function apply(code,note,baseRevision){const project=state.project,chart=state.chart;try{$('saveCode').disabled=true;const r=await postChart(project,chart,'apply',{code,note,base_revision:baseRevision});await updateCard(project,chart);if(state.project===project&&state.chart===chart){const detail=await api(chartEndpoint(project,chart,'detail'));if(state.project===project&&state.chart===chart){state.detail=detail;$('editor').value=detail.code;drawHistory();drawData();alertStatus(r.message||'已保存代码并更新图片');}}return true;}catch(e){alertStatus('保存或重绘失败：'+e.message);return false;}finally{$('saveCode').disabled=false;}}
+async function apply(code,note,baseRevision){const project=state.project,chart=state.chart;try{$('saveCode').disabled=true;const r=await postChart(project,chart,'apply',{code,note,base_revision:baseRevision});await updateCard(project,chart);if(state.project===project&&state.chart===chart){const detail=await api(chartEndpoint(project,chart,'detail'));if(state.project===project&&state.chart===chart){state.detail=detail;$('editor').value=detail.code;drawHistory();drawData();if(typeof renderPanelControls==='function')renderPanelControls();alertStatus(r.message||'已保存代码并更新图片');}}return true;}catch(e){alertStatus('保存或重绘失败：'+e.message);return false;}finally{$('saveCode').disabled=false;}}
 async function restore(id){if(!confirm('将此历史版本恢复为新的当前版本？原版本仍保留。'))return;try{await post('restore',{id});await refreshChartNames();await select(state.project,state.chart);await preview();drawHistory();bubble('已恢复历史版本。');}catch(e){bubble(e.message,'error');}}
 async function openHistory(project,chart){await select(project,chart);if(!state.detail)return;state.historyChart={project,chart};drawHistory();$('historyDialog').showModal();}
 async function refreshProjectChats(project){
@@ -427,6 +425,29 @@ $('newProject').onclick=e=>{e.stopPropagation();const open=$('createMenu').class
 document.addEventListener('click',e=>{if(!e.target.closest('.createMenuWrap'))closeCreateMenu();});
 $('createProject').onclick=async()=>{closeCreateMenu();const id=prompt('项目 ID（英文字母、数字、下划线或连字符）：');if(!id)return;const name=prompt('项目显示名称：',id)||id;try{await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name})});await reloadProjects();showProject(id);alertStatus('已创建项目 '+id);}catch(e){alert(e.message);}};
 async function newChart(project){if(!project){alert('请先创建或选中项目。');return;}const name=prompt('新图名称（英文字母、数字或下划线）：');if(!name)return;try{await api(`/api/projects/${encodeURIComponent(project)}/charts`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await reloadProjects();await select(project,name);}catch(e){alert(e.message);}}
+
+$('standardizeProject').onclick=()=>{
+  closeCreateMenu();
+  $('standardizeProjectName').value='';
+  $('projectSourcePath').value='';
+  $('standardizeDialog').showModal();
+};
+$('closeStandardize').onclick=()=>$('standardizeDialog').close();
+$('startStandardize').onclick=async()=>{
+  const projectName=$('standardizeProjectName').value.trim();
+  const sourceDir=$('projectSourcePath').value.trim();
+  if(!projectName){alert('请填写项目名称。');return;}
+  if(!sourceDir){alert('请填写源项目目录。');return;}
+  try{
+    const result=await api('/api/project-standardizer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_name:projectName,source_dir:sourceDir})});
+    $('standardizeDialog').close();
+    await reloadProjects();
+    if(result.project){
+      showProject(result.project);
+      alertStatus(`已标准化：${result.project}`);
+    }
+  }catch(err){alertStatus(err.message); bubble(err.message,'error');}
+};
 
 $('uploadPackage').onclick=()=>{
   closeCreateMenu();
@@ -477,11 +498,11 @@ $('startUpload').onclick=async()=>{
 let csvImportProject=null;
 function importCsv(project){if(!project){alert('请先创建或选中项目。');return;}csvImportProject=project;$('csvFile').click();}
 $('csvFile').onchange=async e=>{const f=e.target.files[0],project=csvImportProject;csvImportProject=null;if(!f||!project)return;try{const content=await f.text();await api(`/api/projects/${encodeURIComponent(project)}/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:f.name,content})});forgetProjectPreviews(project);const chart=state.project===project?state.chart:null;await reloadProjects();if(chart)await select(project,chart);alertStatus('已导入 '+f.name);}catch(err){alert(err.message);}e.target.value='';};
-(async()=>{try{loadModelConfig().catch(e=>alertStatus('模型配置状态不可用：'+e.message));if(window.syncTeamOnOpen)await window.syncTeamOnOpen();const [r]=await Promise.all([api('/api/projects'),reloadSkills()]);state.projects=r.projects;drawTree();alertStatus(`项目目录：${r.root}`);if(r.projects[0]){showProject(r.projects[0].id);if(r.projects[0].charts[0])await select(r.projects[0].id,r.projects[0].charts[0]);}if(!r.llm_enabled)bubble('尚未配置模型 API。点击页面顶部的“API 配置”即可填写；现有图片和代码仍可查看。','configNotice');}catch(e){alertStatus(e.message);}})();
+(async()=>{try{if(window.syncTeamOnOpen)await window.syncTeamOnOpen();const [r]=await Promise.all([api('/api/projects'),reloadSkills()]);state.projects=r.projects;drawTree();alertStatus(`项目目录：${r.root}`);if(r.projects[0]){showProject(r.projects[0].id);if(r.projects[0].charts[0])await select(r.projects[0].id,r.projects[0].charts[0]);}if(!r.llm_enabled)bubble('尚未配置模型 API。点击页面顶部的“API 配置”即可填写；现有图片和代码仍可查看。','configNotice');loadModelConfig().catch(e=>alertStatus('模型配置状态不可用：'+e.message));}catch(e){alertStatus(e.message);}})();
 
 // Load persisted naming metadata while existing previews are being indexed in the background.
 let refreshingNames=false;
 setInterval(async()=>{if(refreshingNames||!state.projects.some(p=>Object.values(p.chart_metadata||{}).some(m=>m.status==='pending')))return;refreshingNames=true;try{await refreshChartNames();}catch(e){console.warn('Chart names unavailable',e);}finally{refreshingNames=false;}},5000);
 
 // Reconnect to a persisted generation after reloading the page or returning to its targets.
-setInterval(async()=>{const context=chatContext(),session=state.chatSessions.get(context.key);if(!session||session.status!=='running'||state.chatPolling.has(context.key))return;state.chatPolling.add(context.key);try{const updated=await api(sessionEndpoint(context,session.id));const current=state.chatSessions.get(context.key);if(current?.id===session.id&&!(current.status!=='running'&&updated.status==='running')){const changed=current.status!==updated.status||current.progress?.stage!==updated.progress?.stage||current.turns?.at(-1)?.results?.length!==updated.turns?.at(-1)?.results?.length;if(changed){storeSession(context,updated);if(state.chatKey===context.key)renderChat();}}}catch(error){state.chatErrors.set(context.key,'会话暂时无法同步：'+error.message);}finally{state.chatPolling.delete(context.key);}},3000);
+setInterval(pollChatProgress,1500);

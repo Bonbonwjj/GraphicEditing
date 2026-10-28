@@ -21,7 +21,12 @@ def user_home():
         return Path(os.environ['PLOT_FORGE_HOME']).expanduser().resolve()
     if sys.platform == 'win32':
         return Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'PlotForge'
-    return Path.home() / 'Library/Application Support/PlotForge'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library/Application Support/PlotForge'
+    # Linux follows the XDG user-data conventions while remaining portable for
+    # single-user desktop installs. This keeps the bundled runtime and workspace
+    # isolated from the application directory itself.
+    return Path.home() / '.local' / 'share' / 'PlotForge'
 
 
 @contextlib.contextmanager
@@ -56,7 +61,7 @@ def runtime_environment(runtime):
     # A frozen launcher's library paths must not contaminate its child Python.
     for key in ('PYTHONHOME', 'PYTHONPATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'):
         env.pop(key, None)
-    paths = [runtime, runtime/'Library/ucrt64/bin', runtime/'Library/mingw-w64/bin', runtime/'Library/usr/bin',
+    paths = [runtime, runtime/'git/cmd', runtime/'Library/ucrt64/bin', runtime/'Library/mingw-w64/bin', runtime/'Library/usr/bin',
              runtime/'Library/bin', runtime/'Scripts', runtime/'bin']
     env['PATH'] = os.pathsep.join(map(str, paths)) + os.pathsep + env.get('PATH', '')
     env['CONDA_PREFIX'] = str(runtime)

@@ -98,12 +98,16 @@ class CollaborationSync:
         if root.is_symlink():
             raise ValueError('共享项目目录不能是符号链接')
         references = set()
+        from private_projects import names
+        private = names(root.parent)
         for metadata in [*root.glob('*/data_sources.json'), *root.glob('*/code/data_sources.json')]:
             value=json.loads(metadata.read_text(encoding='utf-8'))
             if any(item.get('kind')=='plot_bundle' and str(item.get('location','')).startswith('binding:') for item in value.get('sources',[])):
                 references.add(metadata.parent.parent.name if metadata.parent.name == 'code' else metadata.parent.name)
         for path in root.rglob('*'):
             relative = path.relative_to(root)
+            if relative.parts and relative.parts[0] in private:
+                continue
             if relative.parts and relative.parts[0] in references and relative.parts[1:3] == ('data','bundle'):
                 continue
             if any((part.startswith('.') and part != '.gitattributes') or part == '__pycache__' for part in relative.parts):
@@ -182,6 +186,11 @@ class CollaborationSync:
             local_raw, remote_raw = self.files(local_root), self.files(remote_root)
             local, remote = from_shared(local_raw), from_shared(remote_raw)
             base = json.loads(self.state_file.read_text(encoding='utf-8')) if self.state_file.exists() else {}
+            from private_projects import names
+            private = names(self.root)
+            collisions = sorted(p for p in set(remote) | set(base) if p.split('/')[0] in private)
+            if collisions:
+                raise SyncConflict(collisions)
             merged = self.merge(base, local, remote)  # Detect every conflict before changing local files.
             if publish:
                 if not str(message).strip():

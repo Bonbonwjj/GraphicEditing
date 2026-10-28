@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 import shutil
+import os
 ALLOWED={".py",".csv",".tsv",".json",".png",".jpg",".jpeg",".svg"}
 MAX_UPLOAD_BYTES=500_000_000
 
@@ -42,9 +43,46 @@ def store_multipart_upload(root, project_id, fields):
                 if total>MAX_UPLOAD_BYTES: raise ValueError("单次上传总大小不能超过 500 MB")
                 stream.write(chunk)
         counts[kind]+=1
+    local = {kind: fields.getfirst(kind+'_path', '') for kind in ('code','data','image')} if hasattr(fields,'getfirst') else {}
+    total, local_counts = copy_local_sources(target, local, total)
+    for kind, count in local_counts.items(): counts[kind] += count
     if not counts["code"] or not counts["data"]:
         raise ValueError("必须分别选择包含 Python 的代码文件夹和包含 CSV/TSV/JSON 的数据文件夹")
     return target
+
+
+def copy_local_sources(target, paths, total=0):
+    """Copy explicitly selected local files; never traverse hidden/symlink trees."""
+    counts = {'code':0, 'data':0, 'image':0}
+    types = {'code':{'.py'}, 'data':{'.csv','.tsv','.json'}, 'image':{'.png','.jpg','.jpeg','.svg'}}
+    for kind, raw in paths.items():
+        if kind not in counts or not str(raw).strip(): continue
+        source = Path(os.path.expandvars(str(raw).strip().strip('"').strip("'"))).expanduser()
+        if source.is_symlink() or not source.exists():
+            raise ValueError('路径不存在或为符号链接：'+str(source))
+        if any(p.is_symlink() for p in source.parents):
+            raise ValueError('路径不能经过符号链接。')
+        source=source.resolve()
+        entries=[]
+        if source.is_file(): entries=[source]
+        else:
+            for directory, dirs, files in os.walk(source):
+                dirs[:]=[d for d in dirs if not d.startswith('.') and d not in {'__pycache__','node_modules'} and not (Path(directory)/d).is_symlink()]
+                entries.extend(Path(directory)/name for name in files if not name.startswith('.'))
+                if len(entries)>10000: raise ValueError('所选目录超过 10000 个文件，请选择更小的子目录。')
+        for path in sorted(entries):
+            if path.is_symlink() or path.suffix.lower() not in types[kind]: continue
+            relative=Path(path.name) if source.is_file() else path.relative_to(source)
+            if any(token in part.lower() for part in relative.parts for token in ('.env','credential','secret','api-key','api_key')):
+                continue
+            total+=path.stat().st_size
+            if total>MAX_UPLOAD_BYTES: raise ValueError('单次上传总大小不能超过 500 MB')
+            destination=target/{'code':'code','data':'csv','image':'images'}[kind]/relative
+            if destination.exists(): raise ValueError('文件选择与路径输入有同名文件，请只使用其中一种方式：'+str(relative))
+            destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,destination)
+            counts[kind]+=1
+        if not counts[kind]: raise ValueError('所填路径中没有支持的'+{'code':'Python 代码','data':'CSV/TSV/JSON 数据','image':'图片'}[kind]+'。')
+    return total, counts
 
 def store_upload(root, project_id, files):
     target=_target(root,project_id); total=0; counts={"code":0,"data":0,"image":0}

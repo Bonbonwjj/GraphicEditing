@@ -1,0 +1,18 @@
+{
+  "chart": "position_over_time",
+  "panels": [],
+  "sections": [
+    {
+      "path": "charts/position_over_time.py",
+      "start_line": 1,
+      "end_line": 21,
+      "symbols": [],
+      "id": "charts/position_over_time.py:1-21"
+    }
+  ],
+  "axis_label_candidates": [],
+  "warning": "未找到可靠的可见面板映射。可查看完整源码；请手动指定面板与轴标签的对应关系。",
+  "source_hashes": {
+    "charts/position_over_time.py": "fc997d938edbe4fb80f98b827e99bbe85c476edce809ffe7c2fbac8732dc1c00"
+  }
+}

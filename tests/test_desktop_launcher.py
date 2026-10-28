@@ -14,7 +14,7 @@ class DesktopTests(unittest.TestCase):
             source=Path(folder)/'source';target=Path(folder)/'app'
             for name in ('static','skills','docs','projects/demo/data','projects/demo/code/charts'):
                 (source/name).mkdir(parents=True,exist_ok=True)
-            for name in ('team_collaboration.json','README.md','requirements.txt','docs/DESKTOP_APP.md','docs/USER_GUIDE.zh-CN.md','docs/CHAT_HARNESS.zh-CN.md'):
+            for name in ('team_collaboration.json','README.md','requirements.txt','docs/DESKTOP_APP.md'):
                 (source/name).write_text('{}')
             (source/'projects/demo/code/project.json').write_text('{}')
             (source/'projects/demo/code/charts/a.py').write_text('pass')
@@ -83,3 +83,8 @@ class DesktopTests(unittest.TestCase):
             target=Path(folder)/'桌面工作区 test'
             with patch.dict('os.environ',{'PLOT_FORGE_HOME':str(target)}):
                 self.assertEqual(desktop.user_home(),target.resolve())
+
+    def test_linux_uses_xdg_data_dir(self):
+        with patch.object(desktop.sys, 'platform', 'linux'):
+            home = Path.home() / '.local' / 'share' / 'PlotForge'
+            self.assertEqual(desktop.user_home(), home.resolve())

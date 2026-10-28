@@ -30,41 +30,51 @@ finish_figure(fig, os.environ['CHART_OUTPUT'])
 
 
 class RunnerUnitTests(unittest.TestCase):
-    def test_horizontal_bar_values_detected_but_thickness_is_style(self):
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots()
-        bars=ax.barh([0,1],[2,3],height=.6)
-        fig.canvas.draw(); before=_capture(fig,fig.canvas.get_renderer())
-        for bar in bars:
-            center=bar.get_y()+bar.get_height()/2
-            bar.set_height(.3);bar.set_y(center-.15)
-        fig.canvas.draw(); styled=_capture(fig,fig.canvas.get_renderer())
-        self.assertEqual(compare_reports(before,styled)['changed'],[])
-        bars[0].set_width(99)
-        fig.canvas.draw(); changed=_capture(fig,fig.canvas.get_renderer())
-        self.assertTrue(compare_reports(before,changed)['changed'])
-        plt.close(fig)
+    def test_broken_baseline_does_not_discard_successful_repair_preview(self):
+        def render(project,entry,files,directory):
+            if directory.name=='baseline':raise CandidateRenderError('AssertionError: layout overlap')
+            return {'image_bytes':b'png','layout':{'status':'pass','issues':[]},'naming':{},'artists':[]}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch('chat_runner.isolation_backend',return_value='local-python'),patch('chat_runner._one_render',side_effect=render):
+                result=render_candidate(root,'charts/a.py',{},root/'result')
+            self.assertTrue(Path(result['image_path']).is_file())
+            self.assertIsNone(result['baseline_image_path'])
+            self.assertEqual(result['data_report']['status'],'unverified')
+            self.assertIn('layout overlap',result['baseline_render_error'])
+            self.assertTrue(any('未完成新旧数据' in w for w in result['warnings']))
 
-    def test_scatter_color_data_detected_but_cmap_is_style(self):
+    def test_figure_image_checks_all_pixels_without_expanding_report(self):
+        import matplotlib.pyplot as plt
         import numpy as np
-        import matplotlib.pyplot as plt
-        fig,ax=plt.subplots(); points=ax.scatter([0,1],[1,2],c=[3,4])
-        fig.canvas.draw();before=_capture(fig,fig.canvas.get_renderer())
-        points.set_cmap('plasma')
-        fig.canvas.draw();styled=_capture(fig,fig.canvas.get_renderer())
-        self.assertEqual(compare_reports(before,styled)['changed'],[])
-        points.set_array(np.array([3,99]))
-        fig.canvas.draw();changed=_capture(fig,fig.canvas.get_renderer())
-        self.assertTrue(compare_reports(before,changed)['changed'])
-        plt.close(fig)
+        figure=plt.figure(figsize=(2,2),dpi=50)
+        values=np.zeros((100,100,3),dtype=np.uint8)
+        image=figure.figimage(values)
+        figure.canvas.draw();before=_capture(figure,figure.canvas.get_renderer())
+        values[51,47,1]=1;image.set_data(values)
+        figure.canvas.draw();after=_capture(figure,figure.canvas.get_renderer())
+        self.assertEqual(before['artists'][0]['kind'],'raster_image')
+        self.assertNotEqual(before['artists'][0]['data_hash'],after['artists'][0]['data_hash'])
+        self.assertLess(len(json.dumps(before['artists'][0]['data'])),500)
+        plt.close(figure)
 
-    def test_heatmap_grid_change_detected_with_identical_cell_values(self):
-        import matplotlib.pyplot as plt
-        reports=[]
-        for x in ([0,1,2],[0,1,3]):
-            fig,ax=plt.subplots();ax.pcolormesh(x,[0,1,2],[[1,2],[3,4]])
-            fig.canvas.draw();reports.append(_capture(fig,fig.canvas.get_renderer()));plt.close(fig)
-        self.assertTrue(compare_reports(*reports)['changed'])
+    def test_baseline_and_candidate_render_concurrently_in_separate_snapshots(self):
+        import threading
+        barrier=threading.Barrier(2)
+        directories=[]
+        def fake_render(project,entry,files,directory):
+            directories.append(directory)
+            barrier.wait(timeout=3)  # A sequential implementation fails this test.
+            return {'image_bytes':b'png','layout':{'status':'pass','issues':[]},'naming':{},'artists':[]}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch('chat_runner.isolation_backend',return_value='local-python'), \
+                 patch('chat_runner._one_render',side_effect=fake_render), \
+                 patch('chat_runner._visual_change',return_value={'status':'changed'}):
+                report=render_candidate(root,'charts/a.py',{},root/'result')
+            self.assertEqual(len(set(directories)),2)
+            self.assertTrue(Path(report['image_path']).is_file())
+            self.assertTrue(Path(report['baseline_image_path']).is_file())
 
     def test_scope_and_process_rejections(self):
         for path, source in (("../secret.py", "pass"), ("lib/helper.py", "pass"),
@@ -225,6 +235,39 @@ class RunnerUnitTests(unittest.TestCase):
 
 
 class RunnerIsolationTests(unittest.TestCase):
+    def test_stop_terminates_both_render_processes(self):
+        import threading
+        import time
+        import chat_cancellation as cancellation
+        from chat_runner import _one_render
+        event=threading.Event();started=threading.Event();out=[]
+        processes=[];popen=__import__('subprocess').Popen
+        def spawn(*args,**kwargs):
+            process=popen(*args,**kwargs)
+            processes.append(process)
+            if len(processes)==2:started.set()
+            return process
+        def run():
+            token=cancellation.CURRENT.set(event)
+            try:
+                self.render(SOURCE)
+            except cancellation.Cancelled:
+                out.append('cancelled')
+            finally:cancellation.CURRENT.reset(token)
+        # Slow synthetic workers, never real project code or provider calls.
+        original=(self.project/'charts/a.py').read_text()
+        (self.project/'charts/a.py').write_text('import time\ntime.sleep(30)\n'+original)
+        with patch('chat_runner.subprocess.Popen',side_effect=spawn):
+            worker=threading.Thread(target=run);worker.start()
+            try:
+                self.assertTrue(started.wait(5))
+                event.set();worker.join(4)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(out,['cancelled'])
+                self.assertTrue(all(p.poll() is not None for p in processes))
+            finally:
+                event.set();worker.join(5)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='chat-runner-test-')
         self.root = Path(self.temporary.name).resolve()
@@ -296,6 +339,18 @@ class RunnerIsolationTests(unittest.TestCase):
         result = self.render(SOURCE.replace('frame.x, frame.y', 'frame.x, frame.y * 2'))
         self.assertEqual(result['data_report']['status'], 'review_required')
         self.assertTrue(result['data_report']['changed'])
+        self.assertEqual(result['source_data_report']['status'], 'pass')
+
+    def test_remapping_preserves_file_inputs(self):
+        result = self.render(SOURCE.replace('frame.x, frame.y', 'frame.y, frame.x'))
+        self.assertTrue(result['data_report']['changed'])
+        self.assertEqual(result['source_data_report']['status'], 'pass')
+        self.assertEqual((self.project / 'data/values.csv').read_bytes(), self.original)
+
+    def test_overwriting_loaded_observations_fails_source_check(self):
+        result = self.render(SOURCE.replace('fig, ax =', "frame.loc[0, 'y'] = 99\nfig, ax ="))
+        self.assertEqual(result['source_data_report']['status'], 'fail')
+        self.assertEqual((self.project / 'data/values.csv').read_bytes(), self.original)
 
     def test_root_helper_import_works(self):
         (self.project / 'shared_draw.py').write_text("def identity(value):\n    return value\n", encoding="utf-8", newline="\n")

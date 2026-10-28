@@ -93,6 +93,12 @@ class ChatIntegrationTests(unittest.TestCase):
         elif context['user_message'] == 'Now make this line width 3; keep the red color.':
             desired = desired.replace('linewidth=1.5', 'linewidth=3')
             operation = 'linewidth'
+        elif context['user_message'] == 'Convert this chart to scatter.':
+            desired = desired.replace("ax.plot(x, y, color='blue', linewidth=1.5, label='sample')",
+                                      "ax.scatter(x, y, color='blue', s=24, label='sample')")
+            operation = 'chart_type'
+        elif context['user_message'] == 'Make the scatter red.':
+            desired = desired.replace("color='blue'", "color='red'")
         else:
             desired += '\n# confirmed no-op candidate\n'
         return {
@@ -124,6 +130,20 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def turn(self, session, message):
         return self.harness.turn('synthetic', session['id'], {'user_message': message})
+
+    def test_scatter_conversion_continue_and_apply_keep_data(self):
+        session=self.harness.create('synthetic',['a'])
+        first=self.turn(session,'Convert this chart to scatter.')
+        draft=self.ready(first)[0]
+        self.assertEqual(draft['chart_transform']['status'],'pass')
+        self.assertTrue(draft['can_continue'])
+        active=self.harness.draft_action('synthetic',session['id'],draft['id'],'activate')
+        second=self.turn(active,'Make the scatter red.')
+        edited=self.ready(second)[0]
+        self.assertEqual(edited['parent_draft_id'],draft['id'])
+        self.assertIn('ax.scatter',edited['code']['charts/a.py'])
+        self.harness.draft_action('synthetic',session['id'],edited['id'],'apply')
+        self.assertEqual((self.project/'data/values.csv').read_bytes(),self.csv)
 
     def test_real_candidate_multiturn_apply_and_resume(self):
         session = self.harness.create('synthetic', ['a'])

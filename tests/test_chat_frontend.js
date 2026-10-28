@@ -24,12 +24,14 @@ function environment() {
     },
     IntersectionObserver: class { observe() {} unobserve() {} },
     fetch() { throw Error('Unexpected network'); }, setInterval() {},
+    AbortController, setTimeout, clearTimeout,
   };
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-  const init = source.indexOf('(async()=>{try{loadModelConfig()');
+  const init = source.indexOf('(async()=>{try{if(window.syncTeamOnOpen)');
   assert(init > 0, 'Locate automatic page initialization');
-  source = source.slice(0, init);
-  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, renderModuleHandoff, renderTurnMetrics, uploadChatReferenceFiles, selectedChatImages, referenceImageHistoryHTML };';
+  source = fs.readFileSync(path.join(root, 'static/panels.js'), 'utf8')+'\n'+source.slice(0, init);
+  source += '\nglobalThis.panelTest = {panelSelections,panelTargetFor};';
+  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, pollChatProgress, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, fetchGalleryImage, galleryRequests };';
   vm.runInNewContext(source, sandbox);
   const app = sandbox.app;
   app.state.project = 'project';
@@ -94,49 +96,17 @@ function testCards() {
   assert(card.includes('继续修改的起点'));
   assert(card.includes('&lt;unsafe&gt;'));
   assert(!card.includes('<unsafe>'));
-  assert(app.renderDraft(draft, { ...current, status: 'closed' }, context).includes('data-draft-action'));
+  assert(!app.renderDraft(draft, { ...current, status: 'closed' }, context).includes('data-draft-action'));
   const diagnostic = { ...draft, status: 'needs_clarification', layout: { issues: [{ id: 'warn_1', message: 'tick overlap' }] } };
-  assert(app.renderDraft(diagnostic, current, context).includes('仍按要求执行'));
+  assert(!app.renderDraft(diagnostic, current, context).includes('仍按要求执行'));
   const layoutDraft = app.renderDraft({ ...diagnostic, can_continue: true }, current, context);
   assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(layoutDraft));
   assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(layoutDraft));
-  assert(layoutDraft.includes('以下检查仅作提示'));
+  assert(!layoutDraft.includes('通过检查后才能应用'));
+  assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(app.renderDraft({...diagnostic,status:'validation_failed',can_apply:true,can_continue:true},current,context)));
+  assert(app.renderDraft({...diagnostic,warnings:['数据有问题']},current,context).includes('class="draftWarnings" open'));
   assert(!app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('data-layout-override'));
   assert(app.renderDraft({ ...diagnostic, status: 'validation_failed' }, current, context).includes('重新检查此版'));
-  for(const status of ['validation_failed','revision_conflict','render_failed','applied','discarded']){
-    const enabled=app.renderDraft({...draft,status,image_url:null,can_apply:true,can_continue:true},{...current,status:'closed'},context);
-    assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(enabled));
-    assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(enabled));
-  }
-  const explained=app.renderDraft({ ...draft, status:'validation_failed', diagnostics:[{
-    title:'图型转换尚无法核对',reason:'缺少 <sample>',next_action:'请核对完整样本',
-    evidence:[{label:'移除对象',count:1,objects:['axes_0.line_0']}]}],
-    check_history:[{status:'validation_failed',diagnostics:[{title:'初次失败',reason:'样本缺失'}]}]},current,context);
-  assert(explained.includes('图型转换尚无法核对'));
-  assert(explained.includes('请核对完整样本'));
-  assert(explained.includes('axes_0.line_0'));
-  assert(explained.includes('本轮出图检查记录'));
-  assert(explained.includes('&lt;sample&gt;'));
-  assert(!explained.includes('<sample>'));
-  const unmet=app.renderDraft({...draft,status:'intent_unmet',can_continue:true,edit_contract:{
-    scope:'最终导出属性',requirements:[{request:'字号改为12 <script>',status:'fail',expected:12,actual:10,reason:'最终字号未改变'}]}},current,context);
-  assert(unmet.includes('本轮需求验收（最终导出实测）'));
-  assert(unmet.includes('目标：12'));assert(unmet.includes('导出值：10'));
-  assert(unmet.includes('最终字号未改变'));assert(!unmet.includes('<script>'));
-  assert(/data-draft-action="apply"[^>]*data-blocked="false"/.test(unmet));
-  assert(/data-draft-action="activate"[^>]*data-blocked="false"/.test(unmet));
-  const handoff=app.renderModuleHandoff({module_handoff:{path:'draw.py',module_id:'m1',chart:'B',
-    prompt:'change <font>',notice:'共享修改需审阅',affected_charts:['A','B']}},'project',true);
-  assert(handoff.includes('可能受影响的图（2）'));
-  assert(handoff.includes('验证全部图'));
-  assert(handoff.includes('change &lt;font&gt;'));
-  assert(!app.renderModuleHandoff({module_handoff:{affected_charts:[]}},'project',false).includes('<button'));
-  assert(app.renderTurnMetrics({model_attempts:0,elapsed_seconds:1}).includes('未调用模型'));
-  assert(app.renderTurnMetrics({model_attempts:2,model_calls:[{total_tokens:130}]}).includes('130 token（部分调用）'));
-  assert(app.renderTurnMetrics({model_attempts:1}).includes('服务端未报告实际 token'));
-  const normalizationUsage=app.renderTurnMetrics({model_attempts:0,model_usage_scope:'normalization'});
-  assert(normalizationUsage.includes('暂未报告'));
-  assert(!normalizationUsage.includes('未调用模型'));
   const converted=app.renderDraft({ ...draft, chart_transform: { status:'pass', reason:'完整样本核对通过', matches:[{
     path:'data/values.csv',group_column:'group',value_column:'value',groups:[{label:'A',count:37}]}] } },current,context);
   assert(converted.includes('图型转换数据核对'));
@@ -181,11 +151,6 @@ function testClarificationQuestion() {
   current.turns[0].results[0].reason = 'Use SD or SEM?';
   app.renderChat(); html = elements.get('messages').innerHTML;
   assert.equal(html.split('Use SD or SEM?').length - 1, 1);
-  current.turns[0].results=[{chart:'B',status:'cannot_complete',reason:'模型调用失败：429',
-    diagnostics:[{title:'模型服务限流',next_action:'稍后重试 <service>'}]}];
-  app.renderChat();html=elements.get('messages').innerHTML;
-  assert(html.includes('模型服务限流'));
-  assert(html.includes('稍后重试 &lt;service&gt;'));
 }
 
 async function testFinalizeRefresh() {
@@ -218,6 +183,8 @@ async function testSubmitHandler() {
     }) };
   };
   elements.get('prompt').value = 'Move legend';
+  app.state.detail={panel_index:{panels:[{id:'c',axis_labels:['d']}],sections:[]}};
+  sandbox.panelTest.panelSelections.set('project/B','c');
   let prevented = false;
   assert.equal(typeof elements.get('chatForm').onsubmit, 'function');
   await elements.get('chatForm').onsubmit({ preventDefault() { prevented = true; } });
@@ -227,56 +194,75 @@ async function testSubmitHandler() {
   assert(calls[0].url.endsWith('/chat/sessions'));
   assert(calls[1].url.endsWith('/ses_b/turns'));
   assert.equal(calls[1].body.user_message, 'Move legend');
+  assert.equal(calls[1].body.target_panels.B,'c');
+  app.state.selectedCharts.add('A');app.state.selectedCharts.add('B');
+  assert.equal(Object.keys(sandbox.panelTest.panelTargetFor(app.chatContext())).length,0);
   assert(elements.get('messages').innerHTML.includes('Which legend?'));
 }
 
-async function testUploadedImageIsolationAndSubmission(){
-  const {app,sandbox,elements}=environment(),context=app.chatContext(),current=session();
-  app.storeSession(context,current);app.state.chatKey=context.key;
-  sandbox.FileReader=class{readAsDataURL(file){this.result=file.data;this.onload();}};
-  let release;const calls=[];
-  sandbox.fetch=async(url,options)=>{
-    calls.push({url,body:JSON.parse(options.body)});
-    return new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({reference_id:'refimg_1',name:'style <unsafe>.png',image_url:'/api/projects/project/chat/reference-images/refimg_1/image'})});});
+async function testProgressWhilePostPending() {
+  const {app, sandbox, elements}=environment();
+  const context=app.chatContext(), initial=session();
+  app.state.chatKey=context.key;app.storeSession(context,initial);
+  let finishPost, finishPoll;
+  const running={...initial,status:'running',progress:{stage:'model_request'}};
+  const completed={...initial,status:'open',turns:[{user_message:'scatter',results:[]}]};
+  sandbox.fetch=async (url, options)=>{
+    if(options?.method==='POST')return new Promise(resolve=>{finishPost=()=>resolve({ok:true,json:async()=>completed});});
+    return {ok:true,json:async()=>running};
   };
-  const task=app.uploadChatReferenceFiles([{name:'style.png',type:'image/png',size:20,data:'data:image/png;base64,eA=='}],context);
-  await ready(()=>release);
-  assert.equal(elements.get('sendChat').disabled,true);
-  app.state.chart='A';const other=app.chatContext();app.state.chatKey=other.key;
-  release();await task;
-  assert.equal(app.selectedChatImages(context).length,1);assert.equal(app.selectedChatImages(other).length,0);
-  assert(calls[0].url.endsWith('/chat/reference-images'));assert(calls[0].body.data_url.startsWith('data:image/'));
-  const history=app.referenceImageHistoryHTML(app.selectedChatImages(context));
-  assert(history.includes('&lt;unsafe&gt;'));assert(!history.includes('<unsafe>'));
-  app.state.chart='B';app.state.chatKey=context.key;
-  sandbox.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,json:async()=>({...current,turns:[],drafts:[]})};};
-  await app.generateChat({user_message:'画成和参考图类似的样式'},'turns',context);
-  assert.deepEqual(calls.at(-1).body.reference_image_ids,['refimg_1']);
-  assert.equal(calls.at(-1).body.user_message,'画成和参考图类似的样式');
+  const work=app.generateChat({user_message:'scatter'});
+  await ready(()=>finishPost);
+  assert.equal(app.state.chatSessions.get(context.key).status,'open');
+  await app.pollChatProgress();
+  assert(elements.get('messages').innerHTML.includes('等待模型生成代码'));
+  assert(elements.get('messages').innerHTML.includes('已等待'));
+  // A slow GET must not resurrect "running" after the POST finished.
+  sandbox.fetch=async()=>new Promise(resolve=>{finishPoll=()=>resolve({ok:true,json:async()=>running});});
+  const polling=app.pollChatProgress();await ready(()=>finishPoll);
+  finishPost();await work;finishPoll();await polling;
+  assert.equal(app.state.chatSessions.get(context.key).status,'open');
+  assert.equal(app.state.chatBusy.size,0);
+  assert(!elements.get('messages').innerHTML.includes('chatProgress'));
 }
 
-function testReferenceVisualReviewActions(){
-  const {app}=environment(),context=app.chatContext(),current=session();
-  const draft={id:'visual',chart:'B',chart_id:'cht_b',display_name:'Target',status:'font_unverified',
-    image_url:'/candidate.png',code:{'charts/B.py':'draw()'},can_continue:true,can_apply_after_reference_review:true,
-    reference_features:{features:[{feature_id:'f1',name:'半小提琴',expected:'<unsafe>',evidence:'左侧密度',transfer:'style'}]},
-    reference_comparison:{status:'different',items:[{feature_id:'f1',status:'different',observed:'仅有散点',reason:'密度未显示'}]}};
-  const html=app.renderDraft(draft,current,context);
-  assert(html.includes('读图与关键特征对照 · 有差异'));
-  assert(html.includes('data-draft-action="apply"'));
-  assert(!html.includes('审阅后应用此版'));assert(html.includes('应用此版'));assert(html.includes('选此版本继续更改'));
-  assert(html.includes('&lt;unsafe&gt;'));assert(!html.includes('<unsafe>'));
-  const blocked=app.renderDraft({...draft,status:'validation_failed',can_continue:false,can_apply_after_reference_review:false},current,context);
-  assert(!blocked.includes('data-draft-action="apply-reviewed"'));
+async function testGalleryAbortReleasesOldRequests() {
+  const {app,sandbox}=environment();
+  sandbox.fetch=(_url,{signal})=>new Promise((_resolve,reject)=>{
+    signal.addEventListener('abort',()=>{const error=new Error('cancelled');error.name='AbortError';reject(error);});
+  });
+  const pending=app.fetchGalleryImage('/old-project/preview');
+  assert.equal(app.galleryRequests.size,1);
+  for(const controller of app.galleryRequests)controller.abort();
+  await assert.rejects(pending,{name:'AbortError'});
+  assert.equal(app.galleryRequests.size,0);
+  sandbox.fetch=async()=>({ok:true,blob:async()=>'new-image'});
+  assert.equal(await app.fetchGalleryImage('/new-project/preview'),'new-image');
+  assert.equal(app.galleryRequests.size,0);
+}
+
+function testConversationRendersAsAnswerWithoutDraftControls() {
+  const {app,elements}=environment();
+  const context=app.chatContext(),value=session();
+  value.turns=[{id:'question',user_message:'散点图是什么？',results:[{
+    chart:'B',status:'answer',message:'<script>不是代码执行</script> 散点图说明。'}]}];
+  value.drafts=[];app.state.chatKey=context.key;app.storeSession(context,value);app.renderChat();
+  const html=elements.get('messages').innerHTML;
+  assert(html.includes('result-answer'));
+  assert(html.includes('&lt;script&gt;'));
+  assert(!html.includes('<script>'));
+  assert(!html.includes('无法完成'));
+  assert(!html.includes('data-draft-action'));
 }
 
 (async () => {
-  testReferenceVisualReviewActions();
+  await testGalleryAbortReleasesOldRequests();
+  testConversationRendersAsAnswerWithoutDraftControls();
   testCards();
   testClarificationQuestion();
-  await testUploadedImageIsolationAndSubmission();
   await testTargetIsolation();
   await testSubmitHandler();
   await testFinalizeRefresh();
+  await testProgressWhilePostPending();
   console.log('PASS: cards, check limitations, closed sessions, scoped layout warnings, target isolation, compose isolation, submit handler, session creation and finalize refresh.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

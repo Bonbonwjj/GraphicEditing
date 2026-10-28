@@ -1,2 +1,2 @@
-"""Version shared by source, desktop payload and release artifacts."""
-APP_VERSION = '0.1.3'
+"""Current public release version."""
+APP_VERSION = "0.2.0"

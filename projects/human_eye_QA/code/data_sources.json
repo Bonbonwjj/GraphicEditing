@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "tabular-human_eye_QA",
+      "kind": "tabular",
+      "mode": "upload",
+      "location": "data",
+      "read_only": true,
+      "trusted": true,
+      "metadata": {
+        "files": [
+          "direct_panel_metadata.csv",
+          "direct_panel_subject_values.csv",
+          "heatmap_baseline_corrected_diagonal_stats.csv",
+          "heatmap_baseline_corrected_matrix.csv",
+          "heatmap_metadata.csv",
+          "heatmap_no_baseline_diagonal_stats.csv",
+          "heatmap_no_baseline_matrix.csv",
+          "timecourse_metadata.csv",
+          "timecourse_subject_values.csv"
+        ],
+        "file_count": 9
+      }
+    }
+  ]
+}

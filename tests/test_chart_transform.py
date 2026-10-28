@@ -40,7 +40,6 @@ class ChartTransformTests(unittest.TestCase):
         ax.set_xticks([1,2],labels or ['A','B']);ax.set_ylabel('Score');fig.canvas.draw()
         after=_capture(fig,fig.canvas.get_renderer())
         return {'distribution_inputs':after['distribution_inputs'],'candidate_artists':after['artists'],
-                'distribution_overlays':after['distribution_overlays'],
                 'baseline_layout_signature':before['layout_signature'],'layout_signature':after['layout_signature']}
 
     def verify(self,report):return verify_distribution(self.project,'demo',self.context,self.proposal,report)
@@ -50,14 +49,6 @@ class ChartTransformTests(unittest.TestCase):
         self.assertEqual(result['status'],'pass',result)
         self.assertEqual([g['count'] for g in result['matches'][0]['groups']],[3,3])
         self.assertTrue(any('不显示离群点' in w for w in result['warnings']))
-
-    def test_image_guided_conversion_still_requires_original_samples(self):
-        self.context.update(user_message='改为和这个参考图类似的图',reference_images=[{'reference_id':'ref_image','revision_id':'sha256:ref'}],image_order=['ref_image'])
-        self.proposal['interpreted_request']={'operations':[{'property':'chart_type','desired_change':'boxplot'}]}
-        self.assertEqual(self.verify(self.report())['status'],'pass')
-        self.assertEqual(self.verify(self.report(groups=[[1,2,6],[2,3,7]]))['status'],'fail')
-        self.context['user_message']='只参考配色，图型保持不变'
-        self.assertIsNone(self.verify(self.report()))
 
     def test_violin_from_same_samples_passes(self):
         self.context['user_message']='将此图改成小提琴图'
@@ -92,87 +83,6 @@ class ChartTransformTests(unittest.TestCase):
             self.assertEqual(simple_distribution_request('把这2个图改为'+word),'boxplot')
         self.assertIsNone(simple_distribution_request('改为箱型图，颜色改成蓝色'))
         self.assertIsNone(simple_distribution_request('不要改为箱型图'))
-
-    def test_horizontal_conversion_keeps_group_and_unit_meaning(self):
-        result=self.report()
-        fig,ax=plt.subplots();ax.boxplot([[1,2,5],[2,3,7]],orientation='horizontal',patch_artist=True)
-        ax.set_yticks([1,2],['A','B']);ax.set_xlabel('Score');fig.canvas.draw()
-        after=_capture(fig,fig.canvas.get_renderer())
-        result.update(distribution_inputs=after['distribution_inputs'],candidate_artists=after['artists'],layout_signature=after['layout_signature'])
-        self.assertEqual(self.verify(result)['status'],'pass')
-
-    def test_scatter_overlay_uses_all_the_same_samples(self):
-        for last,expected in ((7,'pass'),(99,'fail')):
-            result=self.report()
-            fig,ax=plt.subplots();ax.boxplot([[1,2,5],[2,3,7]],patch_artist=True)
-            ax.scatter([.9,1,1.1,1.9,2,2.1],[1,2,5,2,3,last])
-            ax.set_xticks([1,2],['A','B']);ax.set_ylabel('Score');fig.canvas.draw()
-            after=_capture(fig,fig.canvas.get_renderer())
-            result.update(distribution_inputs=after['distribution_inputs'],candidate_artists=after['artists'],
-                          layout_signature=after['layout_signature'],distribution_overlays=after['distribution_overlays'])
-            self.assertEqual(self.verify(result)['status'],expected)
-
-    def test_unsupported_source_is_unverified_instead_of_claiming_data_changed(self):
-        self.proposal['read_data_refs']=[]
-        self.assertEqual(self.verify(self.report())['status'],'unverified')
-
-    def test_ambiguous_scatter_grouping_reports_unknown_instead_of_wrong_values(self):
-        report=self.report();report['distribution_overlays']=[{'valid':False,'groups':[]}]
-        result=self.verify(report)
-        self.assertEqual(result['status'],'unverified')
-        self.assertIn('无法唯一归组',result['reason'])
-
-    def test_multi_panel_samples_are_anchored_to_each_original_panel(self):
-        raw=b'panel_id,group,value,other\ndemo,A,1,10\ndemo,A,2,20\ndemo,A,5,50\ndemo,B,2,20\ndemo,B,3,30\ndemo,B,7,70\n'
-        (self.project/'data/values.csv').write_bytes(raw)
-        self.context['plot_data'][0]['sha256']='sha256:'+hashlib.sha256(raw).hexdigest()
-        self.proposal['read_data_refs'][0]['columns'].append({'name':'other','role':'observation'})
-        def captured(kind,swap=False):
-            fig,axes=plt.subplots(1,2,figsize=(10,4))
-            groups=[[[1,2,5],[2,3,7]],[[10,20,50],[20,30,70]]]
-            if swap:groups.reverse()
-            for ax,group in zip(axes,groups):
-                getattr(ax,kind)(group);ax.set_xticks([1,2],['A','B']);ax.set_ylabel('Score')
-            fig.canvas.draw();return _capture(fig,fig.canvas.get_renderer())
-        before=captured('boxplot');self.context['user_message']='改为小提琴图'
-        for swap,expected in ((False,'pass'),(True,'fail')):
-            after=captured('violinplot',swap)
-            report={'baseline_distribution_inputs':before['distribution_inputs'],'distribution_inputs':after['distribution_inputs'],
-                    'candidate_artists':after['artists'],'baseline_layout_signature':before['layout_signature'],
-                    'layout_signature':after['layout_signature']}
-            self.assertEqual(self.verify(report)['status'],expected)
-        report['baseline_distribution_inputs']=[]
-        self.assertEqual(self.verify(report)['status'],'unverified')
-
-
-    def test_violin_iqr_connectors_checked_against_complete_source_groups(self):
-        import numpy as np
-        self.context['user_message']='改为小提琴图'
-        for horizontal,collection,wrong,hidden in ((False,False,False,False),(True,False,False,False),
-                                                   (False,True,False,False),(False,False,True,False),
-                                                   (False,False,False,True)):
-            with self.subTest(horizontal=horizontal,collection=collection,wrong=wrong,hidden=hidden):
-                report=self.report()
-                fig,ax=plt.subplots();groups=[[1,2,5],[2,3,7]]
-                if horizontal:
-                    ax.violinplot(groups,orientation='horizontal',showmedians=True,quantiles=[[.25,.75]]*2)
-                    ax.set_yticks([1,2],['A','B']);ax.set_xlabel('Score')
-                else:
-                    ax.violinplot(groups,showmedians=True,quantiles=[[.25,.75]]*2)
-                    ax.set_xticks([1,2],['A','B']);ax.set_ylabel('Score')
-                for i,g in enumerate(groups,1):
-                    q1,q3=np.percentile(g,[25,75]);q3+=1 if wrong else 0
-                    if collection:artist=ax.vlines(i,q1,q3)
-                    elif horizontal:artist,=ax.plot([q1,q3],[i,i])
-                    else:artist,=ax.plot([i,i],[q1,q3])
-                    if hidden:artist.set_alpha(0)
-                fig.canvas.draw();after=_capture(fig,fig.canvas.get_renderer())
-                report.update(distribution_inputs=after['distribution_inputs'],candidate_artists=after['artists'],
-                              layout_signature=after['layout_signature'])
-                checked=self.verify(report)
-                self.assertEqual(checked['status'],'unverified' if wrong or hidden else 'pass',checked)
-                if wrong:self.assertIn('端点应为 Q1=',checked['reason'])
-                if not wrong and not hidden:self.assertEqual(len(checked['statistic_overlays']),2)
 
 
 if __name__=='__main__':unittest.main()

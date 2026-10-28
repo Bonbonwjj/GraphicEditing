@@ -1,0 +1,34 @@
+[hidden] { display: none !important; }
+#standardizeDialog { width: min(780px, 92vw); max-height: 88vh; overflow-y: auto; }
+#standardizeDialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; padding: 12px; color: var(--text); background: var(--surface2); border-radius: 8px; }
+#standardizeDialog hr { opacity: .25; margin: 20px 0; }
+#workspacePreparation { margin-top: 18px; }
+#workspaceBatchProgress { margin: 14px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+#workspaceBatchProgressBar { width: 100%; height: 18px; accent-color: var(--blue); }
+#workspaceNativeProgress { display: block; width: 100%; height: 18px; margin-top: 12px; accent-color: var(--blue); }
+#workspaceBatchProgressText { white-space: pre-wrap; }
+#workspacePreparation a, #chatgptLoginLink { display: inline-block; margin: 12px 8px 8px 0; }
+#chatgptSettings { border: 1px solid var(--line); padding: 12px; border-radius: 10px; margin: 12px 0; }
+#workspaceMessage, #chatgptStatus, #workspacePreparationState { white-space: pre-wrap; overflow-wrap: anywhere; }
+#standardizeDialog label { display: block; margin: 12px 0; }
+#standardizeDialog label.modelVision { display: flex; align-items: flex-start; gap: 8px; line-height: 1.6; }
+#standardizeDialog label.modelVision input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 3px 0 0; }
+#modelConfigDialog { max-height: 90vh; overflow-y: auto; }
+/* Use the same theme tokens as the existing inputs, including native menus. */
+#workspaceRecent, #workspaceAnalysisScope, #modelProvider, #chatgptModelSelect {
+  width: 100%; min-width: 0; padding: 10px 12px;
+  font: inherit; font-weight: 500; color-scheme: inherit;
+  color: var(--text); background: var(--surface2);
+  border: 2px solid var(--line); border-radius: 10px;
+}
+:is(#workspaceRecent, #workspaceAnalysisScope, #modelProvider, #chatgptModelSelect) option {
+  color: var(--text); background: var(--surface2);
+}
+:is(#workspaceRecent, #workspaceAnalysisScope, #modelProvider, #chatgptModelSelect):focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px;
+}
+:is(#workspaceRecent, #workspaceAnalysisScope, #modelProvider, #chatgptModelSelect):disabled {
+  color: var(--muted); background: var(--surface); opacity: 1; cursor: not-allowed;
+}
+#chatSessionTitle { flex: 1; min-width: 0; width: 0; color: var(--text); background: var(--surface2); border: 1px solid var(--line); border-radius: 7px; padding: 6px; font: inherit; }
+#deleteChatSession { color: var(--brand); }

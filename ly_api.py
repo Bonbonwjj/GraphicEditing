@@ -123,5 +123,5 @@ def handle_modules(handler, parts, parsed):
     if action == 'apply':
         if body.get('acknowledge') is not True:
             raise ValueError('请先检查候选图片并明确确认应用')
-        return handler.json_response(module_workflow.apply(host,project_id,module_id,body.get('draft_id',''),body.get('acknowledge_data_changes') is True))
+        return handler.json_response(module_workflow.apply(host,project_id,module_id,body.get('draft_id','')))
     return handler.json_response({'error':'Not found'},404)

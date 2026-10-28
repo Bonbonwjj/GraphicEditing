@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from generic_importer import import_generic
 from bundle_importer import PlotBundleAdapter, import_plot_bundle
 from data_sources import resolve_allowed_path
 from git_support import git_status, record_change
+from project_standardizer import list_standardized_projects, manual_add_project, standardize_project
 from shared_modules import MAX_SHARED_MODULE_SOURCE, apply_module, discover_modules, module_revision_source, read_module_history, resolve_module
 import llm_client
 from llm_workflows import edit_chart
@@ -155,20 +157,24 @@ def skill_files(skill_id):
 
 def preview_signature(p, source):
     files = [*p.glob('*.py'), *p.glob('data_sources.json'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
+    from native_project import selection
+    native_id=selection(p,'charts/_signature.py',{'charts/_signature.py':source})
+    if native_id:
+        files=[*p.glob('*.py'),p/'native-project.json',
+               *((p/'data/native'/native_id).rglob('*')),*((p/'lib/native'/native_id).rglob('*'))]
     dependencies=[]
     for f in sorted(set(files)):
-        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json') and '__pycache__' not in f.parts:
+        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json','.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp','.svg','.ttf','.otf','.pptx','.md','.txt') and '__pycache__' not in f.parts:
             if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):raise ValueError('External project dependency')
             dependencies.append((f.relative_to(p).as_posix(),hashlib.sha256(f.read_bytes()).hexdigest()))
     from bundle_bindings import signature as bundle_signature
     bundle_revision=bundle_signature(p)
     if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
-    for f in (ROOT/'studio_style.py',ROOT/'chart_overrides.py',NORMALIZATION_PROFILE):
+    for f in (ROOT/'studio_style.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
-    if 'chart_type_defaults' in source or any('chart_type_defaults' in f.read_text(errors='ignore') for f in files if f.is_file() and f.suffix=='.py'):
-        dependencies.append(('@platform/chart_type_defaults.py',hashlib.sha256((ROOT/'chart_type_defaults.py').read_bytes()).hexdigest()))
-    if any(name in source for name in ('axis_range_policy','chart_type_defaults')) or any(any(name in f.read_text(errors='ignore') for name in ('axis_range_policy','chart_type_defaults')) for f in files if f.is_file() and f.suffix=='.py'):
-        dependencies.append(('@platform/axis_range_policy.py',hashlib.sha256((ROOT/'axis_range_policy.py').read_bytes()).hexdigest()))
+    if native_id:
+        for f in (ROOT/'native_plot_runtime.py',ROOT/'chat_runner.py',ROOT/'requirements-native.txt'):
+            dependencies.append(('@platform/'+f.name,hashlib.sha256(f.read_bytes()).hexdigest()))
     return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
 
 
@@ -192,9 +198,13 @@ def save_preview(p, chart, source, data, suffix=".png"):
         temp = folder / (chart + ".tmp")
         temp.write_bytes(data)
         temp.replace(target)
-        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix}), encoding="utf-8", newline="\n")
+        report=getattr(data,'render_report',None) or {}
+        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix,'preview_status':report.get('preview_status','complete'),'native_layout_warnings':report.get('native_layout_warnings',[])}), encoding="utf-8", newline="\n")
         if getattr(data, "naming", None) is not None:
             save_naming(p, chart, source, data.naming)
+        if report and (p/'native-project.json').is_file():
+            from native_project import record_preview
+            record_preview(p,chart,report)
         return data, IMAGE_TYPES[suffix]
 
 
@@ -250,8 +260,8 @@ def chart_naming(p, chart):
 
 def warm_project_previews(project_id):
     p = project_path(project_id)
-    if json.loads((p / "project.json").read_text(encoding="utf-8")).get("data_source_type") == "plot_bundle":
-        return  # Large Bundles are rendered on demand, not all at startup.
+    if json.loads((p / "project.json").read_text(encoding="utf-8")).get("data_source_type") in ("plot_bundle","native_plot"):
+        return  # Bundles are lazy; native imports already saved per-chart trial results.
     if isolation_backend() == "local-python" and not trusted(p):
         return
     meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
@@ -293,6 +303,23 @@ def copy_uploaded_images(upload, p):
 
 
 def render(p, source, suffix=".png", library_path=None):
+    if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file():
+        # Extracted charts use the same read-only snapshot/audits for previews
+        # and chat candidates. Do not give them the server's credential env.
+        if suffix != '.png':
+            raise ValueError('该工程的提取契约当前输出 PNG；请使用图片下载，SVG/PDF 需单独适配绘图程序。')
+        from chat_runner import _one_render
+        with tempfile.TemporaryDirectory(prefix='plot-preview-') as temp:
+            entry = 'charts/_plot_forge_preview.py'
+            overrides = {entry:source}
+            if library_path:
+                for helper in Path(library_path).rglob('*.py'):
+                    overrides['lib/'+helper.relative_to(library_path).as_posix()] = helper.read_text(encoding='utf-8')
+            report = _one_render(p, entry, overrides, Path(temp)/'render')
+            image = RenderedImage(report['image_bytes'])
+            image.naming = report['naming']
+            image.render_report = report
+            return image
     if isolation_backend() == "local-python":
         require_trust(p)
     with tempfile.TemporaryDirectory(prefix="chart-studio-") as d:
@@ -335,13 +362,19 @@ def git(*args):
 
 
 def list_projects():
+    from project_preparation import can_open, read_state
     result = []
     for p in sorted(PROJECTS.iterdir()):
         if (p / "project.json").is_file():
+            if not can_open(p):
+                continue
             meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
+            preparation=read_state(p)
+            chart_warnings={c['figure_id']:c.get('reason','试绘未通过') for c in preparation.get('validation',{}).get('checks',[]) if c.get('render') in ('failed','warning')}
             excluded = set(meta.get("non_chart_scripts", []))
             charts = [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded]
-            result.append({"id": p.name, **meta, "chart_metadata": {c: chart_naming(p, c) for c in charts},
+            result.append({"id": p.name, **meta, "chart_warnings":chart_warnings,"chart_diagnostic_previews":[c["figure_id"] for c in preparation.get("validation",{}).get("checks",[]) if c.get("render")=="warning"],"import_warnings":preparation.get("warnings",[]), "chart_metadata": {c: chart_naming(p, c) for c in charts},
+                           "render_formats": ['png'] if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file() else ['png','svg','pdf'],
                            "charts": [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded],
                            "modules": discover_modules(p), "data_sources": project_data_sources(p),
                            "data": [f.relative_to(p / "data").as_posix() for f in sorted((p / "data").rglob("*")) if f.is_file() and f.suffix.lower() in {".csv", ".tsv", ".json"}]})
@@ -506,6 +539,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         parts = [x for x in path.split("/") if x]
+        from workspace_api import handle as handle_workspace
+        if handle_workspace(self, path, PROJECTS, preview_lock=preview_lock):
+            return
         from ly_api import handle_data_sources
         if path.startswith("/api/data-sources/"):
             return handle_data_sources(self, path)
@@ -538,13 +574,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
+        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js'):
+            return self.bytes_response((STATIC / Path(path).name).read_bytes(),
+                'text/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
             name = Path(path).name
             mime = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
             return self.bytes_response((STATIC / "legacy" / name).read_bytes(), mime)
-        if path == '/api/model-config/connection' and self.command=='GET':
-            from model_connection import connection_status
-            return self.json_response(connection_status())
         if path == '/api/model-config' or path == '/api/model-config/test':
             if self.command == 'GET' and path == '/api/model-config':
                 return self.json_response(public_model_config())
@@ -563,20 +599,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response(test_model_connection())
                 return self.json_response(save_model_config(self.body_json()))
             return self.json_response({'error': 'Model config route not found'}, 404)
+        if path == "/api/project-standardizer":
+            if self.command == "GET":
+                return self.json_response({"root": str(PROJECTS), "projects": list_standardized_projects(PROJECTS)})
+            if self.command == "POST":
+                body = self.body_json()
+                src = str(body.get("source_dir", "")).strip()
+                name = str(body.get("project_name", "")).strip()
+                if not name:
+                    name = Path(src).name.strip() if src else "standardized_project"
+                target = standardize_project(src or name, name, PROJECTS)
+                return self.json_response({"project": target.name, "path": str(target), "status": "ready", "root": str(PROJECTS)})
+        if path == "/api/project-standardizer/manual":
+            if self.command == "POST":
+                body = self.body_json()
+                name = str(body.get("project_name", "")).strip()
+                if not name:
+                    raise ValueError("必须填写项目名称")
+                target = manual_add_project(name, PROJECTS)
+                return self.json_response({"project": target.name, "path": str(target), "status": "pending_standardization", "root": str(PROJECTS)})
         if self.command == "GET" and path == "/api/projects":
             return self.json_response({"projects": list_projects(), "root": str(ROOT),
                                        "llm_enabled": bool(effective_model_config()['api_key']) or llm_client.is_configured()})
         if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "history"] and self.command == "GET":
             project_path(parts[2])
             return self.json_response({"sessions": CHAT.history(parts[2])})
-        if len(parts)>=5 and parts[:2]==['api','projects'] and parts[3:5]==['chat','reference-images']:
-            from chat_reference_images import store,resolve
-            project_path(parts[2]);directory=CHAT.directory(parts[2])
-            if len(parts)==5 and self.command=='POST':
-                return self.json_response(store(directory,parts[2],self.body_json()))
-            if len(parts)==7 and parts[6]=='image' and self.command=='GET':
-                return self.bytes_response(Path(resolve(directory,parts[5])['_image']).read_bytes(),'image/png')
-            return self.json_response({'error':'Reference image route not found'},404)
         if len(parts) >= 5 and parts[:2] == ["api", "projects"] and parts[3:5] == ["chat", "sessions"]:
             project = parts[2]
             project_path(project)
@@ -590,6 +637,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response(CHAT.create(project, body.get("charts"), body.get("reference_charts", [])))
             if len(parts) == 6 and self.command == "GET":
                 return self.json_response(CHAT.get(project, parts[5]))
+            if len(parts) == 7 and self.command == "POST" and parts[6] == "stop":
+                self.body_json()
+                return self.json_response(CHAT.stop(project, parts[5]))
+            if len(parts) == 7 and self.command == "POST" and parts[6] in ('save','delete'):
+                self.check_local_json()
+                return self.json_response(CHAT.manage(project,parts[5],parts[6],self.body_json()))
             if len(parts) == 7 and self.command == "POST" and parts[6] in ("turns", "normalize"):
                 return self.json_response(CHAT.turn(project, parts[5], self.body_json(), normalize=parts[6] == "normalize"))
             if len(parts) == 9 and parts[6] == "drafts":
@@ -604,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not image.resolve().is_relative_to(CHAT.path(project, sid).parent.resolve()):
                         raise ValueError("Invalid draft image path")
                     return self.bytes_response(image.read_bytes(), "image/png")
-                if self.command == "POST" and action in ("apply", "apply-reviewed", "activate", "discard", "recheck"):
+                if self.command == "POST" and action in ("apply", "activate", "discard", "recheck"):
                     self.body_json()
                     return self.json_response(CHAT.draft_action(project, sid, did, action))
             return self.json_response({"error": "Chat route not found"}, 404)
@@ -643,12 +696,16 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     shutil.rmtree(SKILL_CATALOG / skill_id)
                 return self.json_response({"deleted": skill_id})
+        if self.command == 'GET' and path.startswith('/api/uploads/jobs/'):
+            from import_jobs import JOBS
+            return self.json_response(JOBS.get(path.rsplit('/',1)[-1]))
         if self.command == "POST" and path == "/api/uploads/import":
             if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
                 form = self.body_multipart()
                 project_id = str(form.getfirst("project_id", "")).strip()
                 name = str(form.getfirst("name", "")).strip()
                 existing = str(form.getfirst("existing", "false")).lower() == "true"
+                asynchronous = str(form.getfirst("async", "false")).lower() == "true"
                 files_source = store_multipart_upload(ROOT, project_id, form)
             else:
                 body = self.body_json()
@@ -656,28 +713,39 @@ class Handler(BaseHTTPRequestHandler):
                 name = str(body.get("name", "")).strip()
                 existing = bool(body.get("existing"))
                 files_source = None
+                asynchronous = body.get("async") is True
             if not name: raise ValueError("必须填写项目名称")
             if existing != (PROJECTS / project_id).exists():
                 raise ValueError("项目状态已变化，请刷新后重试")
             upload = files_source or store_upload(ROOT, project_id, body.get("files", []))
-            try:
-                if existing:
-                    raise ValueError("Use generic updater")
-                result = import_package(ROOT, str(upload.relative_to(ROOT / "data")), project_id, name)
-                result["adapter"] = "reproducibility-package"
-            except ValueError as error:
-                if "Project already exists" in str(error): raise
-                result = import_generic(ROOT, upload, project_id, name)
-            metadata_file = PROJECTS / project_id / "project.json"
-            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-            metadata.setdefault("created_by", SYNC.config().get("name", "本地协作者"))
-            metadata["updated_by"] = SYNC.config().get("name", "本地协作者")
-            metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
-            metadata_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-            result["images"] = copy_uploaded_images(upload, PROJECTS / project_id)
-            result["github_synced"] = False
-            PREVIEW_POOL.submit(warm_project_previews, project_id)
-            return self.json_response(result)
+            def perform(progress):
+                with SYNC.lock:
+                    if existing != (PROJECTS / project_id).exists():
+                        raise ValueError('项目状态已变化，请刷新后重试')
+                    progress(stage='inspecting', message='正在识别绘图代码和数据包。')
+                    try:
+                        if existing:
+                            raise ValueError("Use generic updater")
+                        result = import_package(ROOT, str(upload.relative_to(ROOT / "data")), project_id, name)
+                        result["adapter"] = "reproducibility-package"
+                    except ValueError as error:
+                        if "Project already exists" in str(error): raise
+                        result = import_generic(ROOT, upload, project_id, name, progress=progress)
+                    metadata_file = PROJECTS / project_id / "project.json"
+                    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+                    metadata.setdefault("created_by", SYNC.config().get("name", "本地协作者"))
+                    metadata["updated_by"] = SYNC.config().get("name", "本地协作者")
+                    metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    metadata_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+                    result["images"] = copy_uploaded_images(upload, PROJECTS / project_id)
+                    result["github_synced"] = False
+                    PREVIEW_POOL.submit(warm_project_previews, project_id)
+                    return result
+            if asynchronous:
+                from import_jobs import JOBS
+                return self.json_response(JOBS.start(project_id, perform), 202)
+            return self.json_response(perform(lambda **fields: None))
+
         if self.command == "POST" and path == "/api/agent/import":
             body = self.body_json()
             result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None)
@@ -762,9 +830,47 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 6 and parts[3] == "charts":
                 project, chart, action = parts[2], parts[4], parts[5]
                 p, f = chart_path(project, chart)
+                if action in ('panel-index', 'panel-source', 'panel-edit', 'panel-mapping'):
+                    if self.command == 'POST':
+                        self.check_local_json()
+                        body = self.body_json()
+                    import panel_index
+                    index = panel_index.build(p, chart)
+                    if action == 'panel-index' and self.command == 'GET':
+                        return self.json_response(index)
+                    if action == 'panel-mapping' and self.command == 'POST':
+                        mapping = panel_index.validate_mapping(body.get('mapping'))
+                        target = p/'panel-mappings'/f'{chart}.json'
+                        target.parent.mkdir(exist_ok=True)
+                        target.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding='utf-8')
+                        return self.json_response(panel_index.build(p, chart))
+                    sources = panel_index.source_files(p, chart)
+                    if action == 'panel-source' and self.command == 'POST':
+                        return self.json_response({'content': panel_index.read_range(sources, body),
+                                                   'source_hash': index['source_hashes'].get(body.get('path'))})
+                    if action == 'panel-edit' and self.command == 'POST':
+                        entry = f.read_text(encoding='utf-8')
+                        if body.get('base_revision') != source_revision(entry):
+                            raise ValueError('绘图入口已改变，请重新加载后编辑')
+                        path = body.get('path', '')
+                        if body.get('source_hash') != index['source_hashes'].get(path):
+                            raise ValueError('源码已改变，请重新读取对应代码段')
+                        old = panel_index.read_range(sources, body)
+                        new = body.get('content')
+                        if not isinstance(new, str) or len(new)>24000:
+                            raise ValueError('请输入有效的局部绘图代码')
+                        from native_project import selection
+                        ident = selection(p, f.relative_to(p).as_posix())
+                        prefix = f'lib/native/{ident}/' if ident else ''
+                        if not ident or not path.startswith(prefix):
+                            raise ValueError('该源码请在整图入口中编辑，当前局部覆盖仅适用于原生绘图模块')
+                        proposed = panel_index.local_edit(entry, path[len(prefix):], old, new)
+                        return self.json_response({'code': proposed, 'revision': source_revision(entry)})
+                    raise ValueError('Unsupported panel action')
                 if self.command == "GET" and action == "detail":
                     current_code = f.read_text(encoding="utf-8")
-                    return self.json_response({"code": current_code, "revision": source_revision(current_code),
+                    import panel_index
+                    return self.json_response({"code": current_code, "revision": source_revision(current_code), "panel_index": panel_index.build(p, chart),
                                                "history": history_view(p, chart),
                                                "data": data_preview(p), "data_sources": project_data_sources(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
                 if self.command == "GET" and action in ("preview", "svg", "pdf"):
@@ -886,6 +992,25 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": str(e)}, 400)
 
     def do_POST(self):
+        path = unquote(urlparse(self.path).path)
+        parts=[part for part in path.split('/') if part]
+        if (len(parts)==7 and parts[:2]==['api','projects']
+                and parts[3:5]==['chat','sessions'] and parts[6] in ('stop','save','delete')):
+            # Cancellation only signals an existing turn; it must not queue
+            # behind the SYNC lock held by that very turn. route() still applies
+            # the normal local Host/Origin and exact project/session checks.
+            return self.post_locked()
+        if path == '/api/workspace/pick-folder':
+            return self.post_locked()
+        if path.startswith('/api/workspace/projects/') and path.endswith('/delete'):
+            # A destructive request must not wait behind an ongoing model/render
+            # operation and then unexpectedly delete the newly completed work.
+            if not SYNC.lock.acquire(blocking=False):
+                return self.json_response({'error': '工作台正在处理任务，请完成后重新确认删除'}, 409)
+            try:
+                return self.post_locked()
+            finally:
+                SYNC.lock.release()
         with SYNC.lock:
             self.post_locked()
 
@@ -909,9 +1034,20 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": str(e)}, 400)
 
 
+class LocalHTTPServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR can allow multiple processes to serve the same port,
+    # making requests randomly reach an obsolete backend after a restart.
+    allow_reuse_address = os.name != 'nt'
+
+    def server_bind(self):
+        if os.name == 'nt':
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("CHART_STUDIO_PORT", "8765"))
     print(f"Chart Studio: http://127.0.0.1:{port}\nProject folder: {ROOT}", flush=True)
     for existing in list_projects():
         PREVIEW_POOL.submit(warm_project_previews, existing["id"])
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    LocalHTTPServer(("127.0.0.1", port), Handler).serve_forever()

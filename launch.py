@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -11,6 +12,150 @@ import urllib.request
 import webbrowser
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _python_version(python_executable):
+    try:
+        completed = subprocess.run(
+            [str(python_executable), '-c', 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    version = completed.stdout.strip()
+    try:
+        return tuple(int(part) for part in version.split('.'))
+    except ValueError:
+        return None
+
+
+def _conda_python_for_env(env_name):
+    conda = shutil.which('conda')
+    if not conda:
+        return None
+    if os.name == 'nt':
+        suffix = 'Scripts/python.exe'
+    else:
+        suffix = 'bin/python'
+    prefix = Path(os.environ.get('CONDA_PREFIX', ''))
+    if env_name == 'base' and prefix.exists():
+        candidate = prefix / suffix
+        if candidate.exists():
+            return str(candidate)
+    try:
+        result = subprocess.run([conda, 'info', '--base'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    except OSError:
+        result = None
+    if result and result.returncode == 0:
+        base_prefix = result.stdout.strip()
+        if base_prefix:
+            candidate = Path(base_prefix) / suffix
+            if candidate.exists():
+                return str(candidate)
+    try:
+        result = subprocess.run([conda, 'run', '-n', env_name, 'python', '-c', 'import sys; print(sys.executable)'],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode == 0:
+        executable = result.stdout.strip()
+        if executable:
+            return executable
+    return None
+
+
+def find_compatible_python():
+    explicit = os.environ.get('PLOT_FORGE_PYTHON')
+    if explicit:
+        explicit_path = Path(explicit)
+        if explicit_path.exists():
+            version = _python_version(explicit_path)
+            if version and version >= (3, 10):
+                return str(explicit_path)
+    candidates = []
+    if os.name == 'nt':
+        py_launcher = shutil.which('py')
+        if py_launcher:
+            for value in ('3.13', '3.12', '3.11', '3.10'):
+                candidates.append([py_launcher, f'-{value}'])
+    for program in ('python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3', 'python'):
+        resolved = shutil.which(program)
+        if resolved:
+            candidates.append(resolved)
+    conda = shutil.which('conda')
+    if conda:
+        base_python = _conda_python_for_env('base')
+        if base_python:
+            candidates.append(base_python)
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            executable = candidate[0]
+            command = candidate
+        else:
+            executable = candidate
+            command = [candidate]
+        if executable in seen:
+            continue
+        seen.add(executable)
+        try:
+            version = _python_version(executable if not isinstance(candidate, list) else command[0])
+        except TypeError:
+            version = None
+        if version and version >= (3, 10):
+            return executable if not isinstance(candidate, list) else executable
+        if isinstance(candidate, list):
+            try:
+                completed = subprocess.run(candidate + ['-c', 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'],
+                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+            except OSError:
+                continue
+            if completed.returncode == 0:
+                version_text = completed.stdout.strip()
+                try:
+                    parsed = tuple(int(part) for part in version_text.split('.'))
+                except ValueError:
+                    continue
+                if parsed >= (3, 10):
+                    return candidate[0]
+    return None
+
+
+def create_conda_environment():
+    conda = shutil.which('conda')
+    if not conda:
+        return None
+    env_name = os.environ.get('PLOT_FORGE_CONDA_ENV', 'plot-forge')
+    try:
+        result = subprocess.run([conda, 'create', '-y', '-n', env_name, 'python=3.12'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return _conda_python_for_env(env_name)
+
+
+def bootstrap_python_if_needed():
+    if sys.version_info >= (3, 10):
+        return sys.executable
+    preferred = find_compatible_python()
+    if preferred:
+        env = os.environ.copy()
+        env['PLOT_FORGE_BOOTSTRAP'] = '1'
+        subprocess.run([preferred, str(ROOT / 'launch.py')], check=True, env=env)
+        return None
+    conda_python = create_conda_environment()
+    if conda_python:
+        env = os.environ.copy()
+        env['PLOT_FORGE_BOOTSTRAP'] = '1'
+        subprocess.run([conda_python, str(ROOT / 'launch.py')], check=True, env=env)
+        return None
+    raise RuntimeError('未找到 Python 3.10+。请先安装 Python 3.10+，或在 PATH 中配置 conda。')
 
 
 def health(port):
@@ -22,8 +167,9 @@ def health(port):
 
 
 def main():
-    if sys.version_info < (3, 10):
-        raise RuntimeError('请安装 Python 3.10 或更高版本')
+    if os.environ.get('PLOT_FORGE_BOOTSTRAP') != '1' and sys.version_info < (3, 10):
+        bootstrap_python_if_needed()
+        return
     import socket
     port = None
     for candidate in range(8765, 8795):

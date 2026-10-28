@@ -1,0 +1,6 @@
+# Reproduction environment declared by main_figure_plotting_package_20261016.
+matplotlib==3.7.2
+numpy==1.24.3
+pandas==2.0.3
+Pillow==9.4.0
+scipy==1.11.1

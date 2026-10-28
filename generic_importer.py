@@ -59,7 +59,9 @@ def _unique_name(name, used):
     used.add(candidate)
     return candidate
 
-def import_generic(root, upload, project_id, name):
+def import_generic(root, upload, project_id, name, progress=None):
+    notify = progress or (lambda **fields: None)
+    notify(stage='copying', message='正在复制数据并检查代码目录。')
     target=root/"projects"/project_id; updating=target.exists()
     for d in ("data","charts","lib","outputs","history"): (target/d).mkdir(parents=True,exist_ok=True)
     data_names=[]
@@ -74,7 +76,10 @@ def import_generic(root, upload, project_id, name):
     chart_root=explicit[0] if explicit else upload/"code"
     if explicit and explicit[1].is_dir():
         shutil.copytree(explicit[1],target/"lib",dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-    for p in sorted(chart_root.rglob("*.py")) if chart_root.is_dir() else []:
+    entries = sorted(chart_root.rglob("*.py")) if chart_root.is_dir() else []
+    for index, p in enumerate(entries):
+        notify(stage='splitting', completed=index, total=len(entries), current_file=p.relative_to(chart_root).as_posix(),
+               message='正在拆分代码'+('，等待模型返回。' if not explicit and llm_client.is_configured() else '，建立独立绘图入口。'))
         chart=re.sub(r"[^A-Za-z0-9_]+","_","_".join(p.relative_to(chart_root).with_suffix("").parts)).strip("_") or "chart"
         source=p.read_text(encoding="utf-8")
         if not explicit and llm_client.is_configured():
@@ -84,6 +89,7 @@ def import_generic(root, upload, project_id, name):
                     output_name=_unique_name(item["name"],used)
                     (target/"charts"/(output_name+".py")).write_text(item["code"],encoding="utf-8", newline="\n")
                     charts.append(output_name)
+                notify(completed=index+1, message='当前文件拆分完成。')
                 continue
             except Exception as error:
                 errors.append({"file":p.name,"phase":"llm-split","error":str(error)})
@@ -91,10 +97,12 @@ def import_generic(root, upload, project_id, name):
             source=_normalise(source,data_names); chart=_unique_name(chart,used)
             (target/"charts"/(chart+".py")).write_text(source,encoding="utf-8", newline="\n"); charts.append(chart)
         except Exception as e: errors.append({"file":p.name,"phase":"fallback","error":str(e)})
+        notify(completed=index+1, message='当前文件处理完成。')
     if not charts:
         if not updating: shutil.rmtree(target)
         raise ValueError("没有可转换的 Python 绘图文件："+json.dumps(errors,ensure_ascii=False))
     meta_file=target/"project.json"
+    notify(stage='saving', message='正在保存绘图代码和项目登记。', completed=len(entries), total=len(entries))
     old=json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
     meta={**old,"name":old.get("name",name) if updating else name,"description":f"{'Updated' if updating else 'Uploaded'} with {len(charts)} chart candidates."}
     if old.get("non_chart_scripts"):

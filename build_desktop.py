@@ -8,12 +8,13 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from app_version import APP_VERSION
 
 ROOT = Path(__file__).resolve().parent
 
 
 def stage_application(destination):
+    from private_projects import names
+    private = names(ROOT)
     destination.mkdir(parents=True, exist_ok=True)
     excluded = {'build_desktop.py', 'desktop_launcher.py', 'export_shared_projects.py'}
     for source in ROOT.glob('*.py'):
@@ -22,14 +23,14 @@ def stage_application(destination):
     for name in ('static', 'skills', 'projects'):
         def ignored(folder, names):
             return [n for n in names if (n.startswith('.') and n != '.gitattributes')
+                    or (Path(folder) == ROOT/'projects' and n in private)
                     or n == '__pycache__' or n.endswith(('.pyc', '.log'))
                     or n in ('previews', 'chart_metadata')]
         shutil.copytree(ROOT/name, destination/name, ignore=ignored)
     for name in ('team_collaboration.json', 'README.md', 'requirements.txt'):
         shutil.copy2(ROOT/name, destination/name)
     (destination/'docs').mkdir(exist_ok=True)
-    for name in ('DESKTOP_APP.md','USER_GUIDE.zh-CN.md','CHAT_HARNESS.zh-CN.md'):
-        shutil.copy2(ROOT/'docs'/name,destination/'docs'/name)
+    shutil.copy2(ROOT/'docs/DESKTOP_APP.md',destination/'docs/DESKTOP_APP.md')
     # Release source may already have canonical GitHub data/code projects. Seed
     # the private renderer workspace with its compatible logical paths.
     for metadata in (destination/'projects').glob('*/code/project.json'):
@@ -77,7 +78,7 @@ def main():
     for path in sorted((staging/'app').rglob('*')):
         if path.is_file():
             release_hash.update(str(path.relative_to(staging)).encode()); release_hash.update(path.read_bytes())
-    (staging/'manifest.json').write_text(json.dumps({'version':APP_VERSION,'release':release_hash.hexdigest(),
+    (staging/'manifest.json').write_text(json.dumps({'release':release_hash.hexdigest(),
         'runtime_sha256':digest,'seed_projects':projects,'platform':sys.platform,
         'architecture':platform.machine(),'environment_sha256':environment_digest},indent=2),encoding='utf-8')
     command = [sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--windowed',
@@ -93,18 +94,12 @@ def main():
     build_env['PYINSTALLER_CONFIG_DIR']=str(ROOT/'.desktop-build/pyinstaller-cache')
     subprocess.run(command+[str(ROOT/'desktop_launcher.py')],check=True,env=build_env)
     artifact = ROOT/'dist'/('Plot Forge.app' if sys.platform=='darwin' else 'Plot Forge')
-    label = f'Plot-Forge-v{APP_VERSION}-{"macOS" if sys.platform=="darwin" else sys.platform}-{platform.machine()}'
+    label = f'Plot-Forge-{sys.platform}-{platform.machine()}'
     if sys.platform == 'darwin':
-        import plistlib
-        metadata=artifact/'Contents/Info.plist'
-        info=plistlib.loads(metadata.read_bytes())
-        info.update(CFBundleShortVersionString=APP_VERSION,CFBundleVersion=APP_VERSION)
-        metadata.write_bytes(plistlib.dumps(info))
-        subprocess.run(['/usr/bin/codesign','--force','--deep','--sign','-',str(artifact)],check=True)
         subprocess.run(['ditto','-c','-k','--sequesterRsrc','--keepParent',str(artifact),str(ROOT/'dist'/(label+'.zip'))],check=True)
     else:
         shutil.make_archive(str(ROOT/'dist'/label),'zip',root_dir=ROOT/'dist',base_dir=artifact.name)
-    print('Desktop build:',artifact,flush=True)
+    print(f'Desktop build: {artifact} ({sys.platform})', flush=True)
 
 
 if __name__ == '__main__':

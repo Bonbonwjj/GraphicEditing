@@ -7,9 +7,16 @@ __pycache__/
 *.pyc
 .mplconfig/
 .model-api.json
+.chatgpt-host.json
+.chatgpt-disconnected
+.private-projects.json
+projects/*/.preparation/
 .model-api-key.dpapi
 .model-api-key-*.tmp
 .desktop-build/
+.desktop-env/
+.desktop-envs/
+.desktop-smoke/
 dist/
 build/
 *.spec
@@ -27,3 +34,10 @@ projects/*/chart_metadata/
 .data-sources-local.json
 projects/*/.bundle-bindings.json
 projects/*/.module-drafts/
+/projects/JH/
+/projects/Human/
+/.native-venv/
+/backups/
+/projects/ly/
+/projects/ly1/
+/projects/jiahui/

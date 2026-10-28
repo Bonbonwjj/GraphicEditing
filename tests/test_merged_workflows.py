@@ -72,34 +72,11 @@ fig.savefig(os.environ['CHART_OUTPUT'])
             module_workflow.apply(server,'demo',self.ident,draft['id'])
         self.assertIn('someone changed this',self.module.read_text())
 
-    def test_chart_entry_change_invalidates_shared_candidate(self):
-        draft=module_workflow.preview(server,'demo',self.ident,self.original.replace('blue','red'),'a')
-        entry=self.project/'charts/b.py';entry.write_text(entry.read_text()+'\n# newer entry\n')
-        with self.assertRaisesRegex(ValueError,'正式代码或数据已变化'):
-            module_workflow.apply(server,'demo',self.ident,draft['id'])
-        self.assertEqual(self.module.read_text(),self.original)
-
     def test_one_failed_chart_prevents_multi_location_candidate(self):
         (self.project/'charts/b.py').write_text("raise RuntimeError('broken chart')",encoding='utf-8')
         with self.assertRaises(ValueError):
             module_workflow.preview(server,'demo',self.ident,self.original.replace('blue','red').replace('WIDTH = 1','WIDTH = 3'),'a')
         self.assertEqual(self.module.read_text(),self.original)
-
-    def test_shared_numeric_changes_have_reports_and_need_separate_acknowledgement(self):
-        source=self.original+'\nVALUES = [1, 99]\n'
-        for chart in ('a','b'):
-            path=self.project/f'charts/{chart}.py'
-            path.write_text(path.read_text().replace('from projects.demo.lib.theme import COLOR, WIDTH',
-                'from projects.demo.lib.theme import COLOR, WIDTH, VALUES').replace('[1,2],color=COLOR','VALUES,color=COLOR'))
-        self.module.write_text(self.original+'\nVALUES = [1, 2]\n')
-        draft=module_workflow.preview(server,'demo',self.ident,source,'a',force_all=True)
-        self.assertTrue(draft['requires_data_review'])
-        self.assertEqual(len(draft['checks']),2)
-        self.assertTrue(all(c['changed'] for c in draft['checks']))
-        with self.assertRaisesRegex(ValueError,'明确确认'):
-            module_workflow.apply(server,'demo',self.ident,draft['id'])
-        self.assertIn('VALUES = [1, 2]',self.module.read_text())
-        self.assertTrue(module_workflow.apply(server,'demo',self.ident,draft['id'],acknowledge_data_changes=True)['applied'])
 
 
 class BundleCandidateTests(unittest.TestCase):

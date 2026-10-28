@@ -21,7 +21,7 @@ def sample_signature(values):
 
 
 def requested_distribution(message):
-    pattern = (r'(?:改为|改成|转换为|转换成|转成|换成|换为|变成|改用|换用|使用)\s*'
+    pattern = (r'(?:改为|改成|转换为|转换成|转成|换成|换为|变成)\s*'
                r'(?:一个|一张|两张|两个|这类|这种)?\s*(箱线图|箱形图|箱型图|盒须图|小提琴图|box\s*plot|violin\s*plot)'
                r'|(?:change|convert|switch|turn)\b.{0,60}?\b(?:to|into)\s+(?:a\s+)?(box\s*plot|violin\s*plot)')
     match = re.search(pattern, message, re.IGNORECASE)
@@ -41,66 +41,90 @@ def simple_distribution_request(message):
     return None
 
 
-def _verify_iqr_connectors(artists, call, samples):
-    """Verify quartile bars/connectors against matched full source rows."""
-    import numpy as np
-    dimension=call['dimension'];positions=call.get('positions',[])
-    verified=[];seen=set()
-    for artist in artists:
-        key=artist.get('key','unknown')
-        def reject(detail):
-            return [],f'图元 {key}：{detail}；尚不能作为小提琴的分位统计线放行。'
-        visibility=artist.get('visibility') or {}
-        if visibility.get('visible') is False or visibility.get('alpha')==0:
-            return reject('连接线不可见')
-        data=artist.get('data') or {};segments=[]
-        if artist.get('kind')=='line':
-            x,y=data.get('x',{}),data.get('y',{})
-            if x.get('shape')==[2] and y.get('shape')==[2] and len(x.get('sample',[]))==len(y.get('sample',[]))==2:
-                segments=[list(zip(x['sample'],y['sample']))]
-        elif artist.get('kind')=='line_collection':
-            recorded=data.get('segments',[])
-            if recorded and all(seg.get('shape')==[2,2] and len(seg.get('sample',[]))==2 for seg in recorded):
-                segments=[seg['sample'] for seg in recorded]
-        if not segments or call.get('kind')!='violinplot':
-            return reject('额外元素不是可完整读取的两端点线段')
-        for segment in segments:
-            points=np.asarray(segment,dtype=float)
-            if points.shape!=(2,2) or not np.isfinite(points).all():
-                return reject('线段坐标不完整或含非有限值')
-            groups=[i for i,pos in enumerate(positions) if np.allclose(points[:,1-dimension],pos,rtol=0,atol=1e-8)]
-            if len(groups)==1:
-                group=groups[0];q1,q3=np.percentile(samples[group],[25,75])
-                if not np.allclose(np.sort(points[:,dimension]),[q1,q3],rtol=1e-9,atol=1e-9):
-                    return reject(f"{call['labels'][group]} 组端点应为 Q1={q1:.8g}、Q3={q3:.8g}")
-                if group in seen:return reject('同组出现重复的四分位连接线')
-                seen.add(group)
-                verified.append({'key':key,'group':call['labels'][group],'statistic':'Q1-Q3',
-                                 'q1':float(q1),'q3':float(q3)})
-                continue
-            # Outer/median bars are orthogonal to the value axis and centered
-            # on exactly one group. Their values come from full matched rows.
-            if not np.allclose(points[:,dimension],points[0,dimension],rtol=1e-9,atol=1e-9):
-                return reject('线段既不位于组中心，也不是水平于分位值的统计线')
-            center=float(np.mean(points[:,1-dimension]))
-            groups=[i for i,pos in enumerate(positions) if np.isclose(center,pos,rtol=0,atol=1e-8)]
-            if len(groups)!=1:return reject('分位横线未唯一对齐某一组中心')
-            group=groups[0];quartiles=np.percentile(samples[group],[25,50,75])
-            matches=[name for name,value in zip(('Q1','median','Q3'),quartiles)
-                     if np.isclose(points[0,dimension],value,rtol=1e-9,atol=1e-9)]
-            if not matches:return reject(f"{call['labels'][group]} 组横线数值不等于原始样本的 Q1、中位数或 Q3")
-            distances=[abs(pos-positions[group]) for i,pos in enumerate(positions) if i!=group]
-            if distances and np.ptp(points[:,1-dimension])>=min(distances):
-                return reject('分位横线跨入其他组的位置')
-            verified.append({'key':key,'group':call['labels'][group],'statistic':'/'.join(matches),
-                             'value':float(points[0,dimension])})
-    return verified,None
+def requested_scatter(message):
+    # Only an explicit conversion grants this exception; mentioning scatter is insufficient.
+    pattern = (r'(?:改为|改成|转换为|转换成|转成|换成|换为|变成)\s*'
+               r'(?:一个|一张)?\s*(?:scatter(?:\s*plot)?|散点图)'
+               r'|(?:change|convert|switch|turn)\b[^.!?。！？]{0,60}?\b(?:to|into)\s+(?:a\s+)?scatter(?:\s*plot)?')
+    match = re.search(pattern, message, re.I)
+    if not match:
+        return False
+    clause = re.split(r'[,;，；。.!?！？]', message[:match.start()])[-1]
+    return not re.search(r'不要|不想|无需|别|不改|do\s+not|don.t|never|\bnot\b', clause + match.group(), re.I)
 
 
-def _verify_single_distribution(project, chart, context, proposal, report):
+def verify_scatter(context, report):
+    return _verify_points(context,report,'scatter')
+
+
+def requested_line(message):
+    pattern=(r'(?:更改为|修改为|改为|改成|转换为|转换成|转成|换成|换为|变成)\s*'
+             r'(?:一个|一张)?\s*(?:无节点标记的)?(?:折线图|折线|line\s*(?:plot|chart))'
+             r'|(?:change|convert|switch|turn)\b[^.!?。！？]{0,60}?\b(?:to|into)\s+(?:a\s+)?line\s*(?:plot|chart)')
+    match=re.search(pattern,message,re.I)
+    if not match:return False
+    clause=re.split(r'[,;，；。.!?！？]',message[:match.start()])[-1]
+    return not re.search(r'不要|不想|无需|别|不改|do\s+not|don.t|never|\bnot\b',clause+match.group(),re.I)
+
+
+def verify_line(context, report):
+    return _verify_points(context,report,'line')
+
+
+def _verify_points(context, report, target):
+    """Verify either mark conversion using every ordered x/y pair, not samples."""
+    predicate=requested_scatter if target=='scatter' else requested_line
+    if not predicate(context.get('user_message', '')):
+        return None
+    source='line' if target=='scatter' else 'scatter'
+    result = {'kind': target, 'status': 'unverified', 'warnings': [], 'matches': []}
+    def stop(reason, status='fail'):
+        return {**result, 'status': status, 'reason': reason}
+    before, after = report.get('baseline_artists'), report.get('candidate_artists')
+    if not before or not after or report.get('unsupported_artists'):
+        return stop('缺少完整绘图元素记录或含不支持的元素，不能自动放行图型转换。', 'unverified')
+    data = report.get('data_report') or {}
+    if data.get('status') in ('fail', 'changed', 'conflict') or data.get('axes_changes'):
+        return stop('图型转换同时改变了坐标范围、轴尺度或数据，未放行。')
+    def annotations(signature):
+        return sorted((t['key'], t['text']) for t in (signature or {}).get('texts', []))
+    if annotations(report.get('baseline_layout_signature')) != annotations(report.get('layout_signature')):
+        return stop('图型转换改变了标题、轴标签、组名或标注，请保留原有科学含义。')
+    remaining = list(after)
+    for old in before:
+        # First preserve unrelated artists, including existing error bars/annotations.
+        same = [a for a in remaining if all(a.get(k) == old.get(k)
+                for k in ('key', 'kind', 'label', 'data_hash', 'visibility', 'point_signature'))]
+        if len(same) == 1:
+            remaining.remove(same[0])
+            continue
+        label = old.get('label') or ''
+        axis = old['key'].split('.')[0]
+        targets = [a for a in remaining if a.get('kind') == target and a.get('label') == label
+                   and a['key'].split('.')[0] == axis]
+        if (old.get('kind') != source or old.get('semantic_role') != 'data_artist'
+                or not label or label.startswith('_') or len(targets) != 1
+                or sum(a.get('label') == label and a['key'].split('.')[0] == axis for a in before) != 1):
+            return stop('转换前后的数据组无法唯一对应，或删除/修改了其他绘图元素。')
+        new = targets[0]
+        left, right = old.get('point_signature'), new.get('point_signature')
+        if not left or not right:
+            return stop('无法核对全部坐标：存在缺失值、自定义变换、隐藏点或旧版记录。', 'unverified')
+        if (left.get('shape') != right.get('shape') or not left.get('sha256')
+                or left['sha256'] != right.get('sha256') or old.get('visibility') != new.get('visibility')):
+            return stop('散点与原折线的完整坐标、点数、顺序或可见性不一致；未放行。')
+        result['matches'].append({'axis': axis, 'label': label, 'count': left['shape'][0],
+                                  'sha256': left['sha256']})
+        remaining.remove(new)
+    if remaining or not result['matches']:
+        return stop('未检测到可核对的目标图型转换，或出现额外数据元素。')
+    direction='折线→散点' if target=='scatter' else '散点→折线'
+    return {**result, 'status': 'pass', 'reason': direction+'：各组全部坐标、点数、顺序、坐标轴和标注核对通过。'}
+
+
+def verify_distribution(project, chart, context, proposal, report):
     """Return None for ordinary edits, otherwise a pass/fail/unverified report."""
-    from chat_reference_images import inferred_distribution
-    kind = requested_distribution(context.get('user_message', '')) or inferred_distribution(context,proposal)
+    kind = requested_distribution(context.get('user_message', ''))
     if not kind:
         return None
     result = {'kind': kind, 'status': 'unverified', 'warnings': [], 'matches': []}
@@ -108,19 +132,9 @@ def _verify_single_distribution(project, chart, context, proposal, report):
         return {**result, 'status': status, 'reason': reason}
     calls = report.get('distribution_inputs') or []
     if not calls or any(c.get('kind') != kind for c in calls):
-        from chart_source_evidence import inspect_source_samples
-        source=inspect_source_samples(project,chart,context,proposal.get('read_data_refs',[]))
-        if source['status']=='available' and kind=='violinplot' and not any(all(g['count']>=2 for g in s['groups']) for s in source['sources']):
-            source={**source,'status':'insufficient_samples','reason':'已找到分组数据，但部分组不足两条观测值，无法可靠表达小提琴分布；请补充逐条样本或选择适合现有数据的图型。'}
         name='小提琴图' if kind=='violinplot' else '箱线图'
-        if source['status']=='changed':
-            result=stop(source['reason'],'fail')
-        elif source['status']=='available':
-            files='、'.join(item['path'] for item in source['sources'])
-            result=stop(f'原分组数据已找到（{files}），但本轮尚未取得候选{name}实际使用的完整样本记录，不能确认转换是否生效。平台应优先用已有数据修复，无需重复上传。')
-        else:
-            result=stop(source['reason'])
-        return {**result,'source_evidence':source,'required_api':'Axes.'+kind}
+        return {**stop(f'未检测到目标{name}的样本绘制，候选可能仍是原图型；请真正转换图型后再检查。'),
+                'required_api':'Axes.'+kind}
     before_axes = (report.get('baseline_layout_signature') or {}).get('axes', [])
     after_axes = (report.get('layout_signature') or {}).get('axes', [])
     if len(calls) != 1 or len(before_axes) != 1 or len(after_axes) != 1:
@@ -129,13 +143,9 @@ def _verify_single_distribution(project, chart, context, proposal, report):
     dimension = call['dimension']; labels = call['labels']; groups = call['groups']
     if not labels or len(labels) != len(groups) or len(set(labels)) != len(labels):
         return stop('箱线/小提琴图的每组样本需要有唯一且完整的组标签。')
-    group_axes = [index for index,ticks in enumerate(before_axes[0]['tick_texts']) if ticks == labels]
-    if len(group_axes)!=1:
+    if before_axes[0]['tick_texts'][1-dimension] != labels:
         return stop('转换前后的组标签或顺序发生变化，请保留原组别对应关系。', 'fail')
-    expected_labels = before_axes[0].get('labels')
-    if group_axes[0] != 1-dimension:
-        expected_labels=list(reversed(expected_labels))
-    if expected_labels != after_axes[0].get('labels'):
+    if before_axes[0].get('labels') != after_axes[0].get('labels'):
         return stop('转换改变了轴标题或单位，请先核对科学含义。', 'fail')
     def annotations(signature):
         return sorted(t['text'] for t in signature.get('texts', [])
@@ -147,18 +157,7 @@ def _verify_single_distribution(project, chart, context, proposal, report):
         return stop('没有捕获可核对的分布统计元素。')
     # Reject arbitrary added data artists alongside the requested distribution.
     # A significance bracket can move vertically to accommodate the new range.
-    overlays=report.get('distribution_overlays') or []
-    overlay_keys=set()
-    for overlay in overlays:
-        if not overlay.get('valid'):
-            return stop('叠加散点无法唯一归组，或含不可见、缺失点；请调整抖动范围或明确显示规则后重新核对。')
-        if overlay.get('groups') != groups:
-            return stop('叠加散点的样本或组别与分布图不一致，不能自动放行。','fail')
-        overlay_keys.update(overlay.get('collection_keys',[]))
-    extra_artists=[]
     for artist in artists:
-        if artist.get('key') in overlay_keys:
-            continue
         if artist.get('semantic_role') == 'distribution_statistics':
             if artist.get('distribution_mutated'):
                 return stop('分布图生成后又修改了统计线条或箱体数值，不能按原始样本核对通过。', 'fail')
@@ -172,11 +171,9 @@ def _verify_single_distribution(project, chart, context, proposal, report):
                    and len(x.get('sample', [])) == 3 and x['sample'][0] == x['sample'][1]
                    and len(y.get('sample', [])) == 3 and y['sample'][1] == y['sample'][2])
         if not bracket:
-            extra_artists.append(artist)
+            return stop('目标分布图之外还有无法核对的数据元素，不能自动放行。')
     import pandas as pd
     known = {item['path']: item for item in context.get('plot_data', [])}
-    comparable=False
-    missing_values=False
     for ref in proposal.get('read_data_refs', []):
         path = ref.get('path'); original = known.get(path)
         if not original or not path.lower().endswith(('.csv', '.tsv')):
@@ -205,16 +202,7 @@ def _verify_single_distribution(project, chart, context, proposal, report):
                                 for label in labels]
                 except (ValueError, TypeError):
                     continue
-                if not all(e['sha256'] for e in expected):
-                    missing_values=True
-                    continue
-                comparable=True
                 if all(e['sha256'] and e == actual for e, actual in zip(expected, groups)):
-                    if extra_artists:
-                        samples=[pd.to_numeric(table.loc[grouped.eq(label),value_column],errors='raise').to_numpy(float) for label in labels]
-                        verified,error=_verify_iqr_connectors(extra_artists,call,samples)
-                        if error:return stop(error)
-                        result['statistic_overlays']=verified
                     result['matches'] = [{'path': path, 'group_column': group_column, 'value_column': value_column,
                                           'groups': [{'label': label, 'count': e['count']} for label, e in zip(labels, expected)]}]
                     if kind == 'boxplot':
@@ -222,53 +210,4 @@ def _verify_single_distribution(project, chart, context, proposal, report):
                         if not call.get('showfliers', True):
                             result['warnings'].append('此候选不显示离群点；原始样本仍全部参与箱线统计，CSV 未被删除。')
                     return {**result, 'status': 'pass', 'reason': '按用户明确要求转换图型；完整原始样本、分组标签与统计标注核对通过。'}
-    if missing_values and not comparable:
-        return stop('源分组含缺失值或非有限值；需要明确缺失值处理规则，未自动删除或填补样本。')
-    if not comparable:
-        return stop('没有找到可核对的完整 CSV/TSV 分组及数值列；请补充明确的数据引用，不能据此断言数据已被改动。')
     return stop('分布图样本未能与所引用 CSV 的完整分组逐值核对；请检查漏行、改值、分组或数据引用。', 'fail')
-
-
-def verify_distribution(project, chart, context, proposal, report):
-    """Verify every panel independently; unsupported mappings never bypass checks."""
-    from chat_reference_images import inferred_distribution
-    kind=requested_distribution(context.get('user_message','')) or inferred_distribution(context,proposal)
-    if not kind:
-        return None
-    before=(report.get('baseline_layout_signature') or {}).get('axes',[])
-    after=(report.get('layout_signature') or {}).get('axes',[])
-    if len(before)<=1 and len(after)<=1:
-        return _verify_single_distribution(project,chart,context,proposal,report)
-    def stop(reason,status='unverified'):
-        return {'kind':kind,'status':status,'reason':reason,'warnings':[],'matches':[]}
-    if len(before)!=len(after):
-        return stop('转换前后子图数量变化，尚无法确认逐子图数据对应。')
-    global_text=lambda signature:sorted(t['text'] for t in (signature or {}).get('texts',[]) if not t['key'].startswith('axes_'))
-    if global_text(report.get('baseline_layout_signature'))!=global_text(report.get('layout_signature')):
-        return stop('图级标题或标注发生变化，需要确认对应要求。')
-    calls=report.get('distribution_inputs') or []
-    baseline_calls=report.get('baseline_distribution_inputs') or []
-    # Raw baseline samples anchor panel identity. Without this, matching any CSV
-    # column could accidentally approve a swap between same-label panels.
-    if len(calls)!=len(before) or len(baseline_calls)!=len(before):
-        return stop('多子图转换需要每个子图的原始分布样本锚点；当前缺少完整对应，未使用形状差异代替数据核对。')
-    results=[]
-    for axis in range(len(before)):
-        current=[c for c in calls if c.get('axis')==axis]
-        prior=[c for c in baseline_calls if c.get('axis')==axis]
-        if len(current)!=1 or len(prior)!=1:
-            return stop('同一子图多次分布绘制尚无法唯一确定分组对应。')
-        if prior[0]['groups']!=current[0]['groups'] or prior[0]['labels']!=current[0]['labels']:
-            return stop(f'第 {axis+1} 个子图的完整样本或分组发生变化。','fail')
-        scoped={**report,'distribution_inputs':current,
-            'baseline_layout_signature':{'axes':[before[axis]],'texts':[t for t in (report.get('baseline_layout_signature') or {}).get('texts',[]) if t['key'].startswith(f'axes_{axis}.')]},
-            'layout_signature':{'axes':[after[axis]],'texts':[t for t in (report.get('layout_signature') or {}).get('texts',[]) if t['key'].startswith(f'axes_{axis}.')]},
-            'candidate_artists':[a for a in report.get('candidate_artists',[]) if a['key'].startswith(f'axes_{axis}.')],
-            'distribution_overlays':[o for o in report.get('distribution_overlays',[]) if o['axis']==axis]}
-        checked=_verify_single_distribution(project,chart,context,proposal,scoped)
-        if checked['status']!='pass':
-            return {**checked,'reason':f'第 {axis+1} 个子图：'+checked['reason']}
-        results.append(checked)
-    return {'kind':kind,'status':'pass','reason':'逐子图完整样本、分组和源数据核对通过。',
-            'warnings':list(dict.fromkeys(w for r in results for w in r['warnings'])),
-            'matches':[{**m,'axis':axis} for axis,r in enumerate(results) for m in r['matches']]}

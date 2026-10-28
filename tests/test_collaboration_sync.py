@@ -9,12 +9,36 @@ from collaboration_sync import CollaborationSync, SyncConflict
 
 
 def git(cwd, *args):
+    # Ubuntu 20.04's Git 2.25 predates `init -b`; keep disposable fixtures portable.
+    if len(args) == 3 and args[:2] == ('init', '-b'):
+        git(cwd, 'init')
+        return git(cwd, 'symbolic-ref', 'HEAD', 'refs/heads/' + args[2])
     result = subprocess.run(['git', *args], cwd=cwd, capture_output=True, text=True,
                             encoding='utf-8', errors='replace', check=True)
     return result.stdout.strip()
 
 
 class CollaborationTests(unittest.TestCase):
+    def test_private_project_never_published_and_remote_collision_fails_closed(self):
+        from project_preparation import mark_private
+        local = self.alice.root/'projects/private_research'
+        (local/'charts').mkdir(parents=True)
+        (local/'project.json').write_text('{"name":"Private"}')
+        (local/'charts/private.py').write_text('# private research')
+        mark_private(self.alice.root/'projects','private_research')
+        self.alice.sync(publish=True,message='Publish only shared projects')
+        self.assertFalse((self.alice.checkout/'projects/private_research').exists())
+        self.assertTrue((local/'charts/private.py').exists())
+        # A different collaborator may already use the same ID. Never overwrite
+        # the private directory or publish it to resolve that collision.
+        other=self.bob.root/'projects/private_research'
+        (other/'charts').mkdir(parents=True)
+        (other/'project.json').write_text('{"name":"Remote"}')
+        (other/'charts/private.py').write_text('# remote')
+        self.bob.sync(publish=True,message='Add remote project')
+        with self.assertRaises(SyncConflict):self.alice.sync()
+        self.assertEqual((local/'charts/private.py').read_text(),'# private research')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

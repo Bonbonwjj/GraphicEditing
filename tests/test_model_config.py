@@ -103,6 +103,19 @@ class ModelConfigTests(unittest.TestCase):
         self.assertFalse(model_config.clear()['key_configured'])
         self.assertFalse(model_config.CONFIG_PATH.exists())
 
+    def test_endpoint_change_requires_explicit_target_key(self):
+        model_config.save(self.values())
+        for url in ('https://api.siliconflow.cn/v1/chat/completions',
+                    'https://example.test/another/chat/completions'):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, '地址已变更'):
+                model_config.save({**self.values(''), 'api_url': url})
+        self.assertEqual(model_config.effective()['api_url'], self.values()['api_url'])
+        self.assertEqual(model_config.effective()['api_key'], 'private-test-token')
+        shown = model_config.save({**self.values('new-provider-key'),
+                                  'api_url': 'https://api.siliconflow.cn/v1/chat/completions'})
+        self.assertNotIn('new-provider-key', json.dumps(shown))
+        self.assertEqual(model_config.effective()['api_key'], 'new-provider-key')
+
     @unittest.skipUnless(os.name == 'nt', 'Windows DPAPI integration')
     def test_windows_session_error_falls_back_to_encryption_and_can_clear(self):
         # Reproduce a backend exception outside the KeyringError hierarchy.

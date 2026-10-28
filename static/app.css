@@ -54,15 +54,15 @@ dialog{width:min(690px,92vw);color:var(--text);background:var(--surface);border:
 @container(min-width:660px){#gallery .chartCard{grid-column:span 2}#gallery .chartCard[data-canvas="wide"]{grid-column:span 3}#gallery .chartCard[data-canvas="panorama"]{grid-column:span 6}}
 #gallery .chartCard[data-canvas="oversized"]{grid-column:1/-1}
 
-#modelConfigBadge[data-status="connected"]{color:#328354}#modelConfigBadge[data-status="error"],#modelConfigBadge[data-status="offline"]{color:#d84d4d}#modelConfigBadge[data-status="reachable"],#modelConfigBadge[data-status="checking"],#modelConfigBadge[data-status="stale"]{color:#b88418}#modelConnectionState{font-size:12px;line-height:1.5;margin:0}#modelConnectionState.error{color:#d84d4d}#modelConnectionState.ok{color:#328354}
+/* Candidate diagnostics warn without disabling review actions. */
+.draftWarnings,.draftWarnings summary,.draftWarnings summary span,.draftWarnings li,.draftReason{color:#c62828}.draftWarnings{border-color:#c62828;background:color-mix(in srgb,#c62828 7%,var(--surface))}
 
-#modelConfigButton #modelConfigBadge{display:inline}
+.folderPicker input{width:100%;min-width:0}.browserFolderPick{display:grid;gap:6px;font-size:11px}#uploadProgress,#workspaceTaskProgress{margin:14px 0;padding:14px;border:1px solid var(--brand);border-radius:12px;background:var(--surface2)}#uploadProgressText,#workspaceTaskProgressText{white-space:pre-wrap;line-height:1.7}#uploadProgress progress,#workspaceTaskProgress progress{width:100%}
 
-.chatImageToolbar{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:9px;color:var(--muted)}.chatImageToolbar button{font-size:10px;padding:5px 8px;box-shadow:none}.chatImageAttachments{display:flex;gap:7px;flex-wrap:wrap;max-height:145px;overflow:auto}.chatImageAttachment{position:relative;display:grid;gap:3px;width:87px;min-width:0;margin-bottom:7px;border:1px solid var(--line);border-radius:8px;padding:5px;background:var(--surface2)}.chatImageAttachment img{width:75px;height:55px;object-fit:contain;background:white;border-radius:4px}.chatImageAttachment span{font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chatImageAttachment button{position:absolute;right:0;top:0;padding:0;width:20px;height:20px;border-radius:50%;box-shadow:none;font-size:14px}.chatReferenceHistory{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;white-space:normal}.chatReferenceHistory a{color:inherit;text-decoration:none;display:grid;width:88px;font-size:9px;overflow-wrap:anywhere}.chatReferenceHistory img{width:88px;height:65px;object-fit:contain;background:white;border-radius:5px}#chatImageHint{text-align:left;font-size:9px;margin:0 0 6px}
+.taskSuccess{color:#218548;font-weight:700}#workspaceBatchProgressText{white-space:pre-wrap;line-height:1.7}
 
-.referenceVisualReview { margin:10px 0; padding:10px; border:1px solid var(--line,#ddd); border-radius:8px; min-width:0; }
-.referenceVisualReview summary { cursor:pointer; font-weight:600; }
-.referenceVisualReview table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:12px; margin-top:8px; }
-.referenceVisualReview td,.referenceVisualReview th { width:50%; text-align:left; vertical-align:top; padding:7px; border-bottom:1px solid var(--line,#ddd); overflow-wrap:anywhere; }
-.referenceVisualReview p { margin:5px 0; }
-.referenceVisualReview small { display:block; opacity:.75; line-height:1.5; }
+#workspaceResult{margin:14px 0;padding:14px;border:2px solid currentColor;border-radius:12px;white-space:pre-wrap;line-height:1.65;overflow-wrap:anywhere}.taskResultFailure{color:#e04f4f;background:color-mix(in srgb,#e04f4f 7%,var(--surface))}.taskResultSuccess{color:#218548}#workspaceResult ul{padding-left:20px}#workspaceResult li{margin:9px 0}
+
+.chartImportWarning{color:#df5555;white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;font-size:11px;line-height:1.6}
+
+.panelControls{display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;align-items:center}.panelControls small{width:100%;line-height:1.6}.panelWarning{color:#df5555}.panelSourceDetails{padding:12px;border-bottom:1px solid #8885}.panelSourceDetails select{max-width:100%;margin:10px 0}#panelSource{display:block;box-sizing:border-box;width:100%;height:340px;font-family:monospace;font-size:12px;line-height:1.6;white-space:pre;overflow:auto;margin-bottom:10px}
