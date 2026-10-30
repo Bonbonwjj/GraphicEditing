@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "git": "git version 2.50.1.windows.1",
+  "interpreter": {
+    "prefix_equals_base_prefix": true,
+    "bundled_runtime": true
+  },
+  "health": {
+    "app": "plot-forge",
+    "backend": "local-python",
+    "desktop_release": "41f325f27ac8b0c53273361d445ce1c7ced533da80966d88cb4e696fa87cb954"
+  }
+}

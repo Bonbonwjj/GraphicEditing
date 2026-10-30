@@ -1,20 +1,119 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/app.css?v=28"><link rel="stylesheet" href="/static/workspace.css?v=4"></head>
 <body>
-<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
+<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><span id="teamSyncStatus" role="status">等待同步团队版本</span><button id="collaborationButton" type="button">团队协作</button><a class="versionLink" href="/legacy">旧版单图</a><button id="modelConfigButton" class="modelConfigButton" type="button" title="配置模型 API">⚙ API 配置 <span id="modelConfigBadge">未配置</span></button><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
-  <aside class="left"><div class="paneHead"><span>项目资源</span><button class="mini" id="newProject" title="新建项目">＋</button></div><div id="tree"></div><div class="leftFoot"><div class="resourceActions"><button id="newChart">＋ 绘图</button><button id="uploadPackage">⬆ 上传项目</button><button id="importCsv">↑ CSV</button><input type="file" id="csvFile" accept=".csv,text/csv" hidden></div><strong>统一绘图规范</strong><p>字体 8 pt · CSV 数据源 · 可复现输出</p><button id="showSkill">查看绘图 Skill ↗</button></div></aside>
-  <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHART</div><h1 id="chartTitle">请选择一张图</h1><p id="description">从左侧项目目录中打开绘图文件。</p></div><div class="actions"><button id="refresh" disabled>重新渲染</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
+  <aside class="left"><div class="paneHead"><span>项目资源</span><div class="createMenuWrap"><button class="mini" id="newProject" title="新建或上传项目" aria-label="新建或上传项目" aria-expanded="false">＋</button><div id="createMenu" class="createMenu hide"><button id="createProject" type="button">＋ 新建项目</button><button id="standardizeProject" type="button">📁 标准化已有目录</button><button id="uploadPackage" type="button">⬆ 上传 CSV / Python 项目</button><button id="importBundleButton" type="button">⬆ 导入 Border / Group Bundle</button></div></div></div><div id="tree"></div><div class="leftFoot"><strong>绘图标准化 Skills</strong><p id="skillCount">正在读取 Skill…</p><button id="showSkill">查看、上传或删除 Skill ↗</button></div><input type="file" id="csvFile" accept=".csv,.tsv,.json" hidden></aside>
+  <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHARTS</div><h1 id="chartTitle">请选择一个项目</h1><p id="description">从左侧项目目录打开项目，预览其中的全部图表。</p></div><div class="actions"><button id="refresh" disabled>重新渲染当前图</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="figure">图像预览</button><button class="tab" data-tab="code">绘图代码</button><button class="tab" data-tab="data">CSV 数据</button></div>
-    <div id="figurePane" class="content"><div class="figureWrap"><div id="empty">选择左侧的一张图开始</div><img id="figure" alt="图像预览" hidden></div><p class="hint" id="figureHint">图像由项目中的 Python 脚本和 CSV 数据实时生成。</p></div>
-    <div id="codePane" class="content hide"><div class="codeBar"><span id="filename">chart.py</span><span>Python · Matplotlib</span></div><textarea id="editor" spellcheck="false" aria-label="绘图代码"></textarea><div class="editorActions"><span>修改代码后可直接验证并保存</span><button class="primary" id="saveCode">保存代码</button></div></div>
+    <div id="figurePane" class="content"><div class="galleryToolbar"><div><strong id="galleryTitle">项目图集</strong><span id="galleryCount" class="dim">0 张图</span></div><div class="galleryActions"><label class="selectAllLabel"><input id="selectAllCharts" type="checkbox"> 全选</label><span id="selectedCount" class="dim">已选 0 张</span><button id="batchNormalize" type="button" class="primary" disabled>批量标准化</button><button id="batchEdit" type="button" class="primary" disabled>批量对话修改</button></div></div><section id="interactiveStyle" class="previewStylePanel" hidden><div class="previewStyleHead"><div><strong>当前图快捷调整</strong><span id="stylePreviewState" class="dim">修改控件即可预览，尚未写入代码</span></div><button id="cancelInteractiveStyle" type="button">取消预览</button></div><div class="directManipulationHint">点击预览图中的线条进行选择；拖动图例可改变位置。<span id="selectedLineName">当前：全部线条</span><button id="clearSelectedLine" type="button">编辑全部线条</button></div><div class="quickStyleGrid"><label>边框粗细<input id="borderWidth" type="number" min="0" max="12" step="0.25" value="1"></label><label>边框颜色<input id="borderColor" type="color" value="#333333"></label><label>线条粗细<input id="lineWidth" type="number" min="0" max="12" step="0.25" placeholder="保持原值"></label><label>线条颜色<input id="lineColor" type="color" value="#1f77b4"></label><label><input id="useLineColor" type="checkbox">覆盖线条颜色</label><label>标记大小<input id="markerSize" type="number" min="0" max="40" step="0.5" placeholder="保持原值"></label><label>全图字号<input id="fontSize" type="number" min="6" max="48" step="0.5" placeholder="保持原值"></label><label><input id="showGrid" type="checkbox">显示网格</label><label><input id="legendVisible" type="checkbox" checked>显示图例</label><label>图例位置<select id="legendLocation"><option>best</option><option>upper right</option><option>upper left</option><option>lower left</option><option>lower right</option><option>right</option><option>center left</option><option>center right</option><option>lower center</option><option>upper center</option><option>center</option></select></label><label>标题<input id="quickTitle" placeholder="留空表示保持原值"></label><label>X轴名称<input id="quickXLabel" placeholder="留空表示保持原值"></label><label>Y轴名称<input id="quickYLabel" placeholder="留空表示保持原值"></label></div><label>图例名称（每行：原名称=新名称）<textarea id="legendNames" rows="3" spellcheck="false" placeholder="Control=对照组&#10;Treatment=实验组"></textarea></label><div class="editorActions"><button id="resetInteractiveStyle" type="button">恢复默认并预览</button><button id="applyInteractiveStyle" type="button" class="primary">确定并同步更改代码</button></div></section><div id="gallery" class="gallery"><div class="galleryEmpty">选择左侧的项目，查看全部图表。</div></div><p class="hint" id="figureHint">选择一张图后可在预览页直接调整样式；点击确定后才同步更改代码。</p></div>
+    <div id="codePane" class="content hide"><div class="codeBar"><span id="filename">chart.py</span><span>Python · Matplotlib</span></div><details id="panelSourceDetails" class="panelSourceDetails"><summary>子图实现与完整源码</summary><label for="panelSourceSection">源码位置</label><select id="panelSourceSection" aria-label="选择源码代码段"></select><p id="panelSourceStatus" class="hint"></p><textarea id="panelSource" spellcheck="false" aria-label="子图绘制源码"></textarea><button id="savePanelSource" type="button" disabled>保存局部修改并重绘</button></details><textarea id="editor" spellcheck="false" aria-label="绘图代码"></textarea><div class="editorActions"><span>修改代码后可直接验证并保存</span><button class="primary" id="saveCode">保存代码</button></div></div>
     <div id="dataPane" class="content hide"><div id="dataInfo"></div></div>
   </main>
-  <aside class="right"><div class="paneHead"><span>修改历史</span><span class="dim" id="historyCount">0 条</span></div><div id="history" class="history"><div class="placeholder">选择图表后查看版本记录</div></div>
-    <div class="chat"><div class="chatHead"><span class="spark">✦</span><strong>对话修改代码</strong><span class="dim">LLM</span></div><div id="messages"><div class="bubble assistant">描述你想修改的图形，例如“把图例移到右上角，并将目标轨迹改为虚线”。生成结果会先进入代码预览。</div></div><div id="proposal" hidden><div class="proposalTitle">待审核的代码修改</div><button id="inspect">查看代码</button><button class="primary" id="apply">应用修改</button></div><form id="chatForm"><textarea id="prompt" placeholder="输入改图需求…" rows="3"></textarea><div class="sendRow"><span>Ctrl + Enter 发送</span><button class="primary" type="submit">发送 ↗</button></div></form></div>
-  </aside>
+  <aside class="right"><div class="chat">
+    <div class="chatHead"><span class="spark">✦</span><strong>对话改图</strong><span class="dim" id="chatState">候选预览</span></div>
+    <div id="chatTargets" class="chatTargets">尚未选择图表</div>
+    <div class="panelControls"><label for="panelTarget">修改范围</label><select id="panelTarget" aria-label="选择要修改的子图"><option value="">整张图</option></select><button id="viewPanelCode" type="button">查看对应代码</button><button id="setPanelMapping" type="button">设置对应关系</button><small id="panelTargetInfo">选择单张图后可定位子图。</small></div>
+    <div class="chatContextBar"><label for="chatSessionPicker">当前目标会话</label><select id="chatSessionPicker" aria-label="选择当前目标的修改会话"><option value="">新会话</option></select><button id="newChatSession" type="button">新建</button></div>
+    <div class="chatContextBar"><input id="chatSessionTitle" maxlength="100" aria-label="会话名称" placeholder="会话名称（可选）"><button id="saveChatSession" type="button">保存会话</button><button id="deleteChatSession" type="button">删除会话</button></div>
+    <p class="hint">对话自动保存在本机；保存可命名，删除移入本机回收目录，不影响已应用的图。</p>
+    <details class="chatReferences"><summary id="chatReferenceSummary">参照图 · 只读（0）</summary><div id="chatReferenceChoices"></div><p class="hint">选择参照图后，在消息中说明参照哪些外观属性。参照图本身不会被修改。</p></details>
+    <div id="messages" aria-live="polite"><div class="bubble assistant">选中要修改的图，输入要求。新图先显示在这里；点击“应用此版”后才会更新中央图集。</div></div>
+    <form id="chatForm"><textarea id="prompt" placeholder="输入改图需求，可继续修改上一候选…" rows="3" aria-label="改图需求"></textarea><div class="sendRow"><span id="chatSendHint">Enter 发送 · Shift + Enter 换行</span><button id="stopChat" type="button" hidden>停止本轮</button><button id="sendChat" class="primary" type="submit">生成候选 ↗</button></div></form>
+  </div></aside>
 </div>
+
+<dialog id="standardizeDialog" class="uploadDialog">
+  <div class="dialogHead"><strong>打开工程 · 一次准备，持续改图</strong><button id="closeStandardize" type="button">返回工作台</button></div>
+  <p class="hint">使用 plot-code-extraction Skill 分离科学计算与绘图。新导入工程默认仅保存在本机，不参与团队同步。</p>
+  <section id="workspaceResult" hidden role="alert" aria-live="polite">
+    <strong id="workspaceResultTitle"></strong><p id="workspaceResultSummary"></p>
+    <button id="workspaceResultEnter" class="primary" type="button" hidden>打开已验证图表</button>
+    <ul id="workspaceResultReasons"></ul>
+    <p id="workspaceResultNext"></p>
+  </section>
+  <label>操作<select id="workspaceMode"><option value="open">打开已拆分工程</option><option value="new">新建 / 继续拆分</option></select></label>
+  <label><span id="workspaceRecentLabel">已拆分工程</span><select id="workspaceRecent"><option value="">选择工程…</option></select></label>
+  <div class="modelConfigActions"><button id="workspaceResume" type="button">打开选中的工程</button><button id="workspaceDelete" type="button" disabled>删除选中的工程…</button></div>
+  <section id="workspaceDeletePanel" hidden>
+    <strong>确认删除本机工程副本</strong><pre id="workspaceDeleteScope"></pre>
+    <p class="hint">此操作不可撤销，会删除该副本内的代码、数据副本、预览、对话候选及修改历史。需要保留改图结果时，请先下载标准工程备份。不会删除原始工程或已下载的备份。团队工程的删除可能在后续手动发布时同步给团队，或在拉取时恢复，请谨慎操作。</p>
+    <label>输入完整工程名称确认<input id="workspaceDeleteName" autocomplete="off" spellcheck="false"></label>
+    <div class="modelConfigActions"><button id="workspaceDeleteConfirm" type="button" disabled>永久删除工作副本</button><button id="workspaceDeleteCancel" type="button">取消</button></div>
+  </section>
+  <hr>
+  <section id="workspaceNewFields" hidden>
+  <label>新建工程名称<input id="standardizeProjectName" placeholder="例如：demo_project"></label>
+  <label>源项目目录（可直接粘贴完整路径）<input id="projectSourcePath" placeholder="例如：C:\研究项目\我的工程，或 /data/my_plot_project"></label>
+  <div class="modelConfigActions"><button id="workspaceBrowse" type="button">选择文件夹</button><button id="workspaceInspect" type="button">检查文件清单（不运行）</button></div>
+  <p class="hint">支持 Python 工程和已解压的标准备份目录。只复制支持的源码及数据格式；跳过隐藏目录、符号链接和疑似凭据文件，不代替原始全量备份。</p>
+  <details><summary>本机备份文件清单（实际发送范围见下方分析预览）</summary><pre id="workspaceInventory">请先检查目录。备份操作不发送代码或数据。</pre></details>
+  <label class="modelVision"><input id="workspaceTrust" type="checkbox"> 恢复标准工程时：我已审阅其 Python 代码，允许本机执行绘图。未启用 Docker / Seatbelt 时不是 OS 沙箱。</label>
+  <button class="primary" id="startStandardize" type="button">新建工程并规划拆分</button>
+  </section>
+  <section id="workspacePreparation" hidden>
+    <hr><strong id="workspaceProjectTitle"></strong><p id="workspacePreparationState" role="status" aria-live="polite"></p>
+    <section id="workspaceTaskProgress" hidden><progress aria-label="当前拆分任务正在运行"></progress><p id="workspaceTaskProgressText" role="status" aria-live="polite"></p></section>
+    <label>当前工程显示名称<input id="workspaceRenameName" maxlength="100"></label>
+    <button id="workspaceRename" type="button">保存工程名称</button>
+    <p class="hint">重命名立即更新工程列表和标题；工程 ID、备份目录和已有修改记录保持不变。</p>
+    <section id="workspaceNativePanel" hidden>
+      <strong>已识别独立绘图包 · 本机拆分</strong>
+      <p class="hint">直接保留已有绘图代码和冻结数据，为 7 张图分别建立改图入口。不调用模型，不产生模型 token 用量。</p>
+      <label class="modelVision"><input id="workspaceNativeConsent" type="checkbox"> 我信任该工程，允许在本机临时副本中逐图运行和验证。Linux 原生绘图使用 bubblewrap 系统沙箱；其他平台以当前渲染配置为准。</label>
+      <label>绘图环境<select id="workspaceEnvironmentMode"><option value="default">默认环境优先：直接试绘，版本差异仅警告</option><option value="strict">严格复现：使用独立环境及项目指定版本</option></select></label>
+      <p id="workspaceEnvironmentReport" class="hint" style="white-space:pre-wrap"></p>
+      <button id="workspaceNativeStart" class="primary" type="button">本机拆分并验证全部图</button>
+      <progress id="workspaceNativeProgress" max="7" value="0" aria-label="已处理图数"></progress>
+    </section>
+    <section id="workspaceUniversalPanel" hidden>
+      <hr><strong>通用 Python 绘图工程 · 本机自动拆解</strong>
+      <p class="hint">静态发现 Matplotlib/Seaborn 的保存或显示入口，在只读快照中追踪实际输出；每张图重复渲染一致后才安装。不发送源码，不产生模型 token。</p>
+      <p id="workspaceUniversalSummary" class="hint"></p>
+      <label class="modelVision"><input id="workspaceUniversalConsent" type="checkbox"> 我已审阅该工程，允许在隔离临时副本中执行候选绘图入口。禁止网络和工程外文件访问；原工程保持只读。</label>
+      <button id="workspaceUniversalStart" class="primary" type="button" disabled>通用拆解并验证绘图代码</button>
+      <progress id="workspaceUniversalProgress" max="1" value="0" aria-label="通用拆解已处理入口数"></progress>
+    </section>
+    <section id="workspaceBatchPanel">
+      <hr><strong>整文件夹拆分 · 同一工程汇总</strong>
+      <p class="hint">无需逐个选择目录。先在本机规划全部源码，再经确认逐批发送。共享依赖可能重复发送；某一批成功不代表全部完成。超限和依赖不明的批次不会跳过。</p>
+      <button id="workspaceBatchPlan" type="button">规划整个文件夹（不发送源码）</button>
+      <p id="workspaceBatchSummary" role="status" aria-live="polite"></p>
+      <details><summary>全部批次、覆盖文件与处理状态</summary><pre id="workspaceBatchDetails"></pre></details>
+      <label class="modelVision"><input id="workspaceBatchConsent" type="checkbox"> 我已检查全部批次，允许逐批发送列出的完整源码和工程文件名；不发送原始数据内容。此操作会产生多次模型请求。</label>
+      <button id="workspaceBatchStart" class="primary" type="button" disabled>开始 / 继续整工程拆分</button>
+      <section id="workspaceBatchProgress" hidden>
+        <p id="workspaceBatchProgressText" role="status" aria-live="polite"></p>
+        <progress id="workspaceBatchProgressBar" max="1" value="0" aria-label="分析已返回批次"></progress>
+        <p id="workspaceBatchProgressConnection" class="hint"></p>
+      </section>
+      <a id="workspaceBatchDownload" hidden>下载全部批次提取方案</a>
+      <section id="workspaceBatchValidation" hidden>
+      <label>统一导出目录（每批为 batch_ID 子目录）<input id="workspaceBatchRoot" placeholder="例如：/data/my_export，每个 batch_ID 目录含 manifest.json"></label>
+      <label class="modelVision"><input id="workspaceBatchValidateConsent" type="checkbox"> 已审阅各批次导出和绘图代码，允许本机验证。默认本机 Python 不是 OS 沙箱。所有批次通过后才汇总为可改图工程。</label>
+      <button id="workspaceBatchFinalize" type="button" disabled>验证全部批次并汇总</button>
+      </section>
+    </section>
+    <details id="workspaceAdvanced"><summary>高级：仅拆分指定图组（非整工程）</summary>
+    <section id="workspaceAnalysisPanel">
+      <label>本次分析的图组目录 / 入口文件<select id="workspaceAnalysisScope"><option value="">整个工程</option></select></label>
+      <p id="workspaceAnalysisSummary" role="status" aria-live="polite">正在统计源码…</p>
+      <p class="hint">大工程请显式选择一个图组，后续图组可另建副本准备。自动补入能静态识别的本地依赖，不截断文件；动态依赖仍须核实。只准备选定范围，不表示整个工程已完成提取。</p>
+      <details><summary>实际拟发送源码与依赖检查</summary><pre id="workspaceAnalysisFiles"></pre></details>
+    </section>
+    <label class="modelVision"><input id="workspaceConsent" type="checkbox"> 允许发送分析预览中列出的完整 Python 源码，以及工程内代码 / 数据文件名；不发送原始数据内容。变更范围后须重新确认。</label>
+    <button id="workspaceAnalyze" type="button">用 Skill 分析并生成提取方案</button>
+    </details>
+    <a id="workspacePlan" hidden>下载导出程序与绘图代码</a>
+    <p id="workspaceRunHint" class="hint" hidden>先审阅下载的 *_export.py，将其放在原工程根目录，使用原分析环境运行：python &lt;name&gt;_export.py --output &lt;新的 plot-data 目录&gt;。不要覆盖原始数据。生成程序仍须人工检查，提取验证不能证明全部科学计算正确。</p>
+    <label id="workspaceBundleLabel">本机导出的 plot-data 目录<input id="workspaceBundlePath" placeholder="包含 manifest.json 的目录"></label>
+    <label id="workspaceExecutionLabel" class="modelVision"><input id="workspaceValidateConsent" type="checkbox"> 已审阅独立绘图代码，允许在本机快照中试绘；默认 Python 运行权限与当前用户相同。</label>
+    <div class="modelConfigActions"><button id="workspaceFinalize" type="button">验证数据并准备改图</button><button id="workspaceEnter" class="primary" type="button">进入对话改图</button><a id="workspaceBackup" hidden>下载标准工程备份</a></div>
+    <details><summary>准备与验证详情</summary><pre id="workspaceDetails"></pre></details>
+  </section>
+  <p id="workspaceMessage" role="status" aria-live="polite"></p>
+</dialog>
 
 <dialog id="uploadDialog" class="uploadDialog">
   <div class="dialogHead"><strong>上传代码与数据</strong><button id="closeUpload" type="button">关闭</button></div>
@@ -24,11 +123,105 @@
     <label>项目 ID<input id="uploadProjectId" placeholder="例如：behavior_experiment"></label>
   </div>
   <div class="folderPickers">
-    <label class="folderPicker"><strong>代码文件夹</strong><span id="codeFolderStatus">尚未选择</span><input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
-    <label class="folderPicker"><strong>数据文件夹</strong><span id="dataFolderStatus">尚未选择</span><input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
+    <div class="folderPicker"><strong>code · 绘图代码文件夹</strong><span id="codeFolderStatus">尚未选择</span>
+      <button id="codeBrowseLocal" type="button">选择本机文件夹…</button>
+      <input id="codeFolderPath" aria-label="code · 绘图代码文件夹完整路径" placeholder="也可粘贴文件夹或文件的完整路径" spellcheck="false">
+      <label class="browserFolderPick">或通过浏览器选择文件夹<input type="file" id="codeFolder" accept=".py" webkitdirectory directory multiple></label>
+      <label class="browserFolderPick">或选择单个 / 多个文件<input type="file" id="codeSelectedFiles" accept=".py" multiple></label>
+    </div>
+    <div class="folderPicker"><strong>data · 数据文件夹</strong><span id="dataFolderStatus">尚未选择</span>
+      <button id="dataBrowseLocal" type="button">选择本机文件夹…</button>
+      <input id="dataFolderPath" aria-label="data · 数据文件夹完整路径" placeholder="也可粘贴文件夹或文件的完整路径" spellcheck="false">
+      <label class="browserFolderPick">或通过浏览器选择文件夹<input type="file" id="dataFolder" accept=".csv,.tsv,.json" webkitdirectory directory multiple></label>
+      <label class="browserFolderPick">或选择单个 / 多个文件<input type="file" id="dataSelectedFiles" accept=".csv,.tsv,.json" multiple></label>
+    </div>
+    <div class="folderPicker"><strong>原图文件夹（可选）</strong><span id="imageFolderStatus">尚未选择</span>
+      <button id="imageBrowseLocal" type="button">选择本机文件夹…</button>
+      <input id="imageFolderPath" aria-label="原图文件夹（可选）完整路径" placeholder="也可粘贴文件夹或文件的完整路径" spellcheck="false">
+      <label class="browserFolderPick">或通过浏览器选择文件夹<input type="file" id="imageFolder" accept=".png,.jpg,.jpeg,.svg" webkitdirectory directory multiple></label>
+      <label class="browserFolderPick">或选择单个 / 多个文件<input type="file" id="imageSelectedFiles" accept=".png,.jpg,.jpeg,.svg" multiple></label>
+    </div>
   </div>
-  <p class="hint">代码与数据会按项目归档；转换成功后自动同步 GitHub。</p>
+  <p class="hint">同名原图会直接用于图集预览；其他图会在后台生成并保存预览。代码、数据和图片按项目归档。</p>
   <button class="primary" id="startUpload" type="button">开始拆分并上传</button>
+  <section id="uploadProgress" hidden aria-label="代码拆分进度">
+    <p id="uploadProgressText" role="status" aria-live="polite"></p>
+    <progress id="uploadProgressBar" max="1" aria-label="代码拆分进度"></progress>
+    <p id="uploadProgressConnection" class="hint"></p>
+  </section>
 </dialog>
-<dialog id="skillDialog"><div class="dialogHead"><strong>统一绘图 Skill</strong><button id="closeSkill">关闭</button></div><pre id="skillText"></pre></dialog>
-<script src="/static/app.js"></script></body></html>
+<dialog id="skillDialog"><div class="dialogHead"><strong>绘图标准化 Skills</strong><button id="closeSkill">关闭</button></div><div id="skillList"></div><hr><strong>上传新 Skill</strong><label>显示名称<input id="skillName" placeholder="例如：期刊图表规范"></label><label>Skill ID<input id="skillId" placeholder="例如：journal-style"></label><label>SKILL.md<input id="skillFile" type="file" accept=".md,text/markdown"></label><label>样式配置 JSON（可选）<input id="skillProfileFile" type="file" accept=".json,application/json"></label><button id="uploadSkill" class="primary" type="button">上传 Skill</button><details><summary>查看选中 Skill 内容</summary><pre id="skillText"></pre></details></dialog>
+<dialog id="chooseSkillDialog"><div class="dialogHead"><strong>选择标准化 Skill</strong><button id="closeChooseSkill" type="button">关闭</button></div><p id="chooseSkillTarget" class="hint"></p><div id="chooseSkillList"></div></dialog>
+<dialog id="historyDialog"><div class="dialogHead"><strong id="historyTitle">图片历史</strong><button id="closeHistory" type="button">关闭</button></div><p class="hint">保存所有图片版本；代码仅保留最早版本、上一轮版本和当前文件。</p><div id="history"></div><button id="finalizeHistory" type="button" class="dangerAction">修改完成，清理旧历史</button></dialog>
+<dialog id="modelConfigDialog" aria-labelledby="modelConfigTitle">
+  <div class="dialogHead"><strong id="modelConfigTitle">模型连接 · API / ChatGPT 订阅</strong><button id="closeModelConfig" type="button">关闭</button></div>
+  <p class="modelConfigHelp">规范化 Agent 和 Chat 改图 Agent 使用同一份配置。密钥优先加密保存在本机；系统存储不可用时仅在当前会话生效，重启后需重新输入。页面不会回显密钥。</p>
+  <button id="useCdscPreset" type="button" class="modelPreset">使用默认模型与地址</button>
+  <form id="modelConfigForm">
+    <label>连接方式<select id="modelProvider"><option value="api">API Key（独立 API 计费或本地服务）</option><option value="chatgpt">ChatGPT 订阅（官方授权，取决于账户开放情况）</option></select></label>
+    <section id="chatgptSettings" hidden>
+      <p class="hint">只在 auth.openai.com 官方窗口登录，不在本应用输入 ChatGPT 密码、Cookie 或 Session Token。Pro 不保证此预览功能已对你的账户开放；不可用时不会自动改走付费 API。</p>
+      <div class="modelConfigActions"><button id="chatgptConnect" type="button">登录 ChatGPT</button><button id="chatgptSwitch" type="button">连接其他账户</button><button id="chatgptDisconnect" type="button">退出并撤销连接</button></div>
+      <a id="chatgptLoginLink" target="_blank" rel="noopener noreferrer" hidden>在 OpenAI 官方页面继续登录</a>
+      <p id="chatgptStatus" role="status" aria-live="polite"></p>
+      <label>账户可用模型<select id="chatgptModelSelect"><option value="">登录后读取可用模型…</option></select></label><button id="chatgptLoadModels" type="button">读取可用模型</button>
+      <label class="modelVision"><input id="chatgptCodeConsent" type="checkbox"> 允许发送本次任务所需的代码、绘图数据与对话给 OpenAI。关闭此项可保存登录，但不能分析或改图。</label>
+      <p class="hint">密钥仅进系统凭据库；不可用时仅保存在后台内存，重启需重新登录。请求使用 store:false，但这不等于零留存或不用于训练；请核对账户数据控制和单位政策。敏感工程请使用本地模型。</p>
+    </section>
+    <div id="apiProviderFields">
+    <label>API 服务地址<select id="apiEndpointPreset"><option value="local">本地 / 内网（之前的默认地址）</option><option value="siliconflow">硅基流动 SiliconFlow</option><option value="custom">自定义 Chat Completions 地址</option></select></label>
+    <label for="modelApiUrl">完整 Chat Completions 地址<input id="modelApiUrl" type="url" required autocomplete="url" placeholder="https://…/v1/chat/completions"></label>
+    <p id="apiDestinationNotice" class="modelConfigHelp" role="status"></p>
+    <p class="modelConfigHelp">按所选地址连接网络，不根据 Key 猜测服务商。切换地址须重新输入该服务的 Key；不会自动探测或将旧 Key 发到新地址。模型名称请填写该服务实际支持的名称。</p>
+    <p id="modelTransportNotice" class="modelConfigHelp" hidden>正在使用 HTTP：API Key 和请求内容会通过此连接传输，请确认这是你信任的本机或内网服务。</p>
+    <label for="modelName">模型名称<input id="modelName" required autocomplete="off" placeholder="填写服务端提供的模型名称"></label>
+    <label for="modelMaxOutputTokens">Chat 改图最大输出 token<input id="modelMaxOutputTokens" type="number" min="1024" max="65536" step="1" required value="16384"></label>
+    <label for="modelApiKey">API Key<input id="modelApiKey" type="password" autocomplete="new-password" placeholder="首次配置请输入；留空则保留现有密钥"></label>
+    </div>
+    <label class="modelVision"><input id="modelVision" type="checkbox"> 改图时将当前图和参照图传给支持视觉的模型</label>
+    <p id="modelConfigState" role="status" aria-live="polite"></p>
+    <div class="modelConfigActions"><button id="saveModelConfig" class="primary" type="submit">保存配置</button><button id="testModelConfig" type="button">测试已保存配置</button><button id="clearModelConfig" type="button">清除配置</button></div>
+  </form>
+  <p id="modelApiHelp" class="modelConfigHelp">本机和内网 IP 的 HTTP 地址可以直接保存，无需设置环境变量。请填写服务端给出的完整接口路径和模型名称；输出 token 上限及图片输入按模型实际能力设置。测试连接只发送简短测试语句；正式改图会发送相关绘图代码、CSV，以及勾选后的图片。</p>
+</dialog>
+
+
+<dialog id="collaborationDialog" aria-labelledby="collaborationTitle">
+  <div class="dialogHead"><strong id="collaborationTitle">团队协作 · GitHub 共享项目</strong><button id="closeCollaboration" type="button">关闭</button></div>
+  <p class="hint">团队同步位置已由平台统一指定，无需个人选择仓库或分支。代码、数据、图片和正式历史在此共享；模型密钥和未应用的候选留在本机。</p>
+  <p class="hint">共享项目按 data/ 和 code/ 分类保存。固定同步位置：<span id="collabTarget"></span></p>
+  <label>协作者姓名<input id="collab-name" placeholder="你的姓名或团队用户名"></label>
+  <label>Git 提交邮箱<input id="collab-email" type="email" placeholder="可使用 GitHub 隐私邮箱"></label>
+  <p class="hint">首次使用只需保存协作者身份，用于记录修改人。使用电脑上已有的 GitHub Git 登录，无需在页面输入 GitHub 密钥。</p>
+  <p class="hint">打开或刷新页面时自动获取团队最新版本。离线或冲突时保留本机版本，并在顶部提示；处理后刷新重试。</p>
+  <div class="modelConfigActions"><button id="connectCollaboration" type="button">保存协作者身份</button></div>
+  <label>本次修改说明<input id="publishMessage" placeholder="例如：上传实验数据，调整轨迹图配色"></label>
+  <button id="publishCollaboration" class="primary" type="button">将全部项目修改合并到团队版本</button>
+  <p class="hint">发布前自动检查远端；双方修改同一文件时停止并列出冲突，不会强制覆盖。生成的候选需先“应用此版”再发布。</p>
+  <p id="collabStatus" role="status" aria-live="polite"></p>
+</dialog>
+
+
+<dialog id="bundleImportDialog"><div class="dialogHead"><strong>Border / Group Plot Bundle</strong><button id="closeBundleImport">关闭</button></div>
+<p class="hint">CSV / TSV / JSON 继续使用原有上传入口。Bundle 数据默认保存在项目中，点击团队协作“发布”后与代码一起共享到 GitHub。</p>
+<label>来源方式<select id="bundleSourceMode"><option value="upload">浏览器上传文件夹（最多 500 MB）</option><option value="server_path">从本机目录复制（适合较大 Bundle）</option></select></label>
+<label>项目 ID<input id="bundleProjectId"></label><label>项目名称<input id="bundleProjectName"></label>
+<label>Bundle 文件夹<input type="file" id="bundleFolder" webkitdirectory directory multiple accept=".json,.gz"></label>
+<label>本机 Bundle 目录（从目录复制时填写）<input id="bundleServerPath"></label>
+<label>behavior_analysis 代码所在目录<input id="bundleRuntimeRoot" placeholder="该目录内应有 behavior_analysis 文件夹"></label>
+<label>允许读取的本机根目录（可选）<input id="bundleAllowedRoot" placeholder="留空时只允许读取本次填写的 Bundle 目录"></label>
+<label><input type="checkbox" id="bundleTrusted"> 我确认此 Bundle 来自可信来源（包含 pickle 数据）</label>
+<button id="startBundleImport" class="primary">导入项目（尚不发布）</button><p id="bundleImportStatus" role="status"></p>
+</dialog>
+<dialog id="sharedModuleDialog"><div class="dialogHead"><strong id="sharedModuleTitle">共享绘图模块</strong><button id="closeSharedModule">关闭</button></div>
+<p class="hint">共用一处修改可验证代表图；检测到不同位置的修改则验证全部项目图表。验证成功仅生成候选，检查后才应用。</p>
+<div id="validationControls"><label>代表图<select id="validationChart"></select></label><label><input type="checkbox" id="moduleForceAll"> 本次强制验证全部图</label></div>
+<textarea id="sharedModuleEditor" spellcheck="false" aria-label="共享模块代码"></textarea>
+<label>修改要求<input id="sharedModulePrompt" placeholder="可在当前编辑器代码基础上继续修改"></label>
+<button id="proposeSharedModule">生成修改建议</button><button id="previewSharedModule" class="primary">验证并生成候选</button>
+<p id="sharedModuleStatus" role="status"></p><div id="sharedModulePreviews"></div>
+<label><input type="checkbox" id="moduleReviewed"> 我已检查本轮候选图片和影响范围</label><button id="applySharedModule" disabled>应用此候选</button>
+<details><summary>恢复历史版本到编辑器（仍需验证和确认）</summary><div id="moduleHistory"></div></details>
+</dialog>
+
+<script src="/static/collaboration.js?v=4"></script><script src="/static/panels.js?v=1"></script><script src="/static/app.js?v=41"></script><script src="/static/upload_progress.js?v=2"></script><script src="/static/ly_features.js?v=1"></script><script src="/static/workspace.js?v=16"></script></body></html>

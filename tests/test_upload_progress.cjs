@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const {importProgressText}=require('../static/upload_progress.js');
+const running=importProgressText({stage:'splitting',status:'working',total:4,completed:1,current_file:'图.py',started_at:100,message:'等待模型返回'},165);
+assert(running.includes('已用时 65 秒'));
+assert(running.includes('已处理 1 / 4'));
+assert(running.includes('图.py'));
+assert(running.includes('等待模型返回'));
+assert(!running.includes('%'));
+const finished=importProgressText({stage:'completed',status:'completed',started_at:100,finished_at:110,result:{charts:['a','b']}},999);
+assert(finished.includes('已用时 10 秒'));
+assert(finished.includes('已生成 2 张图表'));
+console.log('PASS: real file counters, elapsed time, model wait and completed state');

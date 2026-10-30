@@ -1,0 +1,195 @@
+import json
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+from urllib import request, error
+
+import tests.test_collaboration_api as api_tests
+
+
+class WorkspaceApiTests(unittest.TestCase):
+    setUp = api_tests.CollaborationApiTests.setUp
+    post = api_tests.CollaborationApiTests.post
+
+    def test_panel_navigation_source_read_and_chart_local_edit_routes(self):
+        entry=self.project/'charts/example.py'
+        entry.write_text('from native_plot_runtime import prepare_native\nNATIVE_FIGURE="fig4"\ndef produce():\n    prepare_native(NATIVE_FIGURE)\n')
+        folder=self.project/'lib/native/fig4/code';folder.mkdir(parents=True)
+        helper=folder/'render.py';original='PUBLIC_PANEL_MEMBERS={"a":["left","right"]}\nCOLOR="blue"\n';helper.write_text(original)
+        (self.project/'native-project.json').write_text(json.dumps({'schema':'plot-forge-native/1','figures':{'fig4':{}}}))
+        index=self.get('projects/demo/charts/example/panel-index')
+        self.assertEqual(index['panels'][0]['axis_labels'],['left','right'])
+        section=index['sections'][-1]
+        with self.post('projects/demo/charts/example/panel-source',section) as response:source=json.load(response)
+        self.assertEqual(source['content'],original)
+        from server import source_revision
+        with self.post('projects/demo/charts/example/panel-edit',{**section,'source_hash':source['source_hash'],
+                    'content':original.replace('blue','red'),'base_revision':source_revision(entry.read_text())}) as response:proposal=json.load(response)
+        self.assertIn('NATIVE_SOURCE_EDITS',proposal['code'])
+        self.assertEqual(helper.read_text(),original)
+        self.assertNotIn('NATIVE_SOURCE_EDITS',entry.read_text())
+        with self.assertRaises(error.HTTPError):self.post('projects/demo/charts/example/panel-source',{'path':'../../secret'})
+        with self.post('projects/demo/charts/example/panel-mapping',{'mapping':{'b':['left']}}) as response:
+            self.assertEqual(json.load(response)['panels'][0]['status'],'manual')
+        with request.urlopen(f'http://127.0.0.1:{self.port}/static/panels.js') as response:
+            self.assertIn(b'panelTargetFor',response.read())
+
+    def test_native_prepare_forwards_default_or_strict_environment(self):
+        with patch('native_project.start',return_value={'status':'working'}) as start:
+            with self.post('workspace/projects/demo/native-prepare',{'consent':True}) as response:
+                self.assertEqual(json.load(response)['status'],'working')
+            start.assert_called_with(self.project,True,'default')
+            with self.post('workspace/projects/demo/native-prepare',{'consent':True,'environment_mode':'strict'}) as response:
+                self.assertEqual(json.load(response)['status'],'working')
+            start.assert_called_with(self.project,True,'strict')
+
+    def test_universal_prepare_route_requires_explicit_local_execution_consent(self):
+        with patch('universal_project.start',return_value={'status':'working'}) as start:
+            with self.post('workspace/projects/demo/universal-prepare',{'consent':True}) as response:
+                self.assertEqual(json.load(response)['status'],'working')
+            start.assert_called_once_with(self.project,True)
+
+    def test_chat_save_delete_http_routes_preserve_formal_code(self):
+        source=self.project/'charts/example.py';source.write_text('# do not run\n')
+        from local_execution import approve
+        approve(self.project)
+        with self.post('projects/demo/chat/sessions',{'charts':['example']}) as response:
+            sid=json.load(response)['id']
+        route='projects/demo/chat/sessions/'+sid
+        with self.post(route+'/save',{'title':'测试对话'}) as response:
+            self.assertEqual(json.load(response)['title'],'测试对话')
+        with self.assertRaises(error.HTTPError):self.post(route+'/delete',{})
+        with self.assertRaises(error.HTTPError):
+            self.post(route+'/delete',{'confirm_session_id':sid},origin='https://untrusted.test')
+        with self.post(route+'/delete',{'confirm_session_id':sid}) as response:
+            self.assertTrue(json.load(response)['deleted'])
+        self.assertEqual(self.get('projects/demo/chat/sessions')['sessions'],[])
+        self.assertEqual(source.read_text(),'# do not run\n')
+
+    def test_chat_stop_does_not_wait_for_running_turn_global_lock(self):
+        import server
+        import threading
+        held=threading.Event();release=threading.Event()
+        def ongoing_turn():
+            with server.SYNC.lock:
+                held.set();release.wait(5)
+        worker=threading.Thread(target=ongoing_turn);worker.start()
+        try:
+            self.assertTrue(held.wait(1))
+            with patch.object(server.CHAT,'stop',return_value={'stopping':True}) as stop:
+                req=request.Request(f'http://127.0.0.1:{self.port}/api/projects/demo/chat/sessions/test-session/stop',
+                    data=b'{}',headers={'Content-Type':'application/json'})
+                with request.urlopen(req,timeout=1) as response:
+                    self.assertTrue(json.load(response)['stopping'])
+                stop.assert_called_once_with('demo','test-session')
+                with self.assertRaises(error.HTTPError):
+                    self.post('projects/demo/chat/sessions/test-session/stop',{},origin='https://untrusted.test')
+                self.assertEqual(stop.call_count,1)
+        finally:
+            release.set();worker.join(2)
+
+    def get(self, path):
+        with request.urlopen(f'http://127.0.0.1:{self.port}/api/'+path) as response:
+            return json.load(response)
+
+    def test_open_inspect_resume_routes_do_not_execute_or_call_model(self):
+        root=self.project.parent.parent
+        source=root/'source';source.mkdir();(source/'analysis.py').write_text('raise RuntimeError("must not execute")')
+        with patch('llm_client.chat') as cloud:
+            with self.post('workspace/inspect',{'source':str(source)}) as response:
+                self.assertEqual(json.load(response)['mode'],'inspect')
+            with self.post('workspace/open',{'source':str(source),'name':'private'}) as response:
+                self.assertEqual(json.load(response)['status'],'needs_analysis')
+            self.assertEqual(self.get('workspace/projects/private/status')['status'],'needs_analysis')
+            with self.post('workspace/open',{'source':str(source),'name':'private'}) as response:
+                self.assertTrue(json.load(response)['reopened'])
+            cloud.assert_not_called()
+        entries=self.get('workspace/projects')['projects']
+        self.assertTrue(next(p for p in entries if p['project']=='private')['private'])
+
+    def test_workspace_and_login_reject_cross_origin_and_non_json(self):
+        for path in ('workspace/open','chatgpt/connect'):
+            with self.assertRaises(error.HTTPError) as cm:
+                self.post(path,{},origin='https://untrusted.test')
+            self.assertEqual(cm.exception.code,400)
+            req=request.Request(f'http://127.0.0.1:{self.port}/api/'+path,data=b'{}',headers={'Content-Type':'text/plain'})
+            with self.assertRaises(error.HTTPError):request.urlopen(req)
+
+    def test_auth_status_returns_masked_identity_no_tokens(self):
+        with patch('chatgpt_auth.read_record',return_value={'access_token':'SECRET_ACCESS','id_token':'SECRET_ID','sub':'private-sub','email':'person@example.test','scope':'chatgpt.tokens.use.direct'}):
+            shown=self.get('chatgpt/status')
+        self.assertTrue(shown['sharing'])
+        self.assertNotIn('SECRET',json.dumps(shown));self.assertNotIn('person@example.test',json.dumps(shown))
+        with self.assertRaises(error.HTTPError):self.get('chatgpt/connect')
+
+    def test_pending_cannot_download_ready_backup(self):
+        root=self.project.parent.parent;source=root/'source';source.mkdir();(source/'analysis.py').write_text('pass')
+        with self.post('workspace/open',{'source':str(source),'name':'private'}):pass
+        with self.assertRaises(error.HTTPError):self.get('workspace/projects/private/backup.zip')
+
+    def test_delete_requires_local_confirmation_and_preserves_original(self):
+        root=self.project.parent.parent;source=root/'source';source.mkdir()
+        original=source/'analysis.py';original.write_bytes(b'# keep original\n')
+        with self.post('workspace/open',{'source':str(source),'name':'private'}):pass
+        route='workspace/projects/private/'
+        info=self.get(route+'delete-preview')
+        self.assertEqual(info['source_paths'],[str(source)])
+        body={'confirm_name':'private','confirmation_token':info['confirmation_token']}
+        for invalid in ({}, {**body,'confirm_name':'demo'}, {**body,'confirmation_token':'old'}):
+            with self.assertRaises(error.HTTPError):self.post(route+'delete',invalid)
+        with self.assertRaises(error.HTTPError):self.post(route+'delete',body,origin='https://untrusted.test')
+        with self.assertRaises(error.HTTPError):self.get(route+'delete')
+        with self.post(route+'delete',body) as response:
+            self.assertTrue(json.load(response)['deleted'])
+        self.assertEqual(original.read_bytes(),b'# keep original\n')
+        self.assertEqual([p['project'] for p in self.get('workspace/projects')['projects']],['demo'])
+        self.assertTrue(self.project.is_dir())
+
+    def test_delete_does_not_queue_behind_active_request(self):
+        import server
+        from tests.test_project_deletion import held_elsewhere
+        info=self.get('workspace/projects/demo/delete-preview')
+        with held_elsewhere(server.SYNC.lock):
+            with self.assertRaises(error.HTTPError) as exc:
+                self.post('workspace/projects/demo/delete',{'confirm_name':'demo','confirmation_token':info['confirmation_token']})
+            self.assertEqual(exc.exception.code,409)
+        self.assertTrue(self.project.is_dir())
+
+    def test_rename_and_analysis_preview_are_local_and_scoped(self):
+        root=self.project.parent.parent;source=root/'source';(source/'small').mkdir(parents=True)
+        (source/'small/render.py').write_text('raise RuntimeError("not executed")')
+        (source/'large.py').write_text('#'+'x'*190000)
+        with self.post('workspace/open',{'source':str(source),'name':'private'}):pass
+        route='workspace/projects/private/'
+        with patch('llm_client.chat') as cloud:
+            with self.post(route+'rename',{'name':'New Display'}) as response:
+                value=json.load(response)
+                self.assertEqual(value['display_name'],'New Display');self.assertEqual(value['project'],'private')
+            self.assertTrue(self.get(route+'analysis-options')['options'])
+            with self.post(route+'analysis-preview',{'scope':'small'}) as response:
+                preview=json.load(response)
+            self.assertTrue(preview['within_limit']);self.assertNotIn('sources',preview)
+            for body in ({'consent':True,'scope':'small'}, {'consent':True,'scope':''}):
+                with self.assertRaises(error.HTTPError):self.post(route+'analyze',body)
+            with self.assertRaises(error.HTTPError):self.post(route+'rename',{'name':'bad'},origin='https://untrusted.test')
+            cloud.assert_not_called()
+
+    def test_whole_project_plan_requires_separate_consent(self):
+        root=self.project.parent.parent;source=root/'batch-source';source.mkdir()
+        (source/'a.py').write_text('# a\n'+'#x\n'*35000)
+        (source/'b.py').write_text('# b\n'+'#y\n'*35000)
+        with self.post('workspace/open',{'source':str(source),'name':'batch_test'}):pass
+        route='workspace/projects/batch_test/'
+        with patch('llm_client.chat') as cloud:
+            with self.post(route+'batch-preview',{}) as response:plan=json.load(response)
+            self.assertEqual(plan['source_files'],2)
+            self.assertEqual(len(plan['jobs']),2)
+            self.assertNotIn('sources',plan['jobs'][0])
+            for body in ({'consent':False,'confirmation_token':plan['confirmation_token']},
+                         {'consent':True,'confirmation_token':'stale'}):
+                with self.assertRaises(error.HTTPError):self.post(route+'batch-analyze',body)
+            with self.assertRaises(error.HTTPError):self.post(route+'batch-preview',{},origin='https://untrusted.test')
+            cloud.assert_not_called()
+
+
+if __name__=='__main__':unittest.main()

@@ -3,34 +3,41 @@ import json
 import os
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 
 
-DEFAULT_URL = "https://api.siliconflow.cn/v1/chat/completions"
-DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
+from model_config import DEFAULT_URL, DEFAULT_MODEL
 
 
 def is_configured():
-    return bool(os.environ.get("LLM_API_URL") or os.environ.get("LLM_API_KEY") or
-                os.environ.get("OPENAI_API_KEY"))
+    from model_config import _preferences
+    if _preferences().get('provider') == 'chatgpt':
+        from chatgpt_auth import public
+        return public()['sharing']
+    if os.environ.get("LLM_API_URL") or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+        return True
+    from model_config import effective
+    return bool(effective()["api_key"])
 
 
 def _settings():
-    url = os.environ.get("LLM_API_URL", DEFAULT_URL).strip()
-    parsed = urlparse(url)
-    local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-    if parsed.scheme != "https" and not local_http:
-        raise ValueError("LLM_API_URL must use HTTPS, except for a loopback local API")
+    from model_config import effective, validate_url
+    saved = effective()
+    if saved.get('provider') == 'chatgpt':
+        return {**saved, 'url': saved['api_url'], 'key': '', 'timeout': 180}
+    url = validate_url(os.environ.get("LLM_API_URL") or saved["api_url"])
     return {
         "url": url,
-        "key": os.environ.get("LLM_API_KEY", os.environ.get("OPENAI_API_KEY", "")).strip(),
-        "model": os.environ.get("LLM_MODEL", DEFAULT_MODEL).strip(),
+        "key": (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or saved["api_key"]).strip(),
+        "model": (os.environ.get("LLM_MODEL") or saved["model"]).strip(),
         "timeout": float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
     }
 
 
 def chat(messages, temperature=0.1):
     if not is_configured():
+        from model_config import _preferences
+        if _preferences().get('provider') == 'chatgpt':
+            raise ValueError('请先在模型配置中登录 ChatGPT 并获得订阅共享授权；Pro 账户是否可用以官方授权结果为准。')
         raise ValueError("Set LLM_API_KEY (or OPENAI_API_KEY), or configure a local LLM_API_URL")
     settings = _settings()
     payload = {"model": settings["model"], "messages": messages, "temperature": temperature}
@@ -40,7 +47,8 @@ def chat(messages, temperature=0.1):
     request = urllib.request.Request(settings["url"], data=json.dumps(payload).encode("utf-8"),
                                      headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=settings["timeout"]) as response:
+        from model_transport import open_completion
+        with open_completion(request, timeout=settings["timeout"], settings=settings) as response:
             result = json.load(response)
         content = result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:

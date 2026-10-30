@@ -1,0 +1,24 @@
+{
+  "name": "Plot Forge",
+  "build_date": "2026-10-28",
+  "platform": "Windows x64",
+  "python": "3.11.4",
+  "packages": {
+    "matplotlib": "3.11.2",
+    "numpy": "2.4.6",
+    "pandas": "2.3.3",
+    "scipy": "1.17.1",
+    "Pillow": "12.3.0",
+    "keyring": "25.7.0",
+    "PyJWT": "2.15.1",
+    "cryptography": "50.0.2"
+  },
+  "release": "41f325f27ac8b0c53273361d445ce1c7ced533da80966d88cb4e696fa87cb954",
+  "runtime_sha256": "b54146d44a56414769973a7a4f9fbfb62f53cbf5404b6225ad99b1a17d374727",
+  "seed_projects": [
+    "demo_interception",
+    "human_eye_QA"
+  ],
+  "verification": "Isolated EXE startup, bundled Python/Git, PNG rendering and HTTP health passed.",
+  "version": "0.2.0"
+}
