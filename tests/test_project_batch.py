@@ -45,7 +45,23 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(targets),len(set(targets)))
         self.assertEqual(len(plan['jobs']),2)
         self.assertTrue(all(j['chars']<=analysis_scope.LIMIT for j in plan['jobs']))
+        self.assertEqual(plan['transmitted_source_chars'],sum(j['chars'] for j in plan['jobs']))
+        self.assertEqual(plan['repeated_source_chars'],
+                         plan['transmitted_source_chars']-plan['unique_source_chars'])
+        self.assertEqual(plan['estimated_source_tokens'],(plan['transmitted_source_chars']+3)//4)
         self.assertNotIn('sources',batch.public_plan(plan)['jobs'][0])
+
+    def test_best_fit_keeps_shared_large_dependencies_together(self):
+        helper = '# shared\n' + '#h\n' * 30000
+        plain = '# plain\n' + '#p\n' * 25000
+        (self.source/'shared.py').write_text(helper)
+        (self.source/'a_shared.py').write_text('import shared\n' + '#a\n' * 10000)
+        (self.source/'b_plain.py').write_text(plain)
+        (self.source/'c_shared.py').write_text('import shared\n' + '#c\n' * 10000)
+        project=self.open();plan=batch.plan(project)
+        target_groups=[set(job['target_files']) for job in plan['jobs']]
+        self.assertTrue(any({'a_shared.py','c_shared.py'} <= group for group in target_groups))
+        self.assertGreaterEqual(plan['transmitted_source_chars'],plan['unique_source_chars'])
 
     def test_consent_and_stale_plan_rejected_before_model(self):
         project=self.project();plan=batch.plan(project)

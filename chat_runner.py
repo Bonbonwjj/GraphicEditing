@@ -126,10 +126,13 @@ def _validate_sources(entry, files):
 def _snapshot(project, destination, overrides, entry=None):
     from native_project import selection
     native_id = selection(project, entry, overrides) if entry else None
+    from universal_project import selection as universal_selection
+    universal_id = universal_selection(project, entry, overrides) if entry else None
     total = 0
     hashes = {}
-    assets = {'.csv','.tsv','.json','.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp'}
-    if native_id:
+    assets = {'.csv','.tsv','.json','.npz','.npy','.parquet','.feather','.xlsx','.xls',
+              '.h5','.hdf5','.yaml','.yml','.toml','.ini','.png','.jpg','.jpeg','.webp'}
+    if native_id or universal_id:
         assets |= {'.md','.txt','.svg','.ttf','.otf','.pptx'}
     for dirname, suffixes in (("", {".py", ".json"}), ("charts", {".py"}), ("lib", {".py"}), ("data", assets)):
         source_root = project / dirname
@@ -140,6 +143,14 @@ def _snapshot(project, destination, overrides, entry=None):
             source_root = native_root / native_id
             if native_root.is_symlink() or source_root.is_symlink():
                 raise CandidateRenderError("Symlinked native directories are not allowed", "scope_rejected")
+        if universal_id and dirname == 'lib':
+            registry = json.loads((project/'universal-project.json').read_text(encoding='utf-8'))
+            source_root = project/registry['source_root']
+            suffixes = assets | {'.py'}
+            if source_root.is_symlink():
+                raise CandidateRenderError("Symlinked universal source directory is not allowed", "scope_rejected")
+        elif universal_id and dirname == 'data':
+            continue
         if not source_root.exists():
             continue
         candidates = source_root.glob("*") if dirname == "" else source_root.rglob("*")
@@ -154,14 +165,13 @@ def _snapshot(project, destination, overrides, entry=None):
             if dirname == "charts" and entry is not None and relative != entry and relative not in overrides:
                 continue
             size = source.stat().st_size
-            total += size
+            total += size if not universal_id or source.suffix.lower()=='.py' else 0
             if total > MAX_INPUT_BYTES:
                 raise CandidateRenderError("Drawing project exceeds the 100 MiB snapshot limit", "scope_rejected")
-            data = source.read_bytes()
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-            hashes[relative] = "sha256:" + hashlib.sha256(data).hexdigest()
+            from project_preparation import copy_and_sha
+            hashes[relative] = 'sha256:' + copy_and_sha(source, target)
     for relative, content in overrides.items():
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -247,7 +257,8 @@ def _native_sandbox_command(command, work, snapshot, writable, environment_root,
     return args
 
 
-def _one_render(project, entry, files, directory, strict_io=False):
+def _one_render(project, entry, files, directory, strict_io=False, preview_dpi=None,
+                interactive_seed=None, capture_interactive_seed=False):
     cancellation.check()
     backend = isolation_backend()
     if backend == "local-python":
@@ -267,8 +278,11 @@ def _one_render(project, entry, files, directory, strict_io=False):
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "native_plot_runtime.py"):
+    for trusted in ("studio_style.py", "interactive_style.py", "component_editor.py", "component_groups.py", "point_components.py", "drawing_items.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "native_plot_runtime.py", "universal_plot_runtime.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
+    if interactive_seed is not None or capture_interactive_seed:
+        import cloudpickle
+        shutil.copytree(Path(cloudpickle.__file__).parent,package_root/'cloudpickle',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     profile_relative = Path("skills/chart-normalization/assets/style-profile.v1.json")
     target = package_root / profile_relative
     target.parent.mkdir(parents=True)
@@ -286,7 +300,23 @@ def _one_render(project, entry, files, directory, strict_io=False):
               "input_hashes": input_hashes, "panel_gap_multiple": panel_gap_multiple,
               "bundle": (project / "data_sources.json").is_file() and any(item.get("kind") == "plot_bundle" for item in json.loads((project / "data_sources.json").read_text(encoding="utf-8")).get("sources", []))}
     config['native'] = (snapshot/'native-project.json').is_file()
-    if config['native']:
+    config['universal'] = (snapshot/'universal-project.json').is_file()
+    if config['native'] and capture_interactive_seed:
+        config['interactive_seed_output'] = str(writable/'interactive-seed.pkl')
+    if config['native'] and interactive_seed is not None:
+        if not isinstance(interactive_seed,bytes) or len(interactive_seed)>30*1024*1024:
+            raise ValueError('交互图形缓存超出限制')
+        seed_input=writable/'interactive-seed-input.pkl'
+        seed_input.write_bytes(interactive_seed)
+        config['interactive_seed_input']=str(seed_input)
+    # RLIMIT_FSIZE applies to every write, including copying imported CSVs
+    # into the disposable runtime. It must not use the PNG-only byte limit.
+    config['runtime_file_limit'] = max(MAX_IMAGE_BYTES, max(
+        ((snapshot/path).stat().st_size for path in input_hashes), default=0
+    )) if config['universal'] else MAX_IMAGE_BYTES
+    config['preview_dpi'] = preview_dpi if config['native'] or config['universal'] else None
+    config['profile_render'] = os.environ.get('PLOT_FORGE_PROFILE_RENDER') == '1'
+    if config['native'] or config['universal']:
         config['strict_io'] = True
     environment_report=None
     executable=sys.executable
@@ -297,7 +327,7 @@ def _one_render(project, entry, files, directory, strict_io=False):
         except ValueError as exc:raise CandidateRenderError(str(exc),'environment_invalid') from exc
         executable=environment_report['executable']
         runtime_roots=[environment_report[k] for k in ('prefix','base_prefix') if environment_report.get(k)]
-    render_timeout = 150 if config['native'] else TIMEOUT_SECONDS
+    render_timeout = 150 if config['native'] or config['universal'] else TIMEOUT_SECONDS
     config_path = work / "config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
     if backend == "docker":
@@ -324,8 +354,9 @@ def _one_render(project, entry, files, directory, strict_io=False):
         command = _docker_command(work, snapshot, environment, container_name)
     if backend == "local-python":
         command = [executable, "-s", "-B", str(runner), "--worker", str(config_path)]
-        if config['native'] and sys.platform.startswith('linux'):
-            command = _native_sandbox_command(command,work,snapshot,writable,Path(environment_report.get('prefix',sys.prefix)),runtime_roots)
+        if (config['native'] or config['universal']) and sys.platform.startswith('linux'):
+            command = _native_sandbox_command(command,work,snapshot,writable,
+                                              Path((environment_report or {}).get('prefix',sys.prefix)),runtime_roots)
         environment["PATH"] = os.environ.get("PATH", "")
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
@@ -390,17 +421,21 @@ def _one_render(project, entry, files, directory, strict_io=False):
     for path, digest in input_hashes.items():
         expected = files.get(path)
         expected_hash = "sha256:" + hashlib.sha256(expected.encode()).hexdigest() if expected is not None else digest
-        if "sha256:" + hashlib.sha256((snapshot / path).read_bytes()).hexdigest() != expected_hash:
+        from project_preparation import sha
+        if 'sha256:' + sha(snapshot / path) != expected_hash:
             raise CandidateRenderError("Read-only snapshot changed: " + path, "scope_rejected")
     if bundle_signature(project) != bundle_revision:
         raise CandidateRenderError("Bundle 数据在渲染期间发生变化，请重试", "scope_rejected")
     if environment_report:
         report['render_environment']=environment_report
     report["image_bytes"] = output.read_bytes()
-    if config['native'] and backend == 'local-python' and sys.platform.startswith('linux'):
+    if (config['native'] or config['universal']) and backend == 'local-python' and sys.platform.startswith('linux'):
         report['render_backend'] = 'bubblewrap'
         report['os_sandbox'] = True
     report["stderr"] = error
+    seed_output=writable/'interactive-seed.pkl'
+    if capture_interactive_seed and seed_output.is_file() and not seed_output.is_symlink() and seed_output.stat().st_size<=30*1024*1024:
+        report['interactive_seed_bytes']=seed_output.read_bytes()
     return report
 
 
@@ -485,10 +520,18 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         raise CandidateRenderError("Symlinked output directories are not allowed", "scope_rejected")
     with tempfile.TemporaryDirectory(prefix="chat-candidate-") as temporary:
         temp = Path(temporary)
+        native=(project/'native-project.json').is_file()
+        universal=(project/'universal-project.json').is_file()
+        try:preview_dpi=int(os.environ.get('PLOT_FORGE_CHAT_PREVIEW_DPI','200'))
+        except ValueError:preview_dpi=200
+        preview_dpi=max(72,min(600,preview_dpi)) if native or universal else None
+        def render_one(overrides,directory):
+            if preview_dpi is None:return _one_render(project,entry,overrides,directory)
+            return _one_render(project,entry,overrides,directory,preview_dpi=preview_dpi)
         # Separate snapshots, workers and timeouts; never skip either validation render.
         with ThreadPoolExecutor(max_workers=2) as workers:
-            before = workers.submit(copy_context().run, _one_render, project, entry, baseline_files or {}, temp / "baseline")
-            after = workers.submit(copy_context().run, _one_render, project, entry, files, temp / "candidate")
+            before = workers.submit(copy_context().run, render_one, baseline_files or {}, temp / "baseline")
+            after = workers.submit(copy_context().run, render_one, files, temp / "candidate")
             candidate = after.result()
             baseline_error = None
             try:
@@ -518,6 +561,18 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         source_baseline = dict(baseline_files or {})
         source_baseline.setdefault(entry, (project / entry).read_text(encoding='utf-8') if (project / entry).is_file() else '')
         source_candidate = {**source_baseline, **files}
+        from universal_project import selection as universal_selection
+        universal_id=universal_selection(project,entry,source_baseline)
+        if universal_id:
+            from panel_index import effective_sources
+            registry=json.loads((project/'universal-project.json').read_text(encoding='utf-8'))
+            root=project/registry['source_root']
+            dependencies={
+                (root/path).relative_to(project).as_posix():(root/path).read_text(encoding='utf-8-sig')
+                for path in registry['figures'][universal_id].get('source_files',[]) if path.endswith('.py')
+            }
+            source_baseline=effective_sources({**dependencies,**source_baseline})
+            source_candidate=effective_sources({**dependencies,**source_candidate})
         source_inputs = compare_source_inputs(source_baseline, source_candidate)
         report = {"image_path": str(target.resolve()), "baseline_image_path": str(baseline_target.resolve()) if baseline_target else None, "layout": candidate["layout"],
                   "baseline_render_error":baseline_error,
@@ -525,16 +580,22 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "baseline_layout": baseline["layout"], "data_report": compare_reports(baseline, candidate),
                   "visual_change": visual_change,
                   "axis_details": candidate.get("axis_details"), "baseline_axis_details": baseline.get("axis_details"),
+                  "axes": candidate.get("axes", []),
+                  "component_groups": candidate.get("component_groups", []),
+                  "point_targets": candidate.get("point_targets", []),
                   "naming": candidate["naming"], "render_size_px": candidate.get("render_size_px"),
                   "layout_signature": candidate.get("layout_signature"),
                   "baseline_layout_signature": baseline.get("layout_signature"),
                   "normalization_report": candidate.get("normalization_report"),
                   "distribution_inputs": candidate.get("distribution_inputs", []),
+                  "baseline_distribution_inputs": baseline.get("distribution_inputs", []),
                   "candidate_artists": candidate.get("artists", []),
                   "baseline_artists": baseline.get("artists", []),
                   "unsupported_artists": baseline.get("unsupported_artists", []) + candidate.get("unsupported_artists", []),
                   "font_audit": candidate.get("font_audit"),
                   "baseline_font_audit": baseline.get("font_audit"),
+                  "render_timings": candidate.get("render_timings"),
+                  "baseline_render_timings": baseline.get("render_timings"),
                   "render_environment": candidate.get('render_environment'),
                   "warnings": [*_runtime_warnings(candidate.get("stderr")),*(candidate.get('render_environment') or {}).get('warnings',[])],
                   "isolation": {"backend": 'bubblewrap' if native_isolation else isolation_backend(),
@@ -544,6 +605,9 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         report['native_layout_warnings']=candidate.get('native_layout_warnings',[])
         report['preview_status']=candidate.get('preview_status','complete')
         report['native_checks_complete']=candidate.get('native_checks_complete',True)
+        if preview_dpi is not None:
+            report['interactive_preview_dpi']=preview_dpi
+            report['warnings'].append(f'候选图使用 {preview_dpi} DPI 快速预览；绘图代码仍保留原始导出 DPI。')
         if report['native_layout_warnings']:
             report['data_report']['native_checks']='unverified_after_layout_stop'
             report['warnings'].extend(item['warning']+' '+item['condition']+'：'+item['message'] for item in report['native_layout_warnings'])
@@ -575,6 +639,26 @@ def _number_array(values):
     sample = payload[:3] if isinstance(payload, list) else payload
     sample = json.loads(json.dumps(sample, allow_nan=True), parse_constant=lambda _: None)
     return {"shape": list(data.shape), "sha256": hashlib.sha256(encoded.encode()).hexdigest(), "sample": sample}
+
+
+def _image_array_description(image, prime=False):
+    """Reuse the canonical audit hash after checking current pixel bytes/mask."""
+    import numpy as np
+    values=np.ma.asarray(image.get_array());data=np.asarray(np.ma.getdata(values))
+    if data.dtype.hasobject: return _number_array(values)
+    cached=getattr(image,'_interactive_array_description',None)
+    if cached is None and not prime: return _number_array(values)
+    digest=hashlib.sha256(data.tobytes(order='C'))
+    digest.update(np.ma.getmaskarray(values).tobytes(order='C'))
+    fingerprint=(str(data.dtype),data.shape,digest.hexdigest())
+    if cached is None or cached[0]!=fingerprint:
+        cached=(fingerprint,_number_array(values));image._interactive_array_description=cached
+    return cached[1]
+
+
+def _prepare_interactive_seed(figure):
+    for axis in figure.axes:
+        for image in axis.images: _image_array_description(image,prime=True)
 
 
 def _distribution_values(obj, dimension):
@@ -687,7 +771,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         box = text.get_window_extent(renderer)
         if not np.isfinite(box.extents).all():
             return
-        texts.append({"key": key, "box": box, "group": group, "owner": owner, "text": text.get_text()})
+        texts.append({"key": key, "box": box, "group": group, "owner": owner, "text": text.get_text(), "fontsize": text.get_fontsize(), "added_id":getattr(text,"_plot_forge_added_id",None)})
         if outside(box, canvas):
             issue("text_clipped", [key], "Text extends beyond the exported canvas: " + text.get_text())
         if text.get_clip_on() and text.get_clip_box() is not None and outside(box, text.get_clip_box()):
@@ -735,14 +819,34 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
               and getattr(obj, "_normalization_role", None) == "violin_quartiles"):
             role = "violin_quartiles"
             evidence = "normalization_helper_tag"
-        records.append({"key": key, "kind": kind, "label": obj.get_label(),
+        hit_path = None
+        if kind in ('line','patch') and hasattr(obj, 'get_path'):
+            try:
+                points = obj.get_transform().transform(obj.get_path().vertices)
+                if len(points) > 1000:
+                    step = max(1, len(points)//1000); points = points[::step]
+                if np.isfinite(points).all(): hit_path = points.tolist()
+            except (TypeError,ValueError,AttributeError):
+                pass
+        if kind == 'heatmap' and hasattr(obj,'get_window_extent'):
+            box=obj.get_window_extent(renderer)
+            if np.isfinite(box.extents).all(): hit_path=[[box.x0,box.y0],[box.x1,box.y0],[box.x1,box.y1],[box.x0,box.y1],[box.x0,box.y0]]
+        if kind == 'scatter':
+            try:
+                points=obj.get_offset_transform().transform(obj.get_offsets())
+                if np.isfinite(points).all(): hit_path=points[:5000].tolist()
+            except (TypeError,ValueError,AttributeError): pass
+        alpha = obj.get_alpha()
+        if not obj.get_visible() or (alpha is not None and np.all(np.asarray(alpha) == 0)):
+            hit_path = None
+        records.append({"added_id":getattr(obj,"_plot_forge_added_id",None),"key": key, "kind": kind, "label": obj.get_label(),
                         "data_hash": hashlib.sha256(joined.encode()).hexdigest(),
                         "data": data, "visibility": visibility, "style": style,
                         "semantic_role": role, "role_evidence": evidence,
                         "point_signature": _point_signature(obj, kind),
                         "distribution_mutated": (hasattr(obj, '_chat_initial_numeric') and
                             obj._chat_initial_numeric != data.get('rendered_values')),
-                        "errorbar_component": component,
+                        "errorbar_component": component, "hit_path_px": hit_path,
                         "signature_basis": "supplied_statistics" if hasattr(obj, "_chat_semantic_data") else "drawn_geometry"})
     for ai, ax in enumerate(fig.axes):
         if not ax.get_visible():
@@ -751,7 +855,13 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         for call in getattr(ax, '_chat_distribution_inputs', []):
             dimension = call['dimension']
             labels = ax.get_xticklabels() if dimension == 1 else ax.get_yticklabels()
-            distribution_inputs.append({**call, 'axis': ai, 'labels': [t.get_text() for t in labels]})
+            ticks=ax.get_xticks() if dimension==1 else ax.get_yticks()
+            group_labels=[]
+            for position in call.get('positions',[]):
+                matches=[t.get_text() for value,t in zip(ticks,labels) if np.isclose(value,position,rtol=0,atol=1e-7)]
+                group_labels.append(matches[0] if len(matches)==1 else None)
+            distribution_inputs.append({**call, 'axis': ai, 'axis_label':ax.get_label(),
+                                       'labels': [t.get_text() for t in labels], 'group_labels':group_labels})
         for container in ax.containers:
             if isinstance(container, ErrorbarContainer):
                 data_line, cap_lines, bar_collections = container.lines
@@ -831,9 +941,11 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
             if outside(box, canvas):
                 issue("legend_clipped", [prefix + ".legend"], "Legend extends beyond the exported canvas")
         for li, line in enumerate(ax.lines):
+            if getattr(line,'_component_point_overlay',False):continue
             artist(prefix + ".line_" + str(li), "line", {"x": _number_array(line.get_xdata(orig=False)),
                                                          "y": _number_array(line.get_ydata(orig=False))}, line)
         for ci, collection in enumerate(ax.collections):
+            if getattr(collection,'_component_point_overlay',False):continue
             key = prefix + ".collection_" + str(ci)
             if isinstance(collection, LineCollection):
                 data = {"segments": [_number_array(s) for s in collection.get_segments()]}
@@ -847,7 +959,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
             else:
                 unsupported.append(key + ": " + type(collection).__name__)
         for ii, img in enumerate(ax.images):
-            artist(prefix + ".image_" + str(ii), "heatmap", {"array": _number_array(img.get_array()),
+            artist(prefix + ".image_" + str(ii), "heatmap", {"array": _image_array_description(img),
                                                              "extent": list(img.get_extent())}, img)
         for pi, patch in enumerate(ax.patches):
             if isinstance(patch, Rectangle):
@@ -980,13 +1092,16 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
     if not records:
         unsupported.append("No supported data artist was captured")
         limitations.append(unsupported[-1])
-    return {"artists": records, "unsupported_artists": unsupported, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
+    from component_groups import group_report
+    grouped_components=group_report(fig,records)
+    from point_components import targets as point_targets
+    return {"point_targets":point_targets(fig,records),"component_groups":grouped_components,"artists": records, "unsupported_artists": unsupported, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
             "distribution_inputs": distribution_inputs,
             "normalization_report": getattr(fig, "_normalization_report", None),
             "render_size_px": [round(canvas.width), round(canvas.height)],
             "layout_signature": {"size_inches": list(map(float, fig.get_size_inches())), "dpi": float(fig.dpi),
                                  "axes": axes_layout,
-                                 "texts": [{"key": t["key"], "text": t["text"],
+                                 "texts": [{"key": t["key"], "text": t["text"], "fontsize": t["fontsize"], "added_id":t.get("added_id"),
                                             "bbox": [round(float(v), 4) for v in t["box"].extents]} for t in texts],
                                  "legends": [{"key": key, "bbox": list(map(float, box.extents))} for key, box, _ in legend_regions]},
             "layout": {"status": "conflict" if issues else "unverified" if unsupported else "pass",
@@ -996,12 +1111,14 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
 
 def _worker_main(config_path):
     import runpy
+    worker_started = time.monotonic()
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     if os.name != "nt":
         import resource
-        cpu_limit = 120 if config.get('native') else 30
+        cpu_limit = 120 if config.get('native') or config.get('universal') else 30
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit+5))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_IMAGE_BYTES, MAX_IMAGE_BYTES))
+        file_limit = config.get('runtime_file_limit', MAX_IMAGE_BYTES)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
         resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
     sys.dont_write_bytecode = True
     sys.path.insert(0, config["package_root"])
@@ -1020,11 +1137,44 @@ def _worker_main(config_path):
     random.seed(0)
     register_platform_font()
     _install_stat_capture(Axes)
+    # Isolated/native renders bypass chart_naming.install_capture. Install the
+    # same interaction grouping here, before any project creates its artists.
+    from component_groups import install_group_tracking
+    install_group_tracking()
+    # Native publication scripts commonly construct a 600-DPI figure and draw
+    # it several times for their own layout checks before the final save.  A
+    # savefig-only cap is therefore too late to make interactive previews fast.
+    # Cap the in-memory canvas as it is created; the project source (and its
+    # formal export DPI) remains untouched.
+    if config.get('preview_dpi'):
+        original_figure_init = Figure.__init__
+        def preview_figure_init(figure, *args, **kwargs):
+            requested = kwargs.get('dpi')
+            if isinstance(requested, (int, float)):
+                kwargs['dpi'] = min(float(requested), float(config['preview_dpi']))
+            return original_figure_init(figure, *args, **kwargs)
+        Figure.__init__ = preview_figure_init
+        # Layout helpers may call canvas.draw() dozens of times merely to read
+        # text/tick bounding boxes.  Re-resampling every embedded raster on each
+        # of those draws dominates large native figures.  Keep raster artists
+        # intact but paint them only for real save operations.
+        from matplotlib.image import _ImageBase
+        original_image_draw = _ImageBase.draw
+        preview_image_state = {'enabled': False}
+        def preview_image_draw(image, renderer):
+            if not preview_image_state['enabled']:
+                return None
+            return original_image_draw(image, renderer)
+        _ImageBase.draw = preview_image_draw
+    else:
+        preview_image_state = None
+    setup_finished = time.monotonic()
     # A script may call fig.show() after finish_figure has closed its manager.
     Figure.show = lambda self, *args, **kwargs: None
     original = Figure.savefig
     captured = []
     saved_outputs = []
+    save_timings = []
     artifacts = {}
     if config.get("bundle"):
         import bundle_runtime
@@ -1036,29 +1186,67 @@ def _worker_main(config_path):
     def savefig(fig, fname, *args, **kwargs):
         saved_outputs.append(str(fname))
         if isinstance(fname, (str, os.PathLike)) and (config.get("bundle") or Path(fname).resolve() == Path(config["output"])):
+            save_started = time.monotonic()
+            if config.get('preview_dpi') and Path(fname).resolve() == Path(config['output']):
+                requested=kwargs.get('dpi',fig.dpi)
+                if isinstance(requested,(int,float)):
+                    kwargs['dpi']=min(float(requested),float(config['preview_dpi']))
             font_audit = audit_figure_fonts(fig)
+            font_audit_finished = time.monotonic()
             draws = []
+            capture_seconds = []
             def on_draw(event):
+                capture_started = time.monotonic()
                 captured_figure = _capture(fig, event.renderer, config["panel_gap_multiple"])
+                capture_seconds.append(time.monotonic() - capture_started)
                 captured_figure["font_audit"] = font_audit
                 draws.append(captured_figure)
             connection = fig.canvas.mpl_connect("draw_event", on_draw)
             try:
+                if preview_image_state is not None:
+                    preview_image_state['enabled'] = True
                 result = original(fig, fname, *args, **kwargs)
             finally:
+                if preview_image_state is not None:
+                    preview_image_state['enabled'] = False
                 fig.canvas.mpl_disconnect(connection)
+            save_finished = time.monotonic()
+            save_timings.append({
+                'font_audit_seconds': round(font_audit_finished-save_started, 4),
+                'export_and_capture_seconds': round(save_finished-font_audit_finished, 4),
+                'capture_seconds': round(sum(capture_seconds), 4),
+            })
             if not draws:
                 raise RuntimeError("No export-size draw event was observed")
             artifacts[str(Path(fname).resolve())] = draws[-1]
             if Path(fname).resolve() == Path(config["output"]):
                 captured[:] = [draws[-1]]
             return result
-        return original(fig, fname, *args, **kwargs)
+        if preview_image_state is None:
+            return original(fig, fname, *args, **kwargs)
+        preview_image_state['enabled'] = True
+        try:
+            return original(fig, fname, *args, **kwargs)
+        finally:
+            preview_image_state['enabled'] = False
     Figure.savefig = savefig
     if config.get('native'):
         import native_plot_runtime
         native_plot_runtime.SAVE_TARGET = savefig
-        native_plot_runtime.SAVE_INTERMEDIATE = original
+        native_plot_runtime.INTERACTIVE_SEED_INPUT=config.get('interactive_seed_input')
+        native_plot_runtime.INTERACTIVE_SEED_OUTPUT=config.get('interactive_seed_output')
+        native_plot_runtime.INTERACTIVE_SEED_HASHES={k:v for k,v in config['input_hashes'].items() if k!=config['entry']}
+        native_plot_runtime.INTERACTIVE_SEED_PREPARE=_prepare_interactive_seed
+        if preview_image_state is None:
+            native_plot_runtime.SAVE_INTERMEDIATE = original
+        else:
+            def save_intermediate(fig, fname, *args, **kwargs):
+                preview_image_state['enabled'] = True
+                try:
+                    return original(fig, fname, *args, **kwargs)
+                finally:
+                    preview_image_state['enabled'] = False
+            native_plot_runtime.SAVE_INTERMEDIATE = save_intermediate
     # This audit guard is defense-in-depth, NOT an OS sandbox. For extracted
     # renderers deny ordinary reads outside the package/runtime and dependencies.
     read_roots = [Path(config['package_root']).resolve(), Path(config['output']).parent.resolve(),
@@ -1066,8 +1254,11 @@ def _worker_main(config_path):
     from matplotlib import font_manager
     font_paths = {Path(f.fname).resolve() for f in font_manager.fontManager.ttflist}
     write_paths = {Path(config['output']).resolve(), Path(config['metadata']).resolve()}
+    if config.get('interactive_seed_output'): write_paths.add(Path(config['interactive_seed_output']).resolve())
     mpl_path = Path(os.environ['MPLCONFIGDIR']).resolve()
     native_work = Path(config['output']).parent.resolve()/'native-work'
+    universal_work = Path(config['output']).parent.resolve()/'universal-work'
+    observed_universal_reads = set()
     # Extra protection and clearer error messages; not a substitute for Seatbelt.
     def audit(event, args):
         if event.startswith(("socket.", "subprocess.", "ctypes.")) or event in {"os.system", "os.fork", "os.posix_spawn", "os.exec", "pty.spawn"}:
@@ -1076,7 +1267,14 @@ def _worker_main(config_path):
             path = Path(os.fsdecode(args[0])).resolve()
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
             writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
-            if writing and path not in write_paths and not path.is_relative_to(mpl_path) and not (config.get('native') and path.is_relative_to(native_work)):
+            if not writing and config.get('universal') and path.is_relative_to(universal_work):
+                relative = path.relative_to(universal_work)
+                # universal-work/<figure-id>/<original-project-relative-path>
+                if len(relative.parts) > 1:
+                    observed_universal_reads.add(Path(*relative.parts[1:]).as_posix())
+            if (writing and path not in write_paths and not path.is_relative_to(mpl_path)
+                    and not (config.get('native') and path.is_relative_to(native_work))
+                    and not (config.get('universal') and path.is_relative_to(universal_work))):
                 raise PermissionError('Renderer may write only its selected output')
             if not writing and path not in font_paths and not any(path.is_relative_to(root) for root in read_roots):
                 if str(path) not in ('/etc/localtime', '/etc/timezone', '/dev/null'):
@@ -1084,17 +1282,45 @@ def _worker_main(config_path):
         if config.get('strict_io') and event in {'os.remove','os.rename','os.rmdir','os.mkdir','os.link','os.symlink','os.chmod','os.truncate'}:
             if args and isinstance(args[0], (str, bytes, os.PathLike)):
                 mutation = Path(os.fsdecode(args[0])).resolve()
-                if not mutation.is_relative_to(mpl_path) and not (config.get('native') and mutation.is_relative_to(native_work)):
+                if (not mutation.is_relative_to(mpl_path)
+                        and not (config.get('native') and mutation.is_relative_to(native_work))
+                        and not (config.get('universal') and mutation.is_relative_to(universal_work))):
                     raise PermissionError('Renderer may not change its package or unrelated files')
     sys.addaudithook(audit)
+    chart_started = time.monotonic()
+    profiler = None
+    if config.get('profile_render'):
+        import cProfile
+        profiler = cProfile.Profile()
+        profiler.enable()
     runpy.run_path(str(Path(config["project"]) / config["entry"]), run_name="__main__")
+    if profiler is not None:
+        profiler.disable()
+    chart_finished = time.monotonic()
     if not captured:
         raise RuntimeError("Script must save its target figure to CHART_OUTPUT")
     if config.get('native') and native_plot_runtime.DIAGNOSTICS:
         captured[-1]['native_layout_warnings']=native_plot_runtime.DIAGNOSTICS
         captured[-1]['preview_status']='layout_warning'
         captured[-1]['native_checks_complete']=False
+    if config.get('native'):
+        captured[-1]['interactive_seed_reused']=native_plot_runtime.INTERACTIVE_SEED_REUSED
     captured[-1]['output_count'] = len(saved_outputs)
+    if config.get('universal'):
+        captured[-1]['input_trace'] = sorted(observed_universal_reads)
+        import universal_plot_runtime
+        captured[-1]['output_provenance'] = dict(universal_plot_runtime.OUTPUT_PROVENANCE)
+    captured[-1]['render_timings'] = {
+        'worker_setup_seconds': round(setup_finished-worker_started, 4),
+        'chart_total_seconds': round(chart_finished-chart_started, 4),
+        'save_calls': save_timings,
+    }
+    if profiler is not None:
+        import io
+        import pstats
+        profile_text = io.StringIO()
+        pstats.Stats(profiler, stream=profile_text).sort_stats('cumulative').print_stats(35)
+        captured[-1]['render_profile'] = profile_text.getvalue()
     def json_scalar(value):
         import numpy as np
         if isinstance(value, np.generic):
@@ -1173,6 +1399,7 @@ def _install_stat_capture(axes_type):
             @functools.wraps(original)
             def observed(self, *args, **kwargs):
                 from matplotlib.cbook import _reshape_2D
+                import numpy as np
                 from chart_transform import sample_signature
                 signature = inspect.signature(original)
                 bound = signature.bind(self, *args, **kwargs)
@@ -1183,6 +1410,8 @@ def _install_stat_capture(axes_type):
                 dimension = 0 if options.get('orientation') == 'horizontal' or options.get('vert') is False else 1
                 groups = [sample_signature(group) for group in _reshape_2D(dataset, 'dataset')]
                 record = {'kind': kind, 'dimension': dimension, 'groups': groups,
+                          'positions':np.asarray(options.get('positions') if options.get('positions') is not None
+                                                 else np.arange(1,len(groups)+1),dtype=float).tolist(),
                           'showfliers': options.get('showfliers', True),
                           'whis': (options.get('whis') if options.get('whis') is not None else matplotlib.rcParams['boxplot.whiskers'])}
                 result = original(self, *args, **kwargs)

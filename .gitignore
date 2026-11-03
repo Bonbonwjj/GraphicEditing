@@ -41,3 +41,15 @@ projects/*/.module-drafts/
 /projects/ly/
 /projects/ly1/
 /projects/jiahui/
+
+# v0.2.2 local-only workspaces and validation artifacts
+
+
+
+/projects/adaptive_foraging/
+/projects/foraging/
+
+plot-v021-browser-*/
+.test-deps/
+.test-tmp/
+%SystemDrive%/

@@ -65,6 +65,9 @@ def handle(handler, path, projects, preview_lock=None):
         elif method == 'POST' and action == 'native-prepare':
             from native_project import start
             handler.json_response(start(project, body.get('consent') is True, body.get('environment_mode','default')))
+        elif method == 'POST' and action == 'universal-prepare':
+            from universal_project import start
+            handler.json_response(start(project, body.get('consent') is True))
         elif method == 'POST' and action == 'batch-analyze':
             from project_batch import start
             handler.json_response(start(project, body.get('consent') is True, body.get('confirmation_token')))

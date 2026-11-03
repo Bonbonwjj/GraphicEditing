@@ -95,11 +95,11 @@ def render():
                 self.assertEqual(len(listing),1)
                 self.assertEqual(len(listing[0]['charts']),2)
                 self.assertIn('fig2',listing[0]['chart_warnings'])
-                self.assertTrue((project/'.preparation/native-cache/fig1.json').is_file())
+                self.assertFalse((project/'.preparation/native-cache').exists())
                 broken.write_text(program)
                 with patch('chat_runner._one_render',wraps=_one_render) as render:
                     result=native.prepare(project,source)
-                    self.assertEqual(render.call_count,1)
+                    self.assertEqual(render.call_count,2)
                 self.assertTrue(result['can_open'])
                 from chat_runner import isolation_backend
                 import sys

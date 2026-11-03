@@ -1,30 +1,16 @@
 """Visible native directory chooser for the local desktop server."""
 import os
+import base64
+from pathlib import Path
 import subprocess
 import sys
 
 
 def choose_folder():
     if sys.platform == 'win32':
-        script = r'''
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-$owner = New-Object System.Windows.Forms.Form
-$owner.TopMost = $true
-$owner.ShowInTaskbar = $false
-$owner.StartPosition = 'CenterScreen'
-$owner.Width = 1; $owner.Height = 1
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择代码、数据或工程文件夹'
-$dialog.ShowNewFolderButton = $false
-try {
-  $owner.Show(); $owner.Activate()
-  if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
-    [Console]::WriteLine($dialog.SelectedPath)
-  }
-} finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }
-'''
-        command = ['powershell.exe', '-NoProfile', '-STA', '-Command', script]
+        script = Path(__file__).with_name('native_folder_dialog.ps1').read_text(encoding='utf-8')
+        command = ['powershell.exe', '-NoProfile', '-STA', '-EncodedCommand',
+                   base64.b64encode(script.encode('utf-16-le')).decode('ascii')]
     else:
         script = ('import tkinter as t; from tkinter import filedialog; r=t.Tk(); r.withdraw(); '
                   'r.attributes("-topmost",True); r.update(); '
@@ -34,8 +20,8 @@ try {
     env['PYTHONIOENCODING'] = 'utf-8'
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
-                                errors='replace', timeout=120, env=env,
-                                **({'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}))
+                                errors='replace', timeout=600, env=env,
+                                **({'creationflags':getattr(subprocess,'CREATE_NO_WINDOW',0)} if sys.platform=='win32' else {}))
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('文件夹选择窗口未完成，请重试或直接粘贴完整路径。') from None
     if result.returncode:

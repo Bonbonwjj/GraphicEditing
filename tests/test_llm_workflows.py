@@ -19,6 +19,11 @@ fig.savefig(os.environ["CHART_OUTPUT"])
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_split_detection_skips_single_figure_and_flags_multiple_or_loop(self):
+        self.assertFalse(generic_importer._needs_model_split("plt.plot([1], [2]); plt.show()"))
+        self.assertTrue(generic_importer._needs_model_split("plt.figure(); plt.show(); plt.figure(); plt.show()"))
+        self.assertTrue(generic_importer._needs_model_split("for item in rows:\n    plt.figure()\n    plt.show()\n"))
+
     def test_validate_chart_source_blocks_subprocess(self):
         with self.assertRaisesRegex(ValueError, "not allowed"):
             llm_workflows.validate_chart_source(VALID_CODE.replace("import os", "import os\nimport subprocess"))

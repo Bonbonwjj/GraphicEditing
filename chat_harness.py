@@ -17,7 +17,7 @@ import chat_cancellation as cancellation
 from datetime import datetime, timezone
 
 from agent_http import post_json
-from chat_agent import propose, validate_response, MAX_MODEL_ATTEMPTS
+from chat_agent import propose, validate_response, MAX_MODEL_ATTEMPTS, model_attempt_limit
 
 
 @lru_cache(maxsize=8)
@@ -97,6 +97,13 @@ def scoped_plot_data(files, chart):
         path = item['path']
         if any(existing['path'] == path for existing in result):
             continue
+        if path.endswith('.json') and path.startswith(('data/','lib/universal/source/')):
+            try: value=json.loads(item.get('content') or '{}')
+            except ValueError: value={}
+            columns=list(value) if isinstance(value,dict) else list(value[0]) if isinstance(value,list) and value and isinstance(value[0],dict) else []
+            result.append({**item,'format':'json','columns':columns,'content':'','content_scope':'schema_only',
+                           'source_row_count':len(value) if isinstance(value,list) else None,'read_only':True})
+            continue
         if not path.endswith(('.csv', '.tsv')):
             continue
         delimiter = '\t' if path.endswith('.tsv') else ','
@@ -104,7 +111,7 @@ def scoped_plot_data(files, chart):
         columns, data_rows = (rows[0], rows[1:]) if rows else ([], [])
         referenced = Path(path).name in sources or path in sources
         selected = data_rows if referenced else []
-        scope = 'complete' if referenced else 'schema_only'
+        scope = 'truncated_sample' if item.get('content_scope')=='truncated_sample' and referenced else 'complete' if referenced else 'schema_only'
         id_column = next((i for i, name in enumerate(columns) if name in ('panel_id', 'chart_id')), None)
         if referenced and id_column is not None and chart in sources:
             matching = [row for row in data_rows if len(row) > id_column and row[id_column] == chart]
@@ -126,7 +133,7 @@ def scoped_plot_data(files, chart):
             included += 1
         result.append({**item, 'content': output.getvalue(), 'columns': columns,
                        'read_only': True, 'content_scope': scope,
-                       'source_row_count': len(data_rows), 'included_row_count': included})
+                       'source_row_count': item.get('source_row_count',len(data_rows)), 'included_row_count': included})
     return result
 
 
@@ -142,9 +149,10 @@ class ChatHarness:
         if model_auth.get('provider') == 'chatgpt':
             url = None  # OAuth credentials and selected source stay on the direct official route.
         request=dict(context,_model_auth=model_auth)
+        if url:request.pop('_context_progress',None)
         if not url:return propose(request)
         budget=context.get('_model_attempt_budget',{'used':0})
-        remaining=MAX_MODEL_ATTEMPTS-budget['used']
+        remaining=model_attempt_limit(budget)-budget['used']
         if remaining<=0:raise ValueError('本张图本轮模型调用已达到 3 次上限')
         try:
             response=post_json(url.rstrip('/')+'/v1/chat-edit', request, timeout=600)
@@ -153,6 +161,11 @@ class ChatHarness:
             budget['used']=MAX_MODEL_ATTEMPTS
             raise
         used=response.get('model_attempts_used')
+        reads=response.get('model_context_reads_used',budget.get('context_reads',0))
+        from chat_agent import MAX_CONTEXT_READ_ROUNDS
+        if type(reads) is int and budget.get('context_reads',0)<=reads<=MAX_CONTEXT_READ_ROUNDS:
+            budget['context_reads']=reads
+        remaining=model_attempt_limit(budget)-budget['used']
         budget['used']+=used if type(used) is int and 1<=used<=remaining else remaining
         return response
 
@@ -189,12 +202,24 @@ class ChatHarness:
         candidates = [entry]
         from native_project import selection
         native_id = selection(p, entry.relative_to(p).as_posix())
-        for directory in ('lib','data'):
-            dependency_root = p/directory/'native'/native_id if native_id else p/directory
-            if dependency_root.exists():
-                candidates += [f for f in dependency_root.rglob('*') if f.is_file() and '__pycache__' not in f.parts]
+        from universal_project import selection as universal_selection
+        universal_id = universal_selection(p, entry.relative_to(p).as_posix())
+        universal_root = None
+        if universal_id:
+            registry=read_json(p/'universal-project.json')
+            universal_root=p/registry['source_root']
+            universal_record=registry['figures'][universal_id]
+            candidates += [universal_root/path for path in [*universal_record.get('source_files',[]),
+                                                             *universal_record.get('input_files',[])]]
+        else:
+            for directory in ('lib','data'):
+                dependency_root = p/directory/'native'/native_id if native_id else p/directory
+                if dependency_root.exists():
+                    candidates += [f for f in dependency_root.rglob('*') if f.is_file() and '__pycache__' not in f.parts]
         if native_id:
             candidates.append(p/'native-project.json')
+        if universal_id:
+            candidates.append(p/'universal-project.json')
         # Root-level project helpers are also dependencies.
         candidates += list(p.glob('*.py'))
         if (p/'data_sources.json').is_file(): candidates.append(p/'data_sources.json')
@@ -205,9 +230,30 @@ class ChatHarness:
         for f in sorted(set(candidates)):
             if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):
                 raise ValueError('项目含有指向外部的依赖；请将绘图文件直接放入项目')
+            from project_preparation import sha
+            if (universal_root or native_id) and f.suffix.lower() in ('.csv','.tsv','.json') and f.stat().st_size>256_000:
+                path=f.relative_to(p).as_posix()
+                file_hash='sha256:'+sha(f)
+                content=''
+                if f.suffix.lower() in ('.csv','.tsv'):
+                    delimiter='\t' if f.suffix.lower()=='.tsv' else ','
+                    sample=io.StringIO()
+                    writer=csv.writer(sample,delimiter=delimiter,lineterminator='\n')
+                    with f.open(encoding='utf-8-sig',newline='') as stream:
+                        reader=csv.reader(stream)
+                        for index,row in enumerate(reader):
+                            if index>=100 or sample.tell()>MAX_PROMPT_CSV_CHARS:
+                                break
+                            writer.writerow(row)
+                    content=sample.getvalue()
+                files[path]={'path':path,'content':content,'sha256':file_hash,'writable':False,
+                             'content_scope':'truncated_sample','source_row_count':None}
+                continue
             if f.suffix.lower() not in ('.py','.csv','.tsv','.json'):
-                if f.suffix.lower() in ('.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp','.svg','.ttf','.otf','.pptx','.md','.txt'):
-                    binary_dependencies[f.relative_to(p).as_posix()] = digest(f.read_bytes())
+                if f.suffix.lower() in ('.npz','.npy','.parquet','.feather','.xlsx','.xls','.h5','.hdf5',
+                                         '.yaml','.yml','.toml','.ini','.png','.jpg','.jpeg','.webp',
+                                         '.svg','.ttf','.otf','.pptx','.md','.txt'):
+                    binary_dependencies[f.relative_to(p).as_posix()] = 'sha256:'+sha(f)
                 continue
             raw = f.read_bytes(); total += len(raw)
             if total > 8_000_000:
@@ -216,12 +262,18 @@ class ChatHarness:
             files[path] = {'path':path,'content':raw.decode('utf-8-sig').replace('\r\n', '\n').replace('\r', '\n'),'sha256':digest(raw),'writable':f==entry}
         dependencies = dict((k,v['sha256']) for k,v in files.items())
         dependencies.update(binary_dependencies)
+        if universal_root:
+            for dependency in sorted(path for path in universal_root.rglob('*') if path.is_file() and path not in candidates):
+                from project_preparation import sha
+                dependencies[dependency.relative_to(p).as_posix()] = 'sha256:'+sha(dependency)
         # The Chat Skill controls future proposals, not the applied chart or
         # an already-rendered draft. Updating its wording must not invalidate
         # a candidate that was reviewed against unchanged drawing inputs.
         dependencies.update(self.platform_dependencies())
         if native_id:
             dependencies['@platform/native_plot_runtime.py'] = digest((self.host.ROOT/'native_plot_runtime.py').read_bytes())
+        if universal_id:
+            dependencies['@platform/universal_plot_runtime.py'] = digest((self.host.ROOT/'universal_plot_runtime.py').read_bytes())
         from bundle_bindings import signature as bundle_signature
         bundle_revision=bundle_signature(p)
         if bundle_revision: dependencies['@bundle/source']=bundle_revision
@@ -286,7 +338,8 @@ class ChatHarness:
         for record in value['charts']:record.pop('_image',None)
         for draft in value['drafts']:
             draft['can_continue'] = self.can_continue_draft(draft)
-            draft['can_apply'] = draft['can_continue'] and draft.get('status')!='applied'
+            draft['can_apply'] = self.can_apply_draft(draft)
+            draft.pop('_layout_reference',None)
             draft['warnings'] = self.candidate_warnings(draft)
             if draft.get('baseline_image_path'):
                 draft['baseline_image_url'] = (f"/api/projects/{session['project']}/chat/sessions/{session['id']}"
@@ -295,6 +348,7 @@ class ChatHarness:
             draft.pop('_image',None)
             draft.pop('baseline_image_path',None)
         for turn in value['turns']:
+            turn.pop('_diagnostics',None)
             for result in turn.get('results',[]):result.pop('_image',None)
         for ref in value['references']:
             ref.pop('source_files',None);ref.pop('plot_data',None);ref.pop('_image',None)
@@ -479,12 +533,27 @@ class ChatHarness:
         selected_panel = next((p for p in panel_index['panels'] if p['id'] == selected_id), None)
         if selected_id and not selected_panel:
             raise ValueError('所选子图的映射已失效，请重新选择子图')
+        data_reference_roots=[]
+        native_registry=files.get('native-project.json')
+        if native_registry:
+            from native_project import selection
+            native_id=selection(self.host.project_path(session['project']),'charts/'+record['chart']+'.py',
+                                {'charts/'+record['chart']+'.py':entry_source})
+            data_reference_roots.extend(['data/native/'+native_id,'data/native/'+native_id+'/data'])
+        registry=files.get('universal-project.json')
+        if registry:
+            descriptor=json.loads(registry['content'])
+            if descriptor.get('schema')=='plot-forge-universal/1':
+                data_reference_roots.append(descriptor['source_root'])
+        from automatic_context import input_mappings
         return {'request_id':uid('req'),'edit_session_id':session['id'],'turn_id':turn['id'],
                 'project_id':session['project_id'],'chart_id':chart_id,'target_display_name':record['display_name'],
                 'base_revision':session['base_revisions'][chart_id],'parent_draft_id':parent['id'] if parent else None,
                 'batch_target_count':len(session['chart_ids']),
                 'user_message':turn['user_message'],'source_files':[f for f in files.values() if f['path'].endswith('.py')],
-                'plot_data':plot_data,'allowed_write_paths':['charts/'+record['chart']+'.py'],
+                'plot_data':plot_data,'data_reference_roots':data_reference_roots,
+                'input_mappings':input_mappings(files),
+                'allowed_write_paths':['charts/'+record['chart']+'.py'],
                 'panel_index':panel_index, 'selected_panel':selected_panel,
                 'reference_charts':refs,'project_chart_catalog':self.records(session['project'],list(self.identity(session['project'])['charts'])),
                 'conversation_context':{'recent_turns':recent,'active_parent_lineage':lineage,
@@ -496,6 +565,7 @@ class ChatHarness:
                     if parent and parent.get('review_blocker')=='layout_conflict' else None),
                 'platform_render_helper':platform_helper,
                 'constraints':['CSV and shared dependencies are read-only','Preserve data and scientific meaning','Only selected chart entry is writable','Default avoid unintended overlap; report unsupported checks'],
+                '_layout_reference':parent.get('_layout_reference') if parent and parent.get('review_blocker')=='layout_changed' else None,
                 'layout_exception':exception,'visual_context_available':bool(images),'target_image_available':'current_target' in image_order,
                 'image_order':image_order,'_images':images}
 
@@ -512,6 +582,11 @@ class ChatHarness:
         if not draft.get('image_path') or not draft.get('code'):
             return False
         return draft.get('status') not in ('rendering','discarded')
+
+    @staticmethod
+    def can_apply_draft(draft):
+        return (ChatHarness.can_continue_draft(draft) and draft.get('status')!='applied'
+                and draft.get('review_blocker')!='layout_changed')
 
     @staticmethod
     def candidate_warnings(draft):
@@ -595,6 +670,12 @@ class ChatHarness:
                     context=self.context(session,record,turn,parent,exception)
                     cancellation.check()
                     context['_model_attempt_budget']=attempt_budget
+                    def context_progress(info):
+                        session['progress']={'stage':'reading_context','chart_id':record['chart_id'],
+                            'started_at':session.get('progress',{}).get('started_at',time.time()),
+                            'display_name':record['display_name'],**info}
+                        self.save(session)
+                    if not normalize:context['_context_progress']=context_progress
                     context['layout_exception_requested']=bool(body.get('layout_exception'))
                     if exception:
                         diagnostic=next((d for d in reversed(session['drafts']) if d['chart_id']==record['chart_id'] and d.get('layout',{}).get('issues')),None)
@@ -648,9 +729,9 @@ class ChatHarness:
                         draft=self.build_draft(session,record,turn,parent,context,response)
                         # Format correction and render repair share three model calls.
                         for repair_attempt in range(MAX_MODEL_ATTEMPTS-1):
-                            if (normalize or attempt_budget['used']>=MAX_MODEL_ATTEMPTS or exception or
+                            if (normalize or attempt_budget['used']>=model_attempt_limit(attempt_budget) or exception or
                                     (draft['status'] not in ('render_failed','needs_clarification','no_visible_change','axis_unmet','font_unverified')
-                                     and draft.get('review_blocker')!='transform_unverified')):
+                                     and draft.get('review_blocker') not in ('transform_unverified','layout_changed'))):
                                 break
                             session['progress']['stage']='repairing';self.save(session)
                             context['request_id']=uid('req')
@@ -658,8 +739,9 @@ class ChatHarness:
                                                                  'visual_change':draft.get('visual_change'),
                                                                  'font_audit':draft.get('font_audit'),
                                                                  'chart_transform':draft.get('chart_transform'),
+                                                                 'layout_preservation':draft.get('layout_preservation'),
                                                                  'reason':draft.get('reason'),
-                                                                 'repair_attempts_remaining':MAX_MODEL_ATTEMPTS-attempt_budget['used']}
+                                                                 'repair_attempts_remaining':model_attempt_limit(attempt_budget)-attempt_budget['used']}
                             try:
                                 repaired=validate_response(context,cancellation.call(self.agent,context))
                                 if repaired['status']=='candidate':
@@ -684,7 +766,10 @@ class ChatHarness:
                         result.update(status=draft['status'],draft_id=draft['id'],summary=draft['summary'],reason=draft.get('reason'),warnings=draft.get('warnings',[]))
                 except Exception as error:
                     result.update(status='revision_conflict' if 'revision_conflict' in str(error) else 'cannot_complete',reason=str(error))
+                    if getattr(error,'failure_code',None):result['failure_code']=error.failure_code
                 cancellation.check()
+                if attempt_budget.get('validation_diagnostics'):
+                    turn.setdefault('_diagnostics',{})[record['chart_id']]=attempt_budget['validation_diagnostics']
                 result['model_attempts']=attempt_budget['used']
                 turn['results'].append(result);session.pop('progress',None);self.save(session)
             session['status']='open';session['completed_at']=time.time();session.pop('progress',None);self.save(session)
@@ -784,6 +869,7 @@ class ChatHarness:
                'selected_panel':context.get('selected_panel'),
                'parent_draft_id':context['parent_draft_id'],'code':code,'summary':response.get('summary') or '候选修改',
                'warnings':response.get('warnings',[]),'proposal':response,'created_at':time.time(),'status':'rendering'}
+        if context.get('_layout_reference'):draft['_layout_reference']=context['_layout_reference']
         atomic_json(output/'proposal.json',response)
         try:
             render=self.renderer or render_candidate
@@ -798,12 +884,18 @@ class ChatHarness:
                     draft['warnings'].append(scope['warning'])
             draft['image_url']=f"/api/projects/{session['project']}/chat/sessions/{session['id']}/drafts/{did}/image"
             issues=report.get('layout',{}).get('issues',[])
+            from layout_preservation import check_layout,unchanged_spacing_issues
+            normalizing=response.get('interpreted_request',{}).get('operation')=='normalize'
+            layout_check=check_layout(context,report,normalizing)
+            draft['layout_preservation']=layout_check
+            inherited=[] if normalizing else unchanged_spacing_issues(context,report)
+            active_issues=[i for i in issues if i not in inherited]
             accepted=context.get('layout_exception') or {}
             if not accepted.get('layout_signature') or accepted.get('layout_signature')!=report.get('layout_signature') or accepted.get('base_revision')!=context['base_revision']:
                 if accepted:draft['warnings'].append('布局或正式版本已变化；原有重叠例外不适用于本候选，请重新审阅。')
                 accepted={}
             accepted_signatures={(i.get('kind'),json.dumps(i.get('elements'),sort_keys=True)) for i in accepted.get('issues',[])}
-            remaining=[i for i in issues if (i.get('kind'),json.dumps(i.get('elements'),sort_keys=True)) not in accepted_signatures]
+            remaining=[i for i in active_issues if (i.get('kind'),json.dumps(i.get('elements'),sort_keys=True)) not in accepted_signatures]
             for i in issues:i.setdefault('id',uid('warn'))
             data_report=report.get('data_report',{})
             source_report=report.get('source_data_report') or {}
@@ -833,6 +925,10 @@ class ChatHarness:
                 draft.update(status='validation_failed',reason=source_report['reason'])
             elif response.get('normalization_checks',{}).get('status')=='fail':
                 draft.update(status='needs_clarification',reason='候选已出图，但尚未满足所选规范的结构检查；请查看检查结果。')
+            elif layout_check['status']=='fail':
+                draft.update(status='validation_failed',review_blocker='layout_changed',reason=layout_check['reason'])
+                from layout_preservation import reference
+                draft['_layout_reference']=reference(context,report)
             elif transform and transform['status']!='pass':
                 draft.update(status='validation_failed',reason=transform['reason'])
                 if transform['status']=='unverified':draft['review_blocker']='transform_unverified'
@@ -862,7 +958,10 @@ class ChatHarness:
                     draft['warnings'].append('新增绘图元素的数据含义需人工审阅；现有绘图数值检查保持不变。')
                 if data_report.get('visibility_changes') or data_report.get('axes_changes'):
                     draft['warnings'].append('可见范围或元素可见性发生变化，请对照本轮要求审阅。')
-                if issues and not remaining:
+                if inherited and not active_issues:
+                    draft['layout']['status']='preserved_existing'
+                    draft['warnings'].append('已保留原有排版；原图已有的间距提示没有触发自动重排。')
+                elif issues and not remaining:
                     draft['layout']['status']='accepted_exception';draft['warnings'].append('已按你的明确要求保留所列布局冲突。')
                 elif report.get('layout',{}).get('status')=='unverified':
                     draft['warnings'].append('部分布局无法自动确认，请审阅候选图片；此结果不表示完全无重叠。')
@@ -1010,6 +1109,7 @@ class ChatHarness:
                 parent=next((d for d in session['drafts'] if d['id']==draft.get('parent_draft_id')),None)
                 if draft.get('parent_draft_id') and not parent:raise ValueError('原候选的父版本已不存在，请重新生成')
                 context=self.context(session,record,origin,parent,session.get('layout_exceptions',{}).get(draft['chart_id']))
+                if draft.get('_layout_reference'):context['_layout_reference']=draft['_layout_reference']
                 proposal=json.loads(json.dumps(draft['proposal']))
                 from chat_agent import ECHO_FIELDS
                 for key in ECHO_FIELDS:proposal[key]=context[key]
@@ -1034,7 +1134,9 @@ class ChatHarness:
                 self.resolve_parent(session,draft['chart_id'],{draft['chart_id']:did})
                 session['active_drafts'][draft['chart_id']]=did
             elif action=='apply':
-                if not self.can_continue_draft(draft) or draft.get('status')=='applied':
+                if draft.get('review_blocker')=='layout_changed':
+                    raise ValueError('这版额外改变了原排版，需要先恢复原有大小和位置，再应用。')
+                if not self.can_apply_draft(draft):
                     raise ValueError('候选缺少可用图片或代码，无法应用')
                 record=next(r for r in session['charts'] if r['chart_id']==draft['chart_id'])
                 _,revision=self.snapshot(project,record['chart'])

@@ -13,6 +13,60 @@ import sys
 SAVE_TARGET = None
 SAVE_INTERMEDIATE = None
 DIAGNOSTICS = []
+INTERACTIVE_SEED_INPUT = None
+INTERACTIVE_SEED_OUTPUT = None
+INTERACTIVE_SEED_HASHES = {}
+INTERACTIVE_SEED_REUSED = False
+INTERACTIVE_SEED_PREPARE = None
+
+
+def _capture_interactive_seed(figure_id, figure, args, kwargs):
+    if not INTERACTIVE_SEED_OUTPUT: return
+    import cloudpickle
+    import gzip
+    import random
+    import numpy as np
+    import matplotlib
+    try:
+        if INTERACTIVE_SEED_PREPARE: INTERACTIVE_SEED_PREPARE(figure)
+        payload={'version':2,'figure_id':figure_id,'figure':figure,'args':args,'kwargs':kwargs,
+                 'native_root':str(Path(os.environ['CHART_OUTPUT']).parent/'native-work'/figure_id),
+                 'inputs':INTERACTIVE_SEED_HASHES,'diagnostics':list(DIAGNOSTICS),
+                 'rc_params':dict(matplotlib.rcParams),'numpy_random_state':np.random.get_state(),
+                 'random_state':random.getstate()}
+        data=gzip.compress(cloudpickle.dumps(payload),compresslevel=1)
+        if len(data)<=30*1024*1024: Path(INTERACTIVE_SEED_OUTPUT).write_bytes(data)
+    except Exception as error:
+        # Custom artists may not be serializable. Keep ordinary isolated
+        # rendering available; final saves always use that original path.
+        print('Interactive figure cache unavailable:',type(error).__name__,str(error),flush=True)
+
+
+def _replay_interactive_seed(figure_id, customize):
+    import pickle
+    import gzip
+    global INTERACTIVE_SEED_REUSED
+    # Only the isolated, read-only chart worker deserializes the figure. The
+    # HTTP server treats the bounded cache as opaque bytes.
+    root=prepare_native(figure_id)
+    with gzip.open(INTERACTIVE_SEED_INPUT,'rb') as stream: payload=pickle.load(stream)
+    if payload.get('version')!=2 or payload.get('figure_id')!=figure_id or payload.get('inputs')!=INTERACTIVE_SEED_HASHES:
+        raise ValueError('交互图形缓存与当前数据不一致')
+    figure=payload['figure'];old_root=Path(payload['native_root'])
+    import matplotlib
+    import numpy as np
+    import random
+    matplotlib.rcParams.update(payload.get('rc_params',{}))
+    if 'numpy_random_state' in payload: np.random.set_state(payload['numpy_random_state'])
+    if 'random_state' in payload: random.setstate(payload['random_state'])
+    from matplotlib.text import Text
+    for text in figure.findobj(match=Text):
+        props=text.get_fontproperties();file=props.get_file()
+        if file and Path(file).is_relative_to(old_root): props.set_file(str(root/Path(file).relative_to(old_root)))
+    DIAGNOSTICS[:]=payload.get('diagnostics',[])
+    customize(figure)
+    SAVE_TARGET(figure,os.environ['CHART_OUTPUT'],*payload['args'],**payload['kwargs'])
+    INTERACTIVE_SEED_REUSED=True
 
 
 def _layout_failure(error):
@@ -160,6 +214,9 @@ def render_native(figure_id, customize, produce):
     completed = False
     matches = 0
     DIAGNOSTICS.clear()
+    if INTERACTIVE_SEED_INPUT:
+        _replay_interactive_seed(figure_id,customize)
+        return
 
     def save(figure, destination, *args, **kwargs):
         nonlocal matches
@@ -173,6 +230,7 @@ def render_native(figure_id, customize, produce):
             return SAVE_INTERMEDIATE(figure,destination,*args,**kwargs)
         if settings.get('compose') == 'native_results_with_approved_top':
             _compose_native_results(figure,settings)
+        _capture_interactive_seed(figure_id,figure,args,kwargs)
         customize(figure)
         # Original target saves do not crop. Preserve their exact DPI/size/style.
         SAVE_TARGET(figure, output, *args, **kwargs)
@@ -190,6 +248,7 @@ def render_native(figure_id, customize, produce):
         DIAGNOSTICS.append({**finding,'figure_id':figure_id,
             'warning':'布局检查未通过：显示中止时的实际画布，后续原程序检查未完成；此预览不代表完整验证通过。'})
         if settings.get('compose')=='native_results_with_approved_top':_compose_native_results(figure,settings)
+        _capture_interactive_seed(figure_id,figure,(),{'dpi':figure.dpi,'facecolor':'white','transparent':False})
         customize(figure)
         SAVE_TARGET(figure,output,dpi=figure.dpi,facecolor='white',transparent=False)
         completed=True

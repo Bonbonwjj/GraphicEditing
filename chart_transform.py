@@ -127,6 +127,8 @@ def verify_distribution(project, chart, context, proposal, report):
     kind = requested_distribution(context.get('user_message', ''))
     if not kind:
         return None
+    if report.get('baseline_distribution_inputs'):
+        return _verify_recorded_distributions(context,report,kind)
     result = {'kind': kind, 'status': 'unverified', 'warnings': [], 'matches': []}
     def stop(reason, status='unverified'):
         return {**result, 'status': status, 'reason': reason}
@@ -211,3 +213,93 @@ def verify_distribution(project, chart, context, proposal, report):
                             result['warnings'].append('此候选不显示离群点；原始样本仍全部参与箱线统计，CSV 未被删除。')
                     return {**result, 'status': 'pass', 'reason': '按用户明确要求转换图型；完整原始样本、分组标签与统计标注核对通过。'}
     return stop('分布图样本未能与所引用 CSV 的完整分组逐值核对；请检查漏行、改值、分组或数据引用。', 'fail')
+
+
+def _verify_recorded_distributions(context,report,kind):
+    """Match complete observed input groups per axis; keep paired marks exact."""
+    from collections import Counter
+    source_kind='boxplot' if kind=='violinplot' else 'violinplot'
+    source_type='box_statistics' if source_kind=='boxplot' else 'violin_statistics'
+    target_type='violin_statistics' if kind=='violinplot' else 'box_statistics'
+    result={'kind':kind,'status':'unverified','warnings':[],'matches':[]}
+    def stop(reason,status='fail'):return {**result,'status':status,'reason':reason}
+    before_signature=report.get('baseline_layout_signature') or {};after_signature=report.get('layout_signature') or {}
+    before_axes=before_signature.get('axes',[]);after_axes=after_signature.get('axes',[])
+    if not before_axes or len(before_axes)!=len(after_axes):return stop('图型转换改变了子图数量，无法保留原始子图映射。')
+    selected=(context.get('selected_panel') or {}).get('axis_labels')
+    eligible={i for i,axis in enumerate(before_axes) if not selected or axis.get('axis_label') in selected}
+    old_calls=report.get('baseline_distribution_inputs',[]);new_calls=report.get('distribution_inputs',[])
+    converted={call['axis'] for call in old_calls if call['kind']==source_kind and call.get('axis') in eligible}
+    if not converted:return stop('目标子图未记录可转换的原始逐样本分布输入。','unverified')
+    for i,(a,b) in enumerate(zip(before_axes,after_axes)):
+        if a.get('axis_label')!=b.get('axis_label') or a.get('labels')!=b.get('labels'):
+            return stop('转换改变了子图标识、轴标题或单位。')
+        if i not in converted:
+            old_range=(report.get('baseline_axis_details') or [])
+            new_range=(report.get('axis_details') or [])
+            if len(old_range)==len(before_axes) and len(new_range)==len(after_axes) and old_range[i]!=new_range[i]:
+                return stop('转换改变了目标之外子图的坐标范围。')
+    def groups(calls,wanted,axes):
+        flattened=[]
+        for call in calls:
+            if call.get('kind')!=wanted or call.get('axis') not in axes:continue
+            values=call.get('groups',[]);positions=call.get('positions',[]);labels=call.get('group_labels',[])
+            if len(labels)!=len(values) and len(call.get('labels',[]))==len(values):labels=call['labels']
+            if len(positions)!=len(values) or len(labels)!=len(values) or any(label is None or label=='' for label in labels):
+                raise ValueError('原始分布的组位置和组名未能自动对应。')
+            for position,label,value in zip(positions,labels,values):
+                if not value.get('sha256') or value.get('count',0)==0:raise ValueError('原始分布包含无法完整核对的空组或非有限样本。')
+                flattened.append((call['axis'],call['dimension'],float(position),label,value['count'],value['sha256']))
+        return Counter(flattened)
+    try:
+        expected=groups(old_calls,source_kind,converted);actual=groups(new_calls,kind,converted)
+    except ValueError as error:return stop(str(error),'unverified')
+    if not expected or actual!=expected:return stop('转换前后完整样本、重复值数量、组别、组顺序或组位置不一致。')
+    if any(re.match(r'axes_(\d+)\.',a.get('key',''))
+           and int(re.match(r'axes_(\d+)\.',a['key'])[1]) in converted
+           and (a.get('data',{}).get('supplied') or {}).get('type')==source_type
+           for a in report.get('candidate_artists',[])):
+        return stop('目标子图仍保留原图型的绘制，尚未完整完成图型转换。')
+    other_axes=set(range(len(before_axes)))-converted
+    try:
+        for name in ('boxplot','violinplot'):
+            if groups(old_calls,name,other_axes)!=groups(new_calls,name,other_axes):return stop('转换改变了其他子图的分布输入。')
+    except ValueError as error:return stop(str(error),'unverified')
+    def annotations(signature):
+        return Counter((str(t['key']).split('.')[0],t['text']) for t in signature.get('texts',[])
+                       if not re.search(r'\.[xy](?:tick_|offset)',t['key']))
+    if annotations(before_signature)!=annotations(after_signature):return stop('转换改变了标题、统计显著性文字或其他原有标注。')
+    def axis(artist):
+        match=re.match(r'axes_(\d+)\.',artist.get('key',''));return int(match[1]) if match else -1
+    def statistical(artist,typ):
+        return artist.get('semantic_role')=='distribution_statistics' and (artist.get('data',{}).get('supplied') or {}).get('type')==typ
+    old_artists=report.get('baseline_artists',[]);new_artists=report.get('candidate_artists',[])
+    if not old_artists or not new_artists:return stop('缺少完整原版和候选的绘图元素记录。','unverified')
+    target=[a for a in new_artists if axis(a) in converted and statistical(a,target_type)]
+    if not target:return stop('未捕获到实际生成的目标分布图。')
+    for artist in target:
+        if artist.get('distribution_mutated'):return stop('分布生成后又改动了统计数值，无法确认科学含义保持不变。')
+        visible=artist.get('visibility') or {}
+        if visible.get('visible') is False or visible.get('alpha')==0:return stop('候选隐藏了目标分布的统计元素。')
+    def marker(artist):
+        label=artist.get('label') or ''
+        return (axis(artist),artist.get('kind'),label if not label.startswith('_') else '',
+                artist.get('data_hash'),json.dumps(artist.get('visibility'),sort_keys=True))
+    def bracket(artist):
+        data=artist.get('data') or {};x=data.get('x') or {};y=data.get('y') or {}
+        return (axis(artist) in converted and artist.get('kind')=='line' and x.get('shape')==[4] and y.get('shape')==[4]
+                and len(x.get('sample',[]))==3 and x['sample'][0]==x['sample'][1]
+                and len(y.get('sample',[]))==3 and y['sample'][1]==y['sample'][2])
+    remaining=[a for a in new_artists if not (axis(a) in converted and statistical(a,target_type))]
+    for old in old_artists:
+        if axis(old) in converted and statistical(old,source_type):continue
+        match=next((a for a in remaining if marker(a)==marker(old)),None)
+        if match is None and bracket(old):
+            match=next((a for a in remaining if bracket(a) and axis(a)==axis(old)
+                        and a['data']['x']==old['data']['x'] and a.get('visibility')==old.get('visibility')),None)
+        if match is None:return stop('转换修改或删除了原有样本散点、配对连线、均值标记或其他非目标数据元素。')
+        remaining.remove(match)
+    if remaining:return stop('候选包含无法与原版核对的额外数据元素。')
+    result['matches']=[{'axis':a,'dimension':d,'position':p,'label':label,'count':n,'sha256':sha}
+                       for a,d,p,label,n,sha in sorted(expected)]
+    return {**result,'status':'pass','reason':'已逐子图核对全部样本与分组；配对连线、原有数据元素和显著性标注保持一致。'}

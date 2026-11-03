@@ -92,17 +92,44 @@ def python_path(runtime):
     return runtime / ('python.exe' if os.name == 'nt' else 'bin/python')
 
 
+def filesystem_path(path):
+    value = str(Path(path).resolve())
+    if os.name == 'nt' and not value.startswith('\\\\?\\'):
+        return '\\\\?\\UNC\\' + value[2:] if value.startswith('\\\\') else '\\\\?\\' + value
+    return value
+
+
 def extract_runtime(archive, destination):
     destination.mkdir(parents=True, exist_ok=True)
+    extraction_root = filesystem_path(destination)
     with tarfile.open(archive) as bundle:
         # Python 3.11's data filter prevents paths/links escaping the destination.
-        bundle.extractall(destination, filter='data')
+        bundle.extractall(extraction_root, filter='data')
     env = runtime_environment(destination)
     unpack = destination / ('Scripts/conda-unpack-script.py' if os.name == 'nt' else 'bin/conda-unpack')
     if not unpack.exists():
         raise RuntimeError('安装包缺少 conda-unpack，无法完成运行环境初始化')
-    subprocess.run([str(python_path(destination)), str(unpack)], env=env,
-                   check=True, capture_output=True, timeout=180)
+    command = [str(python_path(destination)), str(unpack)]
+    if os.name == 'nt':
+        # conda-unpack normalizes its IO paths to forward slashes, which loses
+        # Win32 long-path support. Keep its normal replacement prefix while
+        # passing extended paths only to its file IO operation.
+        relocation = '''import os, runpy, sys
+script = sys.argv[1]
+sys.path.insert(0, os.path.dirname(script))
+module = runpy.run_path(script)
+prefix = os.path.dirname(os.path.dirname(os.path.abspath(script)))
+for relative, placeholder, mode in module['_prefix_records']:
+    path = os.path.normpath(os.path.join(prefix, relative))
+    if not path.startswith('\\\\\\\\?\\\\'):
+        path = ('\\\\\\\\?\\\\UNC\\\\' + path[2:] if path.startswith('\\\\\\\\') else '\\\\\\\\?\\\\' + path)
+    module['update_prefix'](path, prefix, placeholder, mode=mode)
+'''
+        command = [str(python_path(destination)), '-c', relocation, str(unpack)]
+    try:
+        subprocess.run(command, env=env, check=True, capture_output=True, timeout=180)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError('运行环境初始化失败：' + exc.stderr.decode('utf-8', errors='replace')[-3000:]) from exc
     (destination / '.ready').write_text('ready', encoding='utf-8')
 
 
@@ -120,7 +147,7 @@ def prepare(payload, home):
         if runtime.exists():
             if runtime.resolve().parent != (home/'runtimes').resolve():
                 raise RuntimeError('运行环境目录超出应用数据目录')
-            shutil.rmtree(runtime)  # Only our incomplete, versioned runtime under home.
+            shutil.rmtree(filesystem_path(runtime))  # Only our incomplete, versioned runtime under home.
         extract_runtime(archive, runtime)
     workspace = home / 'workspace'
     workspace.mkdir(exist_ok=True)

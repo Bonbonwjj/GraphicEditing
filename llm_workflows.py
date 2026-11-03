@@ -74,15 +74,21 @@ def validate_chart_source(source):
 
 
 def _repair(messages, bad_output, error, output_contract):
-    repair = (_skill("chart-code-repair") + "\n\nThe rejected output was:\n" + bad_output +
-              "\n\nValidator error: " + str(error) + "\n\nRequired output: " + output_contract)
+    # The rejected output is already present as the assistant message.  Do not
+    # duplicate what is commonly the largest part of a repair request.
+    repair = (_skill("chart-code-repair") + "\n\nValidator error: " + str(error)[:1000] +
+              "\n\nRequired output: " + output_contract)
     return llm_client.chat(messages + [{"role": "assistant", "content": bad_output},
                                        {"role": "user", "content": repair}], temperature=0)
 
 
 def edit_chart(request, source, data, validator=None):
     system = _skill("chart-code-edit") + "\n\n" + _skill("plot-style")
-    user = json.dumps({"request": request, "csv_files": data, "current_code": source}, ensure_ascii=False)
+    # Cloud models receive schema metadata, never original table rows/values.
+    safe_data = [{key:item[key] for key in
+                  ('path','file','columns','keys','format','source_row_count','sha256')
+                  if key in item} for item in data if isinstance(item, dict)]
+    user = json.dumps({"request": request, "csv_files": safe_data, "current_code": source}, ensure_ascii=False)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     output = llm_client.chat(messages)
     repairs = max(0, min(int(os.environ.get("LLM_MAX_REPAIRS", "1")), 2))
@@ -99,7 +105,9 @@ def edit_chart(request, source, data, validator=None):
 
 
 def split_chart(source_name, source, data_catalog):
-    system = _skill("chart-code-split") + "\n\n" + _skill("plot-style")
+    # Splitting must preserve style, not restyle the chart.  Omitting the
+    # unrelated style-editing skill reduces every split request substantially.
+    system = _skill("chart-code-split")
     user = json.dumps({"source_file": source_name, "data_files": data_catalog,
                        "source_code": source}, ensure_ascii=False)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]

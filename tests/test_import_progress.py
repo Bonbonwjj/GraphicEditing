@@ -68,7 +68,12 @@ class ImportProgressTests(unittest.TestCase):
             self.assertEqual(folder_picker.choose_folder(),'C:\\研究\\工程')
             command=run.call_args.args[0]
             self.assertIn('-STA',command)
-            self.assertIn('$owner.TopMost = $true',command[-1])
+            import base64
+            self.assertIn('-EncodedCommand',command)
+            script=base64.b64decode(command[-1]).decode('utf-16-le')
+            self.assertIn('$owner.TopMost = $true',script)
+            self.assertIn('NativeFolderPicker',script)
+            self.assertIn('0x20u',script)
             self.assertEqual(run.call_args.kwargs['encoding'],'utf-8')
 
     def test_server_port_cannot_be_shared_with_another_backend(self):

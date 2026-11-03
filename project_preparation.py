@@ -16,7 +16,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 SKILL = ROOT / 'skills' / 'plot-code-extraction'
-DATA_SUFFIXES = {'.csv', '.tsv', '.json', '.npz', '.npy', '.parquet', '.png', '.jpg', '.jpeg', '.webp',
+DATA_SUFFIXES = {'.csv', '.tsv', '.json', '.npz', '.npy', '.parquet', '.feather', '.xlsx', '.xls',
+                 '.h5', '.hdf5', '.yaml', '.yml', '.toml', '.ini', '.png', '.jpg', '.jpeg', '.webp',
                  '.svg', '.ttf', '.otf', '.pptx'}
 SKIP_DIRS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'dist', 'build', '.aws', '.ssh', '.codex', '.agents'}
 LOCK = threading.RLock()
@@ -42,6 +43,34 @@ def sha(path):
     return h.hexdigest()
 
 
+def copy_and_sha(source, destination):
+    """Copy and fingerprint the same byte stream without rereading large data."""
+    source, destination = Path(source), Path(destination)
+    if source.resolve() == destination.resolve():
+        raise ValueError('Source and destination must differ')
+    digest = hashlib.sha256()
+    created = False
+    try:
+        with source.open('rb') as incoming, destination.open('xb') as outgoing:
+            created = True
+            before = os.fstat(incoming.fileno())
+            for chunk in iter(lambda: incoming.read(1024 * 1024), b''):
+                outgoing.write(chunk)
+                digest.update(chunk)
+            after = os.fstat(incoming.fileno())
+            version = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if version(before) != version(after) or version(after) != version(source.stat()):
+                raise ValueError('Input changed while copying: ' + str(source))
+        shutil.copystat(source, destination)
+    except FileExistsError:
+        raise
+    except BaseException:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+    return digest.hexdigest()
+
+
 def relative_path(value):
     if not isinstance(value, str) or not value or '\\' in value or ':' in value:
         raise ValueError('不支持的相对路径')
@@ -60,7 +89,7 @@ def inventory(source):
     source = source.resolve(strict=True)
     if not source.is_dir() or source == Path(source.anchor) or source == Path.home():
         raise ValueError('请选择具体的工程文件夹，不能选择磁盘根目录或用户主目录')
-    files, skipped, size = [], [], 0
+    files, skipped, code_size = [], [], 0
     for directory, dirs, names in os.walk(source, followlinks=False):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith('.') and not (Path(directory)/d).is_symlink())
         for name in sorted(names):
@@ -73,9 +102,10 @@ def inventory(source):
                 continue
             relative_path(rel)
             count = path.stat().st_size
-            size += count
-            if size > 2 * 1024**3 or len(files) >= 10000:
-                raise ValueError('工程超过 2 GiB 或 10000 个文件；请选择更小的绘图子工程。')
+            if path.suffix.lower()=='.py':
+                code_size += count
+            if code_size > 100 * 1024**2 or len(files) >= 10000:
+                raise ValueError('工程 Python 源码超过 100 MiB 或文件数超过 10000；数据文件大小不计入源码限制。')
             files.append({'path': rel, 'bytes': count, 'kind': 'code' if path.suffix == '.py' else 'data'})
     if not any(item['kind'] == 'code' for item in files):
         raise ValueError('未找到 Python 源码，请选择代码工程目录。')
@@ -130,6 +160,11 @@ def read_state(project):
 
 def save_state(project, value):
     write_json(project/'.preparation/state.json', value)
+    if value.get('status')=='ready':
+        from preparation_cleanup import cleanup_completed_cache
+        result=cleanup_completed_cache(project)
+        if result['errors']:
+            print('Preparation cache cleanup: '+'; '.join(result['errors']),flush=True)
 
 
 def source_root(project):
@@ -145,6 +180,14 @@ def source_root(project):
 
 def status(project):
     value = read_state(project)
+    if value.get('status') != 'ready' and 'universal_available' not in value:
+        from universal_project import discover as discover_universal
+        discovery=discover_universal(project)
+        value={**value,'universal_available':bool(discovery['candidates']),
+               'universal_discovery':{'candidate_count':len(discovery['candidates']),
+                   'entries':[item['entry_path'] for item in discovery['candidates']],
+                   'truncated':discovery['truncated']}}
+        save_state(project,value)
     if value.get('status') == 'working' and str(project) not in RUNNING:
         value = {**value, 'status': 'interrupted', 'reason': '准备任务被中断，可重新发起；原工程已备份。'}
     result = {k: v for k, v in value.items() if k not in ('generated_files',)}
@@ -158,6 +201,8 @@ def status(project):
     if value.get('mode')=='native' and value.get('import_completed'):
         checks=value.get('validation',{}).get('checks',[])
         result['native_progress']={'completed':len(checks),'total':len(value.get('figures',[])),'passed':sum(c.get('render')=='passed' for c in checks),'failed':sum(c.get('render')=='failed' for c in checks),'diagnostics':sum(c.get('render')=='warning' for c in checks)}
+    if value.get('mode')=='universal' and value.get('universal_progress'):
+        result['universal_progress']=value['universal_progress']
     result['can_open'] = can_open(project)
     source = value.get('source_path')
     if source and not result['can_open']:
@@ -165,6 +210,10 @@ def status(project):
         result['native_available'] = discover(Path(source)) is not None
     else:
         result['native_available'] = False
+    result['universal_available'] = bool(not result['native_available'] and not result['can_open']
+                                         and value.get('universal_available'))
+    if value.get('universal_discovery'):
+        result['universal_discovery']=value['universal_discovery']
     return result
 
 
@@ -173,6 +222,16 @@ def can_open(project):
     value = read_state(project)
     if value.get('status') != 'ready' or not any((project/'charts').glob('*.py')):
         return False
+    if value.get('mode')=='universal':
+        marker=project/'validation/universal.json'
+        if not marker.is_file() or not (project/'universal-project.json').is_file():
+            return False
+        try:
+            audit=json.loads(marker.read_text(encoding='utf-8'))
+            return audit.get('state') in ('passed','partial') and any(
+                item.get('render')=='passed' for item in audit.get('checks',[]))
+        except (OSError,ValueError):
+            return False
     if value.get('mode')=='native' and value.get('import_completed') is True:
         marker=project/'validation/native.json'
         if (project/'native-project.json').is_file() and marker.is_file():
@@ -187,7 +246,7 @@ def can_open(project):
         return True
     if value.get('restored_standard') is True:
         return True
-    for name in ('direct.json', 'extraction.json', 'batch.json', 'native.json'):
+    for name in ('direct.json', 'extraction.json', 'batch.json', 'native.json', 'universal.json'):
         path = project/'validation'/name
         if path.is_file():
             try:
@@ -280,6 +339,14 @@ def open_project(projects, source, name='', allow_local_execution=False):
         write_json(staged/'project.json', metadata)
         save_state(staged, value)
         staged.rename(target)
+    if not prepared:
+        from universal_project import discover
+        discovery=discover(target)
+        current=read_state(target)
+        save_state(target,{**current,'universal_available':bool(discovery['candidates']),
+                   'universal_discovery':{'candidate_count':len(discovery['candidates']),
+                       'entries':[item['entry_path'] for item in discovery['candidates']],
+                       'truncated':discovery['truncated']}})
     return status(target)
 
 
@@ -373,7 +440,7 @@ must produce needs_context. Never replace unresolved inputs with demo data.
         'batch_instruction': ('This is one batch of an entire project. Each source may include identical_paths: those paths have EXACTLY the same COMPLETE decoded text as content, not summaries or omissions. Resolve their imports relative to each original path, not only the representative path. Use extraction mode, not direct mode, so the host can safely namespace and combine verified packages. If the requested target files ONLY provide helpers, style, verification or orchestration and contain no independently generated figures, return status=needs_context and explain that this batch needs a human non-figure review. Do not invent figures or silently exclude plotting branches.' if value.get('batch_child') else ''),
         'scope_contract': 'Prepare ONLY figures in requested_scope. Other sources are dependency context, not additional target figures. Omitted file names are not their contents. Static imports are best-effort, not proof of a complete dependency closure. Inspect dynamic imports, file reads and missing inputs; return needs_context with exact paths if required source is not provided. Never fabricate or omit figures within the requested scope. Paths remain relative to the ORIGINAL project root, not the selected subdirectory.',
         'dependency_warnings': plan['warnings'],
-        'validation_evidence': None}, ensure_ascii=False)}])
+        'validation_evidence': None}, ensure_ascii=False, separators=(',', ':'))}])
     from llm_workflows import _json_object
     result = _json_object(response)
     result = {k:v for k,v in result.items() if k in ('mode','status','reason','figures','generated_files','required_local_inputs','validation')}

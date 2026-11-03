@@ -1,0 +1,64 @@
+name: Release v0.2.2 Windows
+on:
+  push:
+    branches: [lc]
+    paths: [app_version.py, .github/workflows/release-v022.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-v0.2.2
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.ref == 'refs/heads/lc'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: '1'
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Recover the verified Windows runtime
+        run: |
+          gh release download v0.2.0 --pattern Plot-Forge-v0.2.0-Windows-x64.zip --dir "$env:RUNNER_TEMP/previous"
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime download failed' }
+          $archive = "$env:RUNNER_TEMP/previous/Plot-Forge-v0.2.0-Windows-x64.zip"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne '76e7617e0a48a6a33f9c10e3258594e0cc480b09d3a534d5c7f6541f8297b9e8') { throw 'Previous package checksum mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath "$env:RUNNER_TEMP/previous/app"
+          python -m pip download --no-deps --only-binary=:all: cloudpickle==3.1.2 --dest "$env:RUNNER_TEMP/wheels"
+          if ($LASTEXITCODE -ne 0) { throw 'Wheel download failed' }
+      - name: Build the self-contained application
+        run: |
+          python tools/release_v022.py build --payload "$env:RUNNER_TEMP/previous/app/Plot Forge/_internal/payload" --wheel "$env:RUNNER_TEMP/wheels/cloudpickle-3.1.2-py3-none-any.whl" --home "$env:RUNNER_TEMP/build-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
+      - name: Verify first launch and payload
+        run: |
+          python tools/release_v022.py verify --home "$env:RUNNER_TEMP/first launch 中文"
+          if ($LASTEXITCODE -ne 0) { throw 'Independent runtime verification failed' }
+          node tests/test_connection_groups.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Connection grouping regression failed' }
+          python tools/release_v022.py finalize
+          if ($LASTEXITCODE -ne 0) { throw 'Release assembly failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Plot-Forge-v0.2.2-verified
+          path: |
+            dist/Plot-Forge-v0.2.2-*.zip
+            dist/*v0.2.2*.json
+            dist/SHA256SUMS-v0.2.2.txt
+          if-no-files-found: error
+      - name: Publish v0.2.2
+        run: |
+          gh release view v0.2.2 --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'v0.2.2 already exists; refusing to replace published assets' }
+          gh release create v0.2.2 --target "$env:GITHUB_SHA" --title 'Plot Forge v0.2.2' --notes-file docs/RELEASE-v0.2.2.zh-CN.md dist/Plot-Forge-v0.2.2-Windows-x64.zip dist/Plot-Forge-v0.2.2-source.zip dist/SHA256SUMS-v0.2.2.txt dist/build-info-v0.2.2.json dist/smoke-report-v0.2.2.json
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }

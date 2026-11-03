@@ -1,5 +1,6 @@
 """Local-only chart studio. Start with `python server.py`."""
 import ast
+import base64
 import cgi
 import csv
 import hashlib
@@ -12,7 +13,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +30,7 @@ from llm_workflows import edit_chart
 from upload_importer import store_upload, store_multipart_upload, store_bundle_multipart
 from agent_http import post_json
 from chart_naming import RenderedImage
+from interactive_style import read_style, upsert_style
 from chat_harness import ChatHarness, lock as workflow_lock
 from model_config import public as public_model_config, save as save_model_config, clear as clear_model_config, test_connection as test_model_connection, effective as effective_model_config
 
@@ -44,7 +46,6 @@ STYLE = ROOT / "skills" / "plot-style" / "SKILL.md"
 NORMALIZATION_SKILL = ROOT / "skills" / "chart-normalization" / "SKILL.md"
 NORMALIZATION_PROFILE = NORMALIZATION_SKILL.parent / "assets" / "style-profile.v1.json"
 SKILL_CATALOG = ROOT / "skills" / "normalization-catalog"
-PREVIEW_POOL = ThreadPoolExecutor(max_workers=2)
 PREVIEW_LOCKS = {}
 PREVIEW_LOCKS_GUARD = threading.Lock()
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
@@ -113,10 +114,9 @@ def read_history(p, chart):
 
 def history_view(p, chart):
     entries = read_history(p, chart)
-    allowed_code = {item["id"] for item in (entries[:1] + entries[-2:-1])}
     for entry in entries:
         old_source = (p / "history" / (entry["id"] + ".py")).is_file()
-        entry["code_available"] = entry["id"] in allowed_code and old_source
+        entry["code_available"] = old_source
         entry["image_available"] = old_source or any((p / "history" / (entry["id"] + ext)).is_file() for ext in IMAGE_TYPES)
     return entries
 
@@ -155,25 +155,52 @@ def skill_files(skill_id):
     return skill.read_text(encoding="utf-8"), json.loads(profile.read_text(encoding="utf-8")) if profile.exists() else {}
 
 
+def _preview_stat(path):
+    stat=path.stat()
+    return (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+
+
+@lru_cache(maxsize=2048)
+def _cached_preview_digest(path, version):
+    from project_preparation import sha
+    target=Path(path)
+    if _preview_stat(target)!=version:
+        raise ValueError('Preview dependency changed while checking: '+str(path))
+    digest=sha(target)
+    if _preview_stat(target)!=version:
+        raise ValueError('Preview dependency changed while reading: '+str(path))
+    return digest
+
+
 def preview_signature(p, source):
     files = [*p.glob('*.py'), *p.glob('data_sources.json'), *((p/'data').rglob('*')), *((p/'lib').rglob('*'))]
     from native_project import selection
     native_id=selection(p,'charts/_signature.py',{'charts/_signature.py':source})
+    from universal_project import selection as universal_selection
+    universal_id=universal_selection(p,'charts/_signature.py',{'charts/_signature.py':source})
     if native_id:
         files=[*p.glob('*.py'),p/'native-project.json',
                *((p/'data/native'/native_id).rglob('*')),*((p/'lib/native'/native_id).rglob('*'))]
+    elif universal_id:
+        registry=json.loads((p/'universal-project.json').read_text(encoding='utf-8'))
+        files=[p/'universal-project.json',*((p/registry['source_root']).rglob('*'))]
     dependencies=[]
     for f in sorted(set(files)):
-        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json','.npz','.npy','.parquet','.png','.jpg','.jpeg','.webp','.svg','.ttf','.otf','.pptx','.md','.txt') and '__pycache__' not in f.parts:
+        if f.is_file() and f.suffix.lower() in ('.py','.csv','.tsv','.json','.npz','.npy','.parquet','.feather',
+                '.xlsx','.xls','.h5','.hdf5','.yaml','.yml','.toml','.ini',
+                '.png','.jpg','.jpeg','.webp','.svg','.ttf','.otf','.pptx','.md','.txt') and '__pycache__' not in f.parts:
             if f.is_symlink() or not f.resolve().is_relative_to(p.resolve()):raise ValueError('External project dependency')
-            dependencies.append((f.relative_to(p).as_posix(),hashlib.sha256(f.read_bytes()).hexdigest()))
+            dependencies.append((f.relative_to(p).as_posix(),_cached_preview_digest(str(f),_preview_stat(f))))
     from bundle_bindings import signature as bundle_signature
     bundle_revision=bundle_signature(p)
     if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
-    for f in (ROOT/'studio_style.py',NORMALIZATION_PROFILE):
+    for f in (ROOT/'studio_style.py',ROOT/'chart_naming.py',ROOT/'interactive_style.py',ROOT/'component_editor.py',ROOT/'component_groups.py',ROOT/'point_components.py',ROOT/'drawing_items.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
     if native_id:
         for f in (ROOT/'native_plot_runtime.py',ROOT/'chat_runner.py',ROOT/'requirements-native.txt'):
+            dependencies.append(('@platform/'+f.name,hashlib.sha256(f.read_bytes()).hexdigest()))
+    if universal_id:
+        for f in (ROOT/'universal_plot_runtime.py',ROOT/'chat_runner.py'):
             dependencies.append(('@platform/'+f.name,hashlib.sha256(f.read_bytes()).hexdigest()))
     return hashlib.sha256(json.dumps(['preview-v2',source_revision(source),dependencies]).encode()).hexdigest()
 
@@ -182,6 +209,24 @@ def preview_lock(p, chart):
     key = (str(p), chart)
     with PREVIEW_LOCKS_GUARD:
         return PREVIEW_LOCKS.setdefault(key, threading.RLock())
+
+
+def interaction_payload(report):
+    layout=report.get('layout_signature') or {}
+    # Candidate reports retain their marks under candidate_artists. They must
+    # remain selectable after applying the preview, just like direct renders.
+    artists=report.get('artists',report.get('candidate_artists',[]))
+    targets=[{k:item.get(k) for k in ('key','kind','label','style','hit_path_px','group_key','added_id')}
+             for item in artists if item.get('hit_path_px')]
+    targets.extend(part for group in report.get('component_groups',[]) for part in group.get('part_targets',[]))
+    targets.extend(report.get('point_targets',[]))
+    return {'schema_version':4,'point_editing_ready':'point_targets' in report,
+            'point_group_editing_ready':'point_targets' in report and all('point_group' in t for t in report['point_targets']),
+            'render_size_px':report.get('render_size_px'),
+            'targets':targets,
+            'legends':layout.get('legends',[]),'texts':layout.get('texts',[]),
+            'axes':layout.get('axes',[]),'component_groups':report.get('component_groups',[]),
+            'axis_ranges':report.get('axes',[]),'dpi':layout.get('dpi',100)}
 
 
 def save_preview(p, chart, source, data, suffix=".png"):
@@ -199,7 +244,7 @@ def save_preview(p, chart, source, data, suffix=".png"):
         temp.write_bytes(data)
         temp.replace(target)
         report=getattr(data,'render_report',None) or {}
-        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix,'preview_status':report.get('preview_status','complete'),'native_layout_warnings':report.get('native_layout_warnings',[])}), encoding="utf-8", newline="\n")
+        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix,'interaction':interaction_payload(report) if report else None,'preview_status':report.get('preview_status','complete'),'native_layout_warnings':report.get('native_layout_warnings',[])}), encoding="utf-8", newline="\n")
         if getattr(data, "naming", None) is not None:
             save_naming(p, chart, source, data.naming)
         if report and (p/'native-project.json').is_file():
@@ -208,13 +253,24 @@ def save_preview(p, chart, source, data, suffix=".png"):
         return data, IMAGE_TYPES[suffix]
 
 
-def preview_asset(p, chart, source):
+def thumbnail_image(data):
+    from io import BytesIO
+    from PIL import Image
+    with Image.open(BytesIO(data)) as image:
+        image.thumbnail((640, 420), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format='PNG')
+        return output.getvalue()
+
+
+def preview_asset(p, chart, source, cached_only=False):
     folder = p / "previews"
     meta_file = folder / (chart + ".json")
     with preview_lock(p, chart):
         entry=p/'charts'/(chart+'.py')
         if entry.is_file() and entry.read_text(encoding='utf-8')!=source:
             # Historical snapshots must never overwrite the current chart preview.
+            if cached_only:return None
             return render(p,source),'image/png'
         signature=preview_signature(p,source)
         if meta_file.exists():
@@ -225,6 +281,7 @@ def preview_asset(p, chart, source):
                     return target.read_bytes(), IMAGE_TYPES[meta["suffix"]]
             except (KeyError, ValueError):
                 pass
+        if cached_only:return None
         rendered=render(p,source)
         if signature!=preview_signature(p,source):raise ValueError('Chart dependencies changed during rendering; retry')
         return save_preview(p, chart, source, rendered)
@@ -259,25 +316,8 @@ def chart_naming(p, chart):
 
 
 def warm_project_previews(project_id):
-    p = project_path(project_id)
-    if json.loads((p / "project.json").read_text(encoding="utf-8")).get("data_source_type") in ("plot_bundle","native_plot"):
-        return  # Bundles are lazy; native imports already saved per-chart trial results.
-    if isolation_backend() == "local-python" and not trusted(p):
-        return
-    meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
-    excluded = set(meta.get("non_chart_scripts", []))
-    for f in sorted((p / "charts").glob("*.py")):
-        if f.stem in excluded:
-            continue
-        try:
-            source = f.read_text(encoding="utf-8")
-            preview_asset(p, f.stem, source)
-            if chart_naming(p, f.stem)["status"] == "pending":
-                rendered = render(p, source)
-                if f.read_text(encoding="utf-8") == source:
-                    save_naming(p, f.stem, source, rendered.naming or {"status": "fallback"})
-        except Exception as error:
-            print(f"Preview {project_id}/{f.stem}: {error}", flush=True)
+    """Compatibility hook: project discovery must never start chart renders."""
+    return
 
 
 def copy_uploaded_images(upload, p):
@@ -302,8 +342,9 @@ def copy_uploaded_images(upload, p):
     return count
 
 
-def render(p, source, suffix=".png", library_path=None):
-    if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file():
+def render(p, source, suffix=".png", library_path=None, interactive_seed=None, capture_interactive_seed=False):
+    if ((p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file()
+            or (p/'native-project.json').is_file() or (p/'universal-project.json').is_file()):
         # Extracted charts use the same read-only snapshot/audits for previews
         # and chat candidates. Do not give them the server's credential env.
         if suffix != '.png':
@@ -315,8 +356,12 @@ def render(p, source, suffix=".png", library_path=None):
             if library_path:
                 for helper in Path(library_path).rglob('*.py'):
                     overrides['lib/'+helper.relative_to(library_path).as_posix()] = helper.read_text(encoding='utf-8')
-            report = _one_render(p, entry, overrides, Path(temp)/'render')
+            options={}
+            if interactive_seed is not None: options['interactive_seed']=interactive_seed
+            if capture_interactive_seed: options['capture_interactive_seed']=True
+            report = _one_render(p, entry, overrides, Path(temp)/'render', **options)
             image = RenderedImage(report['image_bytes'])
+            image.interactive_seed=report.pop('interactive_seed_bytes',None)
             image.naming = report['naming']
             image.render_report = report
             return image
@@ -328,10 +373,11 @@ def render(p, source, suffix=".png", library_path=None):
         output = temp / ("figure" + suffix)
         script.write_text(source, encoding="utf-8", newline="\n")
         metadata = temp / "naming.json"
+        interaction_report = temp / "interaction-report.json"
         runner = temp / "runner.py"
         runner.write_text("from chart_naming import install_capture\nfrom render_paths import install_project_library\nimport runpy\n"
                           + f"install_project_library({str(p)!r}, {str(library_path or p / 'lib')!r})\n"
-                          + f"install_capture({str(output)!r}, {str(metadata)!r})\n"
+                          + f"install_capture({str(output)!r}, {str(metadata)!r}, {str(interaction_report)!r})\n"
                           + f"runpy.run_path({str(script)!r}, run_name='__main__')\n", encoding="utf-8", newline="\n")
         env = os.environ.copy()
         env["CHART_PROJECT_DIR"] = str(p)
@@ -351,6 +397,8 @@ def render(p, source, suffix=".png", library_path=None):
             raise ValueError("Render failed: " + (result.stderr[-3500:] or "No output file"))
         image = RenderedImage(output.read_bytes())
         image.naming = json.loads(metadata.read_text(encoding="utf-8")) if metadata.exists() else {"status": "fallback", "reason": "未捕获到绘图轴信息"}
+        if interaction_report.exists():
+            image.render_report = json.loads(interaction_report.read_text(encoding="utf-8"))
         return image
 
 
@@ -370,11 +418,11 @@ def list_projects():
                 continue
             meta = json.loads((p / "project.json").read_text(encoding="utf-8"))
             preparation=read_state(p)
-            chart_warnings={c['figure_id']:c.get('reason','试绘未通过') for c in preparation.get('validation',{}).get('checks',[]) if c.get('render') in ('failed','warning')}
+            chart_warnings={c['figure_id']:c.get('reason','试绘未通过') for c in preparation.get('validation',{}).get('checks',[]) if c.get('render') in ('failed','warning') and c.get('figure_id')}
             excluded = set(meta.get("non_chart_scripts", []))
             charts = [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded]
-            result.append({"id": p.name, **meta, "chart_warnings":chart_warnings,"chart_diagnostic_previews":[c["figure_id"] for c in preparation.get("validation",{}).get("checks",[]) if c.get("render")=="warning"],"import_warnings":preparation.get("warnings",[]), "chart_metadata": {c: chart_naming(p, c) for c in charts},
-                           "render_formats": ['png'] if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file() else ['png','svg','pdf'],
+            result.append({"id": p.name, **meta, "chart_warnings":chart_warnings,"chart_diagnostic_previews":[c["figure_id"] for c in preparation.get("validation",{}).get("checks",[]) if c.get("render")=="warning" and c.get('figure_id')],"import_warnings":preparation.get("warnings",[]), "chart_metadata": {c: chart_naming(p, c) for c in charts},
+                           "render_formats": ['png'] if (p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file() or (p/'native-project.json').is_file() or (p/'universal-project.json').is_file() else ['png','svg','pdf'],
                            "charts": [f.stem for f in sorted((p / "charts").glob("*.py")) if f.stem not in excluded],
                            "modules": discover_modules(p), "data_sources": project_data_sources(p),
                            "data": [f.relative_to(p / "data").as_posix() for f in sorted((p / "data").rglob("*")) if f.is_file() and f.suffix.lower() in {".csv", ".tsv", ".json"}]})
@@ -519,8 +567,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def bytes_response(self, body, mime, filename=None):
-        self.send_response(200)
+    def bytes_response(self, body, mime, filename=None, status=200):
+        self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -574,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
-        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js'):
+        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js', '/static/component_editor.js', '/static/subplot_zoom.js', '/static/drawing_items.js'):
             return self.bytes_response((STATIC / Path(path).name).read_bytes(),
                 'text/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
@@ -739,7 +787,6 @@ class Handler(BaseHTTPRequestHandler):
                     metadata_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
                     result["images"] = copy_uploaded_images(upload, PROJECTS / project_id)
                     result["github_synced"] = False
-                    PREVIEW_POOL.submit(warm_project_previews, project_id)
                     return result
             if asynchronous:
                 from import_jobs import JOBS
@@ -751,7 +798,6 @@ class Handler(BaseHTTPRequestHandler):
             result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None)
             git("add", str((PROJECTS / result["project"]).relative_to(ROOT)))
             git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Agent import " + result["project"])
-            PREVIEW_POOL.submit(warm_project_previews, result["project"])
             return self.json_response(result)
         if self.command == "POST" and path == "/api/projects":
             body = self.body_json()
@@ -801,7 +847,6 @@ class Handler(BaseHTTPRequestHandler):
                 f.write_text(source, encoding="utf-8", newline="\n")
                 git("add", str(f.relative_to(ROOT)))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create chart {parts[2]}/{name}")
-                PREVIEW_POOL.submit(warm_project_previews, parts[2])
                 return self.json_response({"chart": name})
             if self.command == "GET" and len(parts) == 4 and parts[3] == "data":
                 return self.json_response({"data": data_preview(p), "data_sources": project_data_sources(p)})
@@ -819,9 +864,6 @@ class Handler(BaseHTTPRequestHandler):
                     suffix = snapshot_image(p, parts[4], entry["id"], old_code.read_text(encoding="utf-8"),
                                             render(p, old_code.read_text(encoding="utf-8")))
                     entries = read_history(p, parts[4])
-                    allowed_code = {item["id"] for item in (entries[:1] + entries[-2:-1])}
-                    if entry["id"] not in allowed_code:
-                        old_code.unlink(missing_ok=True)
                     return self.bytes_response((p / "history" / (entry["id"] + suffix)).read_bytes(), IMAGE_TYPES[suffix])
                 raise ValueError("This older version has no saved image")
             if len(parts) >= 6 and parts[3] == "modules":
@@ -830,6 +872,34 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 6 and parts[3] == "charts":
                 project, chart, action = parts[2], parts[4], parts[5]
                 p, f = chart_path(project, chart)
+                if action == 'interaction' and self.command == 'GET':
+                    source=f.read_text(encoding='utf-8')
+                    asset=preview_asset(p,chart,source,cached_only=True)
+                    if asset is None:return self.json_response({'ready':False})
+                    meta=json.loads((p/'previews'/(chart+'.json')).read_text(encoding='utf-8'))
+                    payload=meta.get('interaction')
+                    # Older applied candidates could contain only labels/axes.
+                    # Let the selected-chart preview rebuild that incomplete
+                    # cache instead of falsely claiming all marks are ready.
+                    if not payload or not payload.get('axes') or not payload.get('axis_ranges') or not payload.get('point_group_editing_ready'):
+                        return self.json_response({'ready':False})
+                    return self.json_response({'ready':True,**payload})
+                if action == 'style-preview' and self.command == 'POST':
+                    self.check_local_json()
+                    body = self.body_json()
+                    current_code = f.read_text(encoding='utf-8')
+                    if body.get('base_revision') != source_revision(current_code):
+                        raise ValueError('绘图入口已改变，请重新加载后预览')
+                    from interactive_preview import render_preview
+                    image = render_preview(p, chart, current_code, body.get('style'), render, preview_signature)
+                    report = getattr(image,'render_report',{}) or {}
+                    def meaningful(value):
+                        return {k:meaningful(v) if isinstance(v,dict) else v for k,v in value.items() if v is not None and v!={}}
+                    if meaningful(body.get('style') or {})==meaningful(read_style(current_code)):
+                        save_preview(p,chart,current_code,image)
+                    return self.json_response({'image':'data:image/png;base64,'+base64.b64encode(image).decode(),
+                        'preview_seconds':report.get('interactive_preview_seconds'),
+                        'fast_preview':report.get('interactive_seed_reused',False),**interaction_payload(report)})
                 if action in ('panel-index', 'panel-source', 'panel-edit', 'panel-mapping'):
                     if self.command == 'POST':
                         self.check_local_json()
@@ -862,6 +932,11 @@ class Handler(BaseHTTPRequestHandler):
                         from native_project import selection
                         ident = selection(p, f.relative_to(p).as_posix())
                         prefix = f'lib/native/{ident}/' if ident else ''
+                        if not ident:
+                            from universal_project import selection as universal_selection
+                            ident=universal_selection(p,f.relative_to(p).as_posix())
+                            if ident:
+                                prefix='lib/universal/source/'
                         if not ident or not path.startswith(prefix):
                             raise ValueError('该源码请在整图入口中编辑，当前局部覆盖仅适用于原生绘图模块')
                         proposed = panel_index.local_edit(entry, path[len(prefix):], old, new)
@@ -870,18 +945,26 @@ class Handler(BaseHTTPRequestHandler):
                 if self.command == "GET" and action == "detail":
                     current_code = f.read_text(encoding="utf-8")
                     import panel_index
-                    return self.json_response({"code": current_code, "revision": source_revision(current_code), "panel_index": panel_index.build(p, chart),
+                    return self.json_response({"code": current_code, "revision": source_revision(current_code),
+                                               "interactive_style": read_style(current_code), "panel_index": panel_index.build(p, chart),
                                                "history": history_view(p, chart),
                                                "data": data_preview(p), "data_sources": project_data_sources(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
                 if self.command == "GET" and action in ("preview", "svg", "pdf"):
                     suffix = {"preview": ".png", "svg": ".svg", "pdf": ".pdf"}[action]
                     source = f.read_text(encoding="utf-8")
                     if action == "preview":
-                        data, mime = save_preview(p, chart, source, render(p, source)) if "force=1" in parsed.query.split("&") else preview_asset(p, chart, source)
+                        if "cached_only=1" in parsed.query.split("&"):
+                            asset=preview_asset(p,chart,source,cached_only=True)
+                            if asset is None:return self.bytes_response(b'', 'image/png', status=204)
+                            data,mime=asset
+                        else:
+                            data, mime = save_preview(p, chart, source, render(p, source)) if "force=1" in parsed.query.split("&") else preview_asset(p, chart, source)
                     else:
                         data, mime = render(p, source, suffix), {".svg": "image/svg+xml", ".pdf": "application/pdf"}[suffix]
+                    if action == 'preview' and 'thumbnail=1' in parsed.query.split('&'):
+                        data, mime = thumbnail_image(data), 'image/png'
                     return self.bytes_response(data, mime, f"{chart}{suffix}" if action != "preview" else None)
-                if self.command == "POST" and action in ("propose", "normalize", "apply", "restore", "finalize"):
+                if self.command == "POST" and action in ("propose", "normalize", "apply", "restore", "finalize", "style"):
                     body = self.body_json()
                     current_code = f.read_text(encoding="utf-8")
                     if action == "finalize":
@@ -899,15 +982,18 @@ class Handler(BaseHTTPRequestHandler):
                             "LLM_VALIDATE_RENDER", "").lower() in {"1", "true", "yes"} else None
                         code = llm_proposal(prompt, f.read_text(encoding="utf-8"), csv_preview(p), validator)
                         return self.json_response({"code": code, "reply": "代码已生成。检查后点击“应用修改”以渲染和保存。"})
-                    if action == "restore":
+                    if action == "style":
+                        new_code = upsert_style(current_code, body.get('style'))
+                        note = '交互样式：边框与图例'
+                    elif action == "restore":
                         history = read_history(p, chart)
                         entry = next((x for x in history if x["id"] == body.get("id")), None)
                         if entry is None:
                             raise ValueError("History entry not found")
-                        allowed_code = {item["id"] for item in (history[:1] + history[-2:-1])}
-                        if entry["id"] not in allowed_code:
-                            raise ValueError("此版本只保留图片；代码仅能恢复最早版或上一轮版")
-                        new_code = (p / "history" / (entry["id"] + ".py")).read_text(encoding="utf-8")
+                        history_code=p / "history" / (entry["id"] + ".py")
+                        if not history_code.is_file():
+                            raise ValueError("该旧版本仅保留图片，无法恢复代码；后续新版本将完整保留")
+                        new_code = history_code.read_text(encoding="utf-8")
                         note = "恢复版本：" + entry["id"]
                     else:
                         new_code = body.get("code", "")
@@ -926,6 +1012,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json_response({"message": "代码没有变化"})
                     stamp = datetime.now(timezone.utc).isoformat()
                     revision = uuid.uuid4().hex[:12]
+                    (p / "history").mkdir(exist_ok=True)
                     history = read_history(p, chart)
                     if not history:
                         base_id = uuid.uuid4().hex[:12]
@@ -947,13 +1034,8 @@ class Handler(BaseHTTPRequestHandler):
                     save_preview(p, chart, new_code, rendered)
                     snapshot_image(p, chart, revision, new_code, rendered)
                     history.append({"id": revision, "time": stamp, "note": note})
-                    keep_code = {history[0]["id"], history[-2]["id"]}
-                    for entry in history:
-                        old_snapshot = p / "history" / (entry["id"] + ".py")
-                        if old_snapshot.is_file() and not any((p / "history" / (entry["id"] + ext)).is_file() for ext in IMAGE_TYPES):
-                            keep_code.add(entry["id"])
-                        if entry["id"] not in keep_code:
-                            old_snapshot.unlink(missing_ok=True)
+                    # Keep every source snapshot so any visible historical
+                    # format can later become the current image and code.
                     write_history(p, chart, history)
                     git("add", "-A", str(f.relative_to(ROOT)), str((p / "history").relative_to(ROOT)), str((p / "previews").relative_to(ROOT)))
                     commit = git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost",
@@ -1048,6 +1130,4 @@ class LocalHTTPServer(ThreadingHTTPServer):
 if __name__ == "__main__":
     port = int(os.environ.get("CHART_STUDIO_PORT", "8765"))
     print(f"Chart Studio: http://127.0.0.1:{port}\nProject folder: {ROOT}", flush=True)
-    for existing in list_projects():
-        PREVIEW_POOL.submit(warm_project_previews, existing["id"])
     LocalHTTPServer(("127.0.0.1", port), Handler).serve_forever()

@@ -69,6 +69,23 @@ class DataPreviewTests(unittest.TestCase):
 
 
 class ProjectListingTests(unittest.TestCase):
+    def test_entry_level_warning_without_figure_id_does_not_break_listing(self):
+        import project_preparation as prep
+        with tempfile.TemporaryDirectory() as tmp:
+            projects=Path(tmp);project=projects/'demo'
+            (project/'charts').mkdir(parents=True)
+            (project/'data').mkdir()
+            (project/'charts/a.py').write_text('pass')
+            prep.write_json(project/'project.json',{'name':'Demo'})
+            prep.save_state(project,{'status':'ready','validation':{'state':'passed','checks':[
+                {'entry_path':'pipeline.py','render':'warning','reason':'output limit reached'},
+                {'entry_path':'another.py','render':'failed','reason':'missing dependency'}]}})
+            with patch.object(server,'PROJECTS',projects):
+                listing=server.list_projects()
+            self.assertEqual(listing[0]['charts'],['a'])
+            self.assertEqual(listing[0]['chart_warnings'],{})
+            self.assertEqual(listing[0]['chart_diagnostic_previews'],[])
+
     def test_project_listing_includes_all_data_files_and_source_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             projects = Path(tmp)

@@ -27,6 +27,16 @@ class PanelIndexTests(unittest.TestCase):
                                              'b.py':'PUBLIC_PANEL_MEMBERS={"a":["y"]}'},'figure')
         self.assertFalse(index['panels'])
 
+    def test_native_json_declared_mapping_is_confirmed(self):
+        sources={'lib/native/fig1/code/render.py':
+                 'def render(ax):\n    ax.set_label("a")\n    other.set_label("c")\n'}
+        index=panel_index.build_from_sources(
+            sources,'fig1',[('data/native/fig1/source/style.json',{'a':['a','c']})])
+        self.assertEqual(index['warning'],'')
+        self.assertEqual(index['panels'][0]['axis_labels'],['a','c'])
+        self.assertTrue(index['panels'][0]['source_sections'])
+        self.assertEqual(index['panels'][0]['mapping_source'],'data/native/fig1/source/style.json')
+
     def test_large_source_excerpts_and_range_reads_preserve_full_local_source(self):
         source='PUBLIC_PANEL_MEMBERS={"a":["x"]}\n'+''.join(f'v{i}="'+('z'*160)+'"\n' for i in range(400))
         context={'source_files':[{'path':'charts/a.py','content':'pass\n','writable':True},
@@ -90,15 +100,33 @@ class PanelIndexTests(unittest.TestCase):
             {'path':'plot.py','start_line':'1','end_line':'700'}])
         self.assertEqual([(r['start_line'],r['end_line']) for r in reads],[(1,240),(241,480),(481,700)])
         self.assertEqual(''.join(r['content'] for r in reads),source)
+        self.assertFalse(feedback)
         self.assertFalse(remaining)
         for request in ({'path':'lib/plot.py','start_line':900,'end_line':1000},
                         {'path':'lib/plot.py','start_line':'wrong'}, {'path':'../../secret'}):
             reads,feedback,remaining=panel_index.model_source_reads({'lib/plot.py':source},[request])
             self.assertFalse(reads);self.assertTrue(feedback)
-        reads,feedback,remaining=panel_index.model_source_reads({'lib/plot.py':source},[
-            {'path':'lib/plot.py','start_line':1,'end_line':700}],budget=100)
-        self.assertTrue(reads);self.assertTrue(remaining)
-        self.assertLessEqual(sum(len(r['content']) for r in reads),100)
+    def test_source_followup_has_no_character_budget(self):
+        large_source=''.join(f'value_{i} = {i}\n' for i in range(5000))
+        sources={'charts/a.py':'pass\n','lib/render.py':large_source}
+        context={'user_message':'修改图表颜色',
+                 'source_files':[{'path':p,'content':c,'writable':p.startswith('charts/')} for p,c in sources.items()],
+                 'plot_data':[], 'allowed_write_paths':['charts/a.py'],
+                 'panel_index':panel_index.build_from_sources(sources,'a'),
+                 '_model_auth':{'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}}
+        responses=[{'status':'needs_context','reason':'Need complete implementation',
+                    'source_requests':[{'path':'lib/render.py','start_line':1,'end_line':5000}]},
+                   {'status':'answer','message':'已读取完整实现','proposed_files':[]}]
+        captured=[]
+        def send(request,timeout):
+            captured.append(json.loads(request.data))
+            return FakeStream(json.dumps(responses[len(captured)-1]))
+        with patch.object(chat_agent.urllib.request,'urlopen',side_effect=send):
+            result=chat_agent.propose(context)
+        self.assertEqual(result['status'],'answer')
+        followup=json.loads(captured[1]['messages'][-1]['content'])
+        self.assertGreater(sum(len(item['content']) for item in followup['requested_source']),24000)
+        self.assertFalse(followup['remaining_source_ranges'])
 
     def test_invalid_source_request_is_recoverable_within_model_budget(self):
         sources={'charts/a.py':'pass\n','lib/render.py':'def draw_panel():\n    return "real implementation"\n'}

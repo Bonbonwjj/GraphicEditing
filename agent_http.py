@@ -5,7 +5,6 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-
 def post_json(url, payload, timeout=45):
     request = urllib.request.Request(
         url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

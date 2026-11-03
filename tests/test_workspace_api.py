@@ -43,6 +43,12 @@ class WorkspaceApiTests(unittest.TestCase):
                 self.assertEqual(json.load(response)['status'],'working')
             start.assert_called_with(self.project,True,'strict')
 
+    def test_universal_prepare_route_requires_explicit_local_execution_consent(self):
+        with patch('universal_project.start',return_value={'status':'working'}) as start:
+            with self.post('workspace/projects/demo/universal-prepare',{'consent':True}) as response:
+                self.assertEqual(json.load(response)['status'],'working')
+            start.assert_called_once_with(self.project,True)
+
     def test_chat_save_delete_http_routes_preserve_formal_code(self):
         source=self.project/'charts/example.py';source.write_text('# do not run\n')
         from local_execution import approve

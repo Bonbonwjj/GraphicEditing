@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "version": "0.2.2",
+  "native_startup": true,
+  "bundled_python": true,
+  "bundled_git": true,
+  "render_png": true,
+  "interactive_runtime": true,
+  "payload_matches_source": true,
+  "desktop_release": "5fdd3db2d243b32b11058fff8387ce3256ef8adcc5c7ef8930254494c3ad1f01",
+  "regression_tests": {
+    "targeted_python": 101,
+    "targeted_python_ok": true,
+    "final_launcher_tests": 7,
+    "final_launcher_ok": true,
+    "connection_groups_node": true,
+    "full_legacy_suite_ok": false
+  }
+}

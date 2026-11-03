@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from app_version import APP_VERSION
 
 ROOT = Path(__file__).resolve().parent
 
@@ -18,7 +19,7 @@ def stage_application(destination):
     destination.mkdir(parents=True, exist_ok=True)
     excluded = {'build_desktop.py', 'desktop_launcher.py', 'export_shared_projects.py'}
     for source in ROOT.glob('*.py'):
-        if source.name not in excluded:
+        if source.name not in excluded and not source.name.startswith('test_'):
             shutil.copy2(source, destination/source.name)
     for name in ('static', 'skills', 'projects'):
         def ignored(folder, names):
@@ -27,7 +28,7 @@ def stage_application(destination):
                     or n == '__pycache__' or n.endswith(('.pyc', '.log'))
                     or n in ('previews', 'chart_metadata')]
         shutil.copytree(ROOT/name, destination/name, ignore=ignored)
-    for name in ('team_collaboration.json', 'README.md', 'requirements.txt'):
+    for name in ('team_collaboration.json', 'README.md', 'requirements.txt', 'VERSION', 'native_folder_dialog.ps1'):
         shutil.copy2(ROOT/name, destination/name)
     (destination/'docs').mkdir(exist_ok=True)
     shutil.copy2(ROOT/'docs/DESKTOP_APP.md',destination/'docs/DESKTOP_APP.md')
@@ -78,9 +79,10 @@ def main():
     for path in sorted((staging/'app').rglob('*')):
         if path.is_file():
             release_hash.update(str(path.relative_to(staging)).encode()); release_hash.update(path.read_bytes())
-    (staging/'manifest.json').write_text(json.dumps({'release':release_hash.hexdigest(),
+    (staging/'manifest.json').write_text(json.dumps({'version':APP_VERSION,'release':release_hash.hexdigest(),
         'runtime_sha256':digest,'seed_projects':projects,'platform':sys.platform,
-        'architecture':platform.machine(),'environment_sha256':environment_digest},indent=2),encoding='utf-8')
+        'architecture':platform.machine(),'environment_sha256':environment_digest,
+        'runtime_additions':previous.get('runtime_additions',{})},indent=2),encoding='utf-8')
     command = [sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--windowed',
         '--name','Plot Forge','--distpath',str(ROOT/'dist'),
         '--workpath',str(ROOT/'.desktop-build'/'pyinstaller'),

@@ -31,7 +31,7 @@ function environment() {
   assert(init > 0, 'Locate automatic page initialization');
   source = fs.readFileSync(path.join(root, 'static/panels.js'), 'utf8')+'\n'+source.slice(0, init);
   source += '\nglobalThis.panelTest = {panelSelections,panelTargetFor};';
-  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, pollChatProgress, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, fetchGalleryImage, galleryRequests };';
+  source += '\nglobalThis.app = { state, chatContext, sessionMatches, renderDraft, renderChat, generateChat, pollChatProgress, syncChatContext, warningIds, storeSession, warningList, refreshProjectChats, fetchGalleryImage, galleryRequests, loadCard };';
   vm.runInNewContext(source, sandbox);
   const app = sandbox.app;
   app.state.project = 'project';
@@ -255,7 +255,44 @@ function testConversationRendersAsAnswerWithoutDraftControls() {
   assert(!html.includes('data-draft-action'));
 }
 
+async function testGalleryCacheMissNeverRequestsARender() {
+  const {app,sandbox}=environment();
+  const calls=[];
+  sandbox.fetch=async url=>{calls.push(url);return {status:204,ok:true};};
+  const slot={innerHTML:''};
+  const card={dataset:{},querySelector:()=>slot};
+  await app.loadCard({card,project:'project',chart:'A',version:app.state.galleryVersion});
+  assert.equal(calls.length,1);
+  assert(calls[0].includes('cached_only=1'));
+  assert(slot.innerHTML.includes('点击此图'));
+  calls.length=0;
+  await app.loadCard({card,project:'project',chart:'B',version:app.state.galleryVersion,requested:true});
+  assert.equal(calls.length,1);
+  assert(calls[0].includes('/charts/B/preview'));
+  assert(!calls[0].includes('cached_only=1'));
+  assert(!card.dataset.explicitPreviewLoading);
+}
+
+async function testGalleryCannotSupersedeSelectedChartRequest() {
+  const {app,sandbox}=environment();
+  let resolve;
+  const calls=[];
+  sandbox.fetch=url=>{calls.push(url);return new Promise(done=>{resolve=done;});};
+  const slot={innerHTML:''};
+  const card={dataset:{},querySelector:()=>slot};
+  const selected=app.loadCard({card,project:'project',chart:'B',version:app.state.galleryVersion,requested:true});
+  await ready(()=>calls.length===1);
+  const request=card.dataset.previewRequest;
+  await app.loadCard({card,project:'project',chart:'B',version:app.state.galleryVersion});
+  assert.equal(calls.length,1);
+  assert.equal(card.dataset.previewRequest,request);
+  resolve({status:204,ok:true});
+  await selected;
+}
+
 (async () => {
+  await testGalleryCacheMissNeverRequestsARender();
+  await testGalleryCannotSupersedeSelectedChartRequest();
   await testGalleryAbortReleasesOldRequests();
   testConversationRendersAsAnswerWithoutDraftControls();
   testCards();

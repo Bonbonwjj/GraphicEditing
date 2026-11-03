@@ -169,6 +169,7 @@
   let batchPreview=null,batchStatus=null,batchPlanning=false,batchRequest=0,lastMode='';
   let currentCanOpen=false;
   let nativeAvailable=false;
+  let universalAvailable=false;
   let taskStarted=0,taskSubmitting=false,taskMessage='';
   function showTaskProgress(){
     if(!taskStarted)return;
@@ -184,6 +185,14 @@
     catch(e){message('workspaceMessage',e.message,true);$('workspaceNativeStart').disabled=false;}
   };
   $('workspaceNativeConsent').onchange=()=>{$('workspaceNativeStart').disabled=!$('workspaceNativeConsent').checked||lastStatus==='working';};
+  $('workspaceUniversalStart').onclick=async()=>{
+    if(!activeProject||!$('workspaceUniversalConsent').checked)return;
+    $('workspaceUniversalStart').disabled=true;
+    const project=activeProject;
+    try{const value=await post(projectRoute('universal-prepare'),{consent:true});if(activeProject===project)displayStatus(value);}
+    catch(e){message('workspaceMessage',e.message,true);$('workspaceUniversalStart').disabled=false;}
+  };
+  $('workspaceUniversalConsent').onchange=()=>{$('workspaceUniversalStart').disabled=!$('workspaceUniversalConsent').checked||lastStatus==='working';};
   $('workspaceAdvanced').ontoggle=()=>{
     if($('workspaceAdvanced').open&&activeProject&&scopeProject!==activeProject)
       loadAnalysisOptions({project:activeProject});
@@ -384,6 +393,9 @@
     const result=value.batch?.outcome||value.task_outcome;
     const terminal=result&&!['working','pending'].includes(result.status);
     const blocked=['needs_context','unsupported','interrupted'].includes(value.status);
+    $('workspaceResultEnter').hidden=value.can_open!==true;
+    $('workspaceResultEnter').disabled=value.can_open!==true||!!enteringProject;
+    $('workspaceResultEnter').textContent=value.figures?.length?`打开已验证的 ${value.figures.length} 张图`:'打开已验证图表';
     $('workspaceResult').hidden=!(terminal||blocked||value.status==='ready'||value.status==='pending_local_run');
     const failure=terminal?result.status!=='success':blocked;
     $('workspaceResult').className=failure?'taskResultFailure':'taskResultSuccess';
@@ -395,10 +407,19 @@
     for(const item of reasons){
       const li=document.createElement('li');li.textContent=(item.files?.join('、')||item.batch||'批次')+'：'+item.reason;$('workspaceResultReasons').appendChild(li);
     }
-    for(const warning of value.warnings||[]){const li=document.createElement('li');li.className='error';li.textContent='警告：'+warning;$('workspaceResultReasons').appendChild(li);}
+    for(const warning of value.warnings||[]){
+      const li=document.createElement('li');li.className='error';
+      const lines=warning.trim().split('\n');
+      if(lines.length>1){
+        const details=document.createElement('details'),summary=document.createElement('summary'),full=document.createElement('pre');
+        summary.textContent='警告：'+lines[0].split('：')[0]+'：'+lines[lines.length-1];
+        full.textContent=warning;details.append(summary,full);li.append(details);
+      }else li.textContent='警告：'+warning;
+      $('workspaceResultReasons').appendChild(li);
+    }
     if(result?.error){const li=document.createElement('li');li.textContent='汇总错误：'+result.error;$('workspaceResultReasons').appendChild(li);}
     if(failure&&!reasons.length&&value.reason){const li=document.createElement('li');li.textContent=value.reason;$('workspaceResultReasons').appendChild(li);}
-    $('workspaceResultNext').textContent=failure?(value.mode==='native'?'已保留项目副本。请查看实际绘图错误和环境警告；版本差异本身不会阻止默认环境试绘。':'项目副本仍保留。超时与超限需分别处理；原样重试不会处理超限批次。上方展示的是已保存结果，重新打开工程不会清除。'):value.can_open?'可进入对话改图。':'当前仅完成拆分方案生成，请继续本机导出和验证；尚未生成可直接改图的完整工程。';
+    $('workspaceResultNext').textContent=failure?(value.mode==='native'?'已保留项目副本。请查看实际绘图错误和环境警告；版本差异本身不会阻止默认环境试绘。':value.mode==='universal'?'已保留项目副本。请查看未通过入口的实际运行错误、缺失文件或环境依赖；未验证的图不会进入改图列表。':'项目副本仍保留。超时与超限需分别处理；原样重试不会处理超限批次。上方展示的是已保存结果，重新打开工程不会清除。'):value.can_open?'可进入对话改图。':'当前仅完成拆分方案生成，请继续本机导出和验证；尚未生成可直接改图的完整工程。';
     if(!$('workspaceResult').hidden)requestAnimationFrame(()=>$('workspaceResult').scrollIntoView({block:'start',behavior:'smooth'}));
   }
   function displayStatus(value) {
@@ -417,15 +438,22 @@
     if(changed)$('workspaceBatchProgress').hidden=true;
     currentCanOpen=value.can_open===true;
     nativeAvailable=value.native_available===true;
-    if(changed){$('workspaceNativeConsent').checked=false;$('workspaceEnvironmentMode').value=value.environment_mode||'default';}
+    universalAvailable=value.universal_available===true;
+    if(changed){$('workspaceNativeConsent').checked=false;$('workspaceUniversalConsent').checked=false;$('workspaceEnvironmentMode').value=value.environment_mode||'default';}
     $('workspaceEnvironmentMode').disabled=value.status==='working';
     $('workspaceEnvironmentReport').textContent=(value.render_environment?'实际环境：'+(value.render_environment.mode==='strict'?'严格复现独立环境':'平台默认环境')+'\nPython：'+(value.render_environment.python||'以实际容器为准')+'\n':'')+(value.warnings||[]).join('\n');
     $('workspaceNativePanel').hidden=!nativeAvailable||currentCanOpen;
     $('workspaceNativeStart').disabled=!$('workspaceNativeConsent').checked||value.status==='working';
     $('workspaceNativeProgress').value=value.native_progress?.completed||0;
     $('workspaceNativeProgress').max=value.native_progress?.total||7;
-    $('workspaceBatchPanel').hidden=currentCanOpen||nativeAvailable;
-    $('workspaceAdvanced').hidden=currentCanOpen||nativeAvailable||value.mode==='batch';
+    $('workspaceUniversalPanel').hidden=!universalAvailable||currentCanOpen||nativeAvailable;
+    $('workspaceUniversalStart').disabled=!$('workspaceUniversalConsent').checked||value.status==='working';
+    $('workspaceUniversalSummary').textContent=value.universal_discovery?`静态发现 ${value.universal_discovery.candidate_count} 个候选入口：${value.universal_discovery.entries.join('、')}`:'等待本地静态发现结果。';
+    $('workspaceUniversalProgress').value=value.universal_progress?.completed||0;
+    $('workspaceUniversalProgress').max=value.universal_progress?.total||Math.max(value.universal_discovery?.candidate_count||1,1);
+    const universalFailed=value.mode==='universal'&&value.status==='needs_context';
+    $('workspaceBatchPanel').hidden=currentCanOpen||nativeAvailable||(universalAvailable&&!universalFailed);
+    $('workspaceAdvanced').hidden=currentCanOpen||nativeAvailable||(universalAvailable&&!universalFailed)||value.mode==='batch';
     $('workspaceBatchValidation').hidden=!(value.batch?.jobs||[]).some(j=>['pending_local_run','validation_failed','ready'].includes(j.status));
     lastMode=value.mode||'';batchStatus=value.batch?{...value.batch,stage_updated_at:value.updated_at}:null;
     if(batchStatus){batchPreview=batchStatus;showBatch(batchStatus);}
@@ -457,7 +485,7 @@
     $('workspaceRunHint').hidden=!generated||value.status==='ready';
     $('workspacePlan').href=projectRoute('prepare.zip');
     $('workspaceBackup').hidden=value.status!=='ready';$('workspaceBackup').href=projectRoute('backup.zip');
-    $('workspaceDetails').textContent=JSON.stringify({mode:value.mode,figures:value.figures,required_local_inputs:value.required_local_inputs,validation:value.validation},null,2);
+    $('workspaceDetails').textContent=JSON.stringify({mode:value.mode,figures:value.figures,universal_discovery:value.universal_discovery,universal_progress:value.universal_progress,required_local_inputs:value.required_local_inputs,validation:value.validation},null,2);
   }
   async function refreshRecent() {
     const result=await api('/api/workspace/projects');
@@ -484,9 +512,10 @@
   $('createProject').textContent='＋ 新建并拆分工程';
   $('createProject').onclick=()=>{$('workspaceMode').value='new';openWorkspace();};
   $('workspaceBrowse').onclick=async()=>{
-    $('workspaceBrowse').disabled=true;
-    try {message('workspaceMessage','请在本机文件夹窗口选择目录；也可直接填写完整地址。');const result=await post('/api/workspace/pick-folder');if(result.path){$('projectSourcePath').value=result.path;importFormChanged();await inspectSource();}}
-    catch(e){message('workspaceMessage',e.message,true);}finally{$('workspaceBrowse').disabled=false;}
+    const browseButton=$('workspaceBrowse'),oldText=browseButton.textContent;
+    browseButton.disabled=true;browseButton.textContent='等待选择文件夹…';
+    try {message('workspaceMessage','请在本机文件夹窗口选择目录；也可直接填写完整地址。');const result=await post('/api/workspace/pick-folder');if(result.path){$('projectSourcePath').value=result.path;importFormChanged();await inspectSource();}else message('workspaceMessage','已取消选择文件夹，原路径保持不变。');}
+    catch(e){message('workspaceMessage',e.message,true);}finally{browseButton.disabled=false;browseButton.textContent=oldText;}
   };
   async function inspectSource() {
     const result=await post('/api/workspace/inspect',{source:$('projectSourcePath').value.trim()});
@@ -503,12 +532,12 @@
       message('workspaceMessage',result.reopened?'已打开保存的工程；未覆盖任何修改。':'已建立本机工程副本。未运行原分析，也未发送代码。');
       await refreshRecent();await reloadProjects();
       if(result.can_open){await enter();}
-      else if(!result.batch&&!result.native_available&&result.status!=='working'&&!result.generated_files?.length){await $('workspaceBatchPlan').onclick();}
+      else if(!result.batch&&!result.native_available&&!result.universal_available&&result.status!=='working'&&!result.generated_files?.length){await $('workspaceBatchPlan').onclick();}
     }catch(e){message('workspaceMessage',e.message,true);}finally{preparing=false;$('startStandardize').disabled=false;for(const id of ['standardizeProjectName','projectSourcePath','workspaceBrowse','workspaceInspect'])$(id).disabled=false;}
   };
   $('workspaceResume').onclick=async()=>{
     const project=$('workspaceRecent').value;if(!project)return;
-    try {const value=await api('/api/workspace/projects/'+encodeURIComponent(project)+'/status');displayStatus(value);if(value.can_open)await enter();else if(!value.batch&&!value.native_available&&value.status!=='working'&&!value.generated_files?.length)await $('workspaceBatchPlan').onclick();}catch(e){message('workspaceMessage',e.message,true);}
+    try {const value=await api('/api/workspace/projects/'+encodeURIComponent(project)+'/status');displayStatus(value);if(value.can_open)await enter();else if(!value.batch&&!value.native_available&&!value.universal_available&&value.status!=='working'&&!value.generated_files?.length)await $('workspaceBatchPlan').onclick();}catch(e){message('workspaceMessage',e.message,true);}
   };
   $('workspaceAnalyze').onclick=async()=>{
     if(!analysisPreview?.within_limit||!$('workspaceConsent').checked)return;
@@ -522,21 +551,37 @@
     try {displayStatus(await post(projectRoute('finalize'),{bundle:$('workspaceBundlePath').value.trim(),allow_local_execution:$('workspaceValidateConsent').checked}));}
     catch(e){message('workspaceMessage',e.message,true);$('workspaceFinalize').disabled=false;}
   };
+  let enteringProject='';
   async function enter() {
-    if(!activeProject||!currentCanOpen)return;
-    await reloadProjects();showProject(activeProject);const p=projectInfo(activeProject);
-    if(p?.charts[0])await select(activeProject,p.charts[0]);
-    $('standardizeDialog').close();
-    alertStatus('选择图表后，在右侧对话提出修改；检查候选预览，再点击应用。');
+    if(!activeProject||!currentCanOpen||enteringProject)return;
+    const project=activeProject,buttons=[$('workspaceEnter'),$('workspaceResultEnter')];
+    const labels=buttons.map(button=>button.textContent);
+    enteringProject=project;for(const button of buttons){button.disabled=true;button.textContent='正在打开工程…';}
+    message('workspaceMessage','正在加载已验证图表，请稍候…');
+    try {
+      await reloadProjects();
+      if(activeProject!==project)return;
+      const p=projectInfo(project);
+      if(!p||!p.charts?.length)throw new Error('未找到可打开的已验证图表，请刷新工程状态。');
+      showProject(project);
+      $('standardizeDialog').close();
+      alertStatus('已打开工程，正在加载图表详情…');
+      const selected=await select(project,p.charts[0]);
+      if(selected!==false&&state.project===project)
+        alertStatus('已打开工程，可在右侧对话改图；预览图片在后台加载。');
+    } finally {
+      enteringProject='';buttons.forEach((button,index)=>{button.textContent=labels[index];button.disabled=!currentCanOpen;});
+    }
   }
   $('workspaceEnter').onclick=()=>enter().catch(e=>message('workspaceMessage',e.message,true));
+  $('workspaceResultEnter').onclick=$('workspaceEnter').onclick;
   setInterval(async()=>{
     if(taskSubmitting||polling||!$('standardizeDialog').open||!activeProject||lastStatus!=='working')return;
     const project=activeProject;
     polling=true;try{const result=await api(projectRoute('status'));if(project!==activeProject||deleting)return;displayStatus(result);if(lastStatus!=='working')await refreshRecent();}
     catch(e){message('workspaceMessage',e.message,true);$('workspaceBatchProgressConnection').textContent='进度查询失败，显示的是上次状态；后台任务不一定停止。下一轮自动重试。';}finally{polling=false;}
   },2000);
-  for(const id of ['workspaceAnalyze','workspaceNativeStart','workspaceBatchStart','workspaceBatchFinalize','workspaceFinalize']){
+  for(const id of ['workspaceAnalyze','workspaceNativeStart','workspaceUniversalStart','workspaceBatchStart','workspaceBatchFinalize','workspaceFinalize']){
     const original=$(id).onclick;
     $(id).onclick=async(...args)=>{
       if($(id).disabled||taskSubmitting)return;

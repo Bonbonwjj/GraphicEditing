@@ -59,14 +59,23 @@ and statistics stay in read-only data/native/{ident}; native helpers are in lib.
 """
 import sys
 from native_plot_runtime import prepare_native, render_native
+from interactive_style import apply_interactive_style
 
 NATIVE_FIGURE = {ident!r}
+FIGURE_SOURCE_REF = 'lib/native/{ident}/code'
+FIGURE_DIRECT_INPUTS = ('data/native/{ident}',)
+FIGURE_DRAWING_CODE = {invocation!r}
+
+# --- PLOT_FORGE_INTERACTIVE_STYLE_START ---
+INTERACTIVE_STYLE = {{'border_width': 1.0, 'border_color': '#333333',
+                     'legend_location': 'best', 'legend_names': {{}}}}
+# --- PLOT_FORGE_INTERACTIVE_STYLE_END ---
 
 
 def customize(figure):
     # Presentation-only edits; all original axes and artists are available here.
     # Use panel_axes(figure, visible_panel, explicit_mapping) for panel-local edits.
-    pass
+    apply_interactive_style(figure, INTERACTIVE_STYLE)
 
 
 def produce():
@@ -157,7 +166,7 @@ def prepare(project, source, progress=None, previous_state=None, environment_mod
         cache = project/'.preparation/native-cache'
         cache.mkdir(parents=True, exist_ok=True)
         platform = [prep.sha(prep.ROOT/name) for name in
-                    ('native_plot_runtime.py','chat_runner.py','font_policy.py','requirements-native.txt','render_environment.py')]
+                    ('native_plot_runtime.py','interactive_style.py','component_editor.py','component_groups.py','drawing_items.py','chart_naming.py','chat_runner.py','font_policy.py','requirements-native.txt','render_environment.py')]
         try:
             environment = describe(staged,isolation_backend())
         except ValueError as exc:

@@ -230,6 +230,86 @@ class HarnessTests(unittest.TestCase):
 
     def turn(self,body):return self.h.turn('test',self.session['id'],body)
 
+    def test_applying_candidate_preserves_clickable_groups_and_axis_ranges(self):
+        group={'key':'axes_0.box_0','label':'箱型图','members':['axes_0.patch_0'],'part_targets':[]}
+        mark={'key':'axes_0.patch_0','kind':'patch','group_key':group['key'],
+              'hit_path_px':[[20,20],[30,20],[30,40],[20,40],[20,20]],'style':{}}
+        def capture(*args,**kwargs):
+            report=self.render(*args,**kwargs)
+            report.update(candidate_artists=[mark],component_groups=[group],
+                axes=[{'xlim':[0,3],'ylim':[0,6]}],render_size_px=[100,100],
+                layout_signature={'axes':[{'bbox_px':[0,0,100,100]}],'texts':[]})
+            return report
+        self.h.renderer=capture
+        result=self.turn({'user_message':'修改箱型颜色'})
+        draft=result['drafts'][-1]
+        with patch.object(server,'snapshot_image',return_value='.png'):
+            self.h.draft_action('test',result['id'],draft['id'],'apply')
+        cached=json.loads((self.project/'previews/b.json').read_text(encoding='utf-8'))['interaction']
+        self.assertEqual(cached['targets'][0]['key'],'axes_0.patch_0')
+        self.assertEqual(cached['component_groups'],[group])
+        self.assertEqual(cached['axis_ranges'][0]['ylim'],[0,6])
+
+    def test_source_data_pass_cannot_waive_unrequested_global_resize(self):
+        def resized(*args,**kwargs):
+            report=self.render(*args,**kwargs)
+            report.update(source_data_report={'status':'pass'},
+                baseline_layout_signature={'size_inches':[7,4],'axes':[]},
+                layout_signature={'size_inches':[11.2,4],'axes':[]})
+            return report
+        self.h.renderer=resized
+        result=self.turn({'user_message':'只把d图改为小提琴图'})
+        draft=result['drafts'][-1]
+        self.assertEqual(draft['review_blocker'],'layout_changed')
+        self.assertFalse(draft['can_apply']);self.assertTrue(draft['can_continue'])
+        self.assertIn('layout_preservation',self.contexts[-1]['harness_layout_feedback'])
+        with self.assertRaisesRegex(ValueError,'原排版'):
+            self.h.draft_action('test',result['id'],draft['id'],'apply')
+        self.turn({'user_message':'继续修正这次修改'})
+        self.assertEqual(self.contexts[-1]['_layout_reference']['signature']['size_inches'],[7,4])
+
+    def test_original_unchanged_spacing_does_not_trigger_global_repair(self):
+        issue={'id':'space','kind':'panel_spacing','elements':['panel_1','panel_2'],'message':'same original gap'}
+        def unchanged(*args,**kwargs):
+            report=self.render(*args,**kwargs)
+            signature={'size_inches':[7,4],'axes':[]}
+            report.update(baseline_layout_signature=signature,layout_signature=signature,
+                baseline_layout={'issues':[issue]},layout={'status':'conflict','issues':[dict(issue)]})
+            return report
+        self.h.renderer=unchanged
+        result=self.turn({'user_message':'把线改成蓝色'})
+        self.assertEqual(result['drafts'][-1]['status'],'preview_ready')
+        self.assertEqual(result['drafts'][-1]['layout']['status'],'preserved_existing')
+        self.assertEqual(len(self.contexts),1)
+
+    def test_automatic_proposal_repair_keeps_diagnostics_local_and_original_untouched(self):
+        import chat_agent
+        from tests.test_model_config import FakeStream
+        before=(self.project/'charts/b.py').read_bytes()
+        for exhausted in (False,True):
+            with self.subTest(exhausted=exhausted):
+                def model(q):
+                    valid=self.agent(q);bad=copy.deepcopy(valid)
+                    bad['interpreted_request']['operations'][0].update(disposition='blocked',reason='Need final axis limits')
+                    answers=[bad,bad,bad] if exhausted else [bad,valid]
+                    with patch.object(chat_agent.urllib.request,'urlopen',side_effect=[FakeStream(json.dumps(v)) for v in answers]):
+                        return chat_agent.propose(dict(q,_model_auth={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}))
+                self.h.agent=model
+                result=self.turn({'user_message':'修改图表线宽'})
+                shown=result['turns'][-1]['results'][0]
+                self.assertEqual(shown['status'],'cannot_complete' if exhausted else 'preview_ready')
+                self.assertNotIn('_diagnostics',result['turns'][-1])
+                saved=json.loads(self.h.path('test',self.session['id']).read_text(encoding='utf-8'))
+                records=saved['turns'][-1]['_diagnostics'][shown['chart_id']]
+                self.assertEqual(records[0]['detail']['disposition'],'blocked')
+                self.assertEqual(records[0]['detail']['reason'],'Need final axis limits')
+                if exhausted:
+                    self.assertEqual(shown['failure_code'],'proposal_not_ready')
+                    self.assertIn('你不需要补充技术信息',shown['reason'])
+                    self.assertNotIn('disposition',shown['reason'])
+                    self.assertEqual(shown['model_attempts'],3)
+                self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
+
     def test_candidate_does_not_apply_and_next_turn_uses_active_parent(self):
         a=self.turn({'user_message':'first'});draft=a['drafts'][0]
         self.assertEqual((self.project/'charts/b.py').read_text(encoding="utf-8"),self.source)

@@ -5,6 +5,34 @@ from pathlib import Path
 import llm_client
 from llm_workflows import split_chart
 
+FIGURE_CALLS = {"figure", "subplots", "subplot_mosaic"}
+OUTPUT_CALLS = {"savefig", "show"}
+
+def _call_name(node):
+    return node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) else ""
+
+def _needs_model_split(source):
+    """Conservatively identify programs that may emit more than one figure."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    class FigureCounter(ast.NodeVisitor):
+        def __init__(self):
+            self.figures = self.outputs = self.loop_depth = 0
+            self.repeated = False
+        def visit_Call(self, node):
+            name = _call_name(node)
+            self.figures += name in FIGURE_CALLS
+            self.outputs += name in OUTPUT_CALLS
+            self.repeated |= self.loop_depth > 0 and name in FIGURE_CALLS | OUTPUT_CALLS
+            self.generic_visit(node)
+        def _loop(self, node):
+            self.loop_depth += 1; self.generic_visit(node); self.loop_depth -= 1
+        visit_For = visit_AsyncFor = visit_While = visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _loop
+    counter = FigureCounter(); counter.visit(tree)
+    return counter.repeated or counter.figures > 1 or counter.outputs > 1
+
 def _explicit_roots(code_root):
     """Return charts/lib roots for the documented layout, if present."""
     code_root = Path(code_root)
@@ -41,7 +69,9 @@ def _data_catalog(upload):
         try:
             if path.suffix.lower() in (".csv", ".tsv"):
                 with path.open(encoding="utf-8-sig", newline="") as stream:
-                    item["columns"]=next(csv.reader(stream, delimiter="\t" if path.suffix.lower()==".tsv" else ","), [])
+                    columns=next(csv.reader(stream, delimiter="\t" if path.suffix.lower()==".tsv" else ","), [])
+                    item["columns"]=columns[:64]
+                    if len(columns)>64: item["omitted_columns"]=len(columns)-64
             elif path.suffix.lower()==".json":
                 value=json.loads(path.read_text(encoding="utf-8"))
                 sample=value[0] if isinstance(value,list) and value else value
@@ -78,11 +108,12 @@ def import_generic(root, upload, project_id, name, progress=None):
         shutil.copytree(explicit[1],target/"lib",dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     entries = sorted(chart_root.rglob("*.py")) if chart_root.is_dir() else []
     for index, p in enumerate(entries):
-        notify(stage='splitting', completed=index, total=len(entries), current_file=p.relative_to(chart_root).as_posix(),
-               message='正在拆分代码'+('，等待模型返回。' if not explicit and llm_client.is_configured() else '，建立独立绘图入口。'))
         chart=re.sub(r"[^A-Za-z0-9_]+","_","_".join(p.relative_to(chart_root).with_suffix("").parts)).strip("_") or "chart"
         source=p.read_text(encoding="utf-8")
-        if not explicit and llm_client.is_configured():
+        use_model = not explicit and _needs_model_split(source) and llm_client.is_configured()
+        notify(stage='splitting', completed=index, total=len(entries), current_file=p.relative_to(chart_root).as_posix(),
+               message='正在拆分代码'+('，等待模型返回。' if use_model else '，建立独立绘图入口。'))
+        if use_model:
             try:
                 generated=split_chart(p.name,source,catalog)
                 for item in generated:

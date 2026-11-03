@@ -18,30 +18,54 @@ def plan(project):
     sources = analysis_scope.sources_for(project)
     if not sources:
         raise ValueError('没有可分析的 Python 源码，请先备份源工程')
-    trees, groups, blocked = {}, [], []
+    trees, groups, blocked, closures = {}, [], [], []
+
+    # Count identical source bodies once, matching the representation sent to
+    # the model, and prefer batches that reuse an already included helper.
+    size_cache = {}
+    def wire_chars(paths):
+        key = frozenset(paths)
+        if key not in size_cache:
+            size_cache[key] = sum(len(text) for text in {sources[p] for p in key})
+        return size_cache[key]
+
     # Union of independently resolved dependency closures is still a closure.
-    # First-fit groups every target once; helpers may appear as context in more
-    # than one request. Never cut a file or discard an oversized dependency.
+    # Resolve large closures first, then choose the compatible group with the
+    # smallest incremental wire cost to avoid resending shared helpers.
     for target in sorted(sources):
         single = analysis_scope.build(project, targets=[target], source_cache=sources, tree_cache=trees, deduplicate=True)
         if not single['within_limit']:
             blocked.append({'targets': [target], 'files': set(single['files'])})
             continue
-        for group in groups:
-            union = group['files'] | set(single['files'])
-            if sum(len(text) for text in {sources[p] for p in union}) <= analysis_scope.LIMIT:
-                group['targets'].append(target);group['files'] = union
-                break
+        closures.append({'target': target, 'files': set(single['files']), 'chars': single['chars']})
+    for closure in sorted(closures, key=lambda item: (-item['chars'], item['target'])):
+        candidates = []
+        for index, group in enumerate(groups):
+            union = group['files'] | closure['files']
+            total = wire_chars(union)
+            if total <= analysis_scope.LIMIT:
+                candidates.append((total - wire_chars(group['files']), total, index, union))
+        if candidates:
+            _, _, index, union = min(candidates)
+            groups[index]['targets'].append(closure['target'])
+            groups[index]['files'] = union
         else:
-            groups.append({'targets': [target], 'files': set(single['files'])})
+            groups.append({'targets': [closure['target']], 'files': set(closure['files'])})
     jobs = []
     for group in groups + blocked:
         detail = analysis_scope.build(project, targets=group['targets'], source_cache=sources, tree_cache=trees, deduplicate=True)
         ident = 'batch_' + hashlib.sha256('\n'.join(group['targets']).encode()).hexdigest()[:12]
         jobs.append({'id': ident, **detail})
     digest = hashlib.sha256(json.dumps([(j['id'], j['confirmation_token']) for j in jobs]).encode()).hexdigest()
+    unique_source_chars = wire_chars(sources)
+    transmitted_source_chars = sum(job['chars'] for job in jobs if job['within_limit'])
     return {'version': 1, 'confirmation_token': digest, 'source_files': len(sources),
-            'source_chars': sum(map(len, sources.values())), 'jobs': jobs}
+            'source_chars': sum(map(len, sources.values())),
+            'unique_source_chars': unique_source_chars,
+            'transmitted_source_chars': transmitted_source_chars,
+            'repeated_source_chars': max(0, transmitted_source_chars - unique_source_chars),
+            'estimated_source_tokens': (transmitted_source_chars + 3) // 4,
+            'jobs': jobs}
 
 
 def public_plan(value):

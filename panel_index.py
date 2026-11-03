@@ -11,8 +11,20 @@ def source_files(project, chart):
     entry = project/'charts'/f'{chart}.py'
     from native_project import selection
     ident = selection(project, entry.relative_to(project).as_posix())
-    roots = [project/'lib/native'/ident] if ident else [project/'lib']
+    from universal_project import selection as universal_selection
+    universal_ident = universal_selection(project, entry.relative_to(project).as_posix())
+    if ident:
+        roots = [project/'lib/native'/ident]
+    elif universal_ident:
+        registry=json.loads((project/'universal-project.json').read_text(encoding='utf-8'))
+        record=registry['figures'][universal_ident]
+        source_root=project/registry['source_root']
+        roots=[]
+    else:
+        roots = [project/'lib']
     paths = [entry, *project.glob('*.py')]
+    if universal_ident:
+        paths.extend(source_root/path for path in record.get('source_files',[]))
     for root in roots:
         if root.exists():
             paths.extend(root.rglob('*.py'))
@@ -35,9 +47,13 @@ def effective_sources(sources):
             tree = ast.parse(content)
             values = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body
                       if isinstance(n, ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0], ast.Name)
-                      and n.targets[0].id in ('NATIVE_FIGURE', 'NATIVE_SOURCE_EDITS')}
-            for relative, edits in values.get('NATIVE_SOURCE_EDITS', {}).items():
-                target = 'lib/native/'+values['NATIVE_FIGURE']+'/'+relative
+                      and n.targets[0].id in ('NATIVE_FIGURE', 'NATIVE_SOURCE_EDITS', 'UNIVERSAL_FIGURE', 'UNIVERSAL_SOURCE_EDITS')}
+            native=values.get('NATIVE_FIGURE')
+            universal=values.get('UNIVERSAL_FIGURE')
+            edit_map=values.get('NATIVE_SOURCE_EDITS',{}) if native else values.get('UNIVERSAL_SOURCE_EDITS',{})
+            for relative, edits in edit_map.items():
+                target = ('lib/native/'+native+'/'+relative) if native else next(
+                    (path for path in result if path.endswith('/universal/source/'+relative)), '')
                 if target not in result:
                     continue
                 for edit in edits:
@@ -70,9 +86,9 @@ def sections(path, content):
     return result
 
 
-def build_from_sources(sources, chart):
+def build_from_sources(sources, chart, declared_mappings=()):
     catalog = []
-    mappings = []
+    mappings = list(declared_mappings)
     reverse_mappings = []
     labels = set()
     function_labels = {}
@@ -130,9 +146,9 @@ def build_from_sources(sources, chart):
                     snippet = read_range(sources, section)
                 except ValueError:
                     continue
-                if section['path'] == mappings[0][0] and (
-                        'PUBLIC_PANEL_MEMBERS' in snippet or any(re.search(r"['\"]"+re.escape(axis)+r"['\"]", snippet) for axis in members)):
-                    direct = any(function_labels.get((section['path'], name), set()) & set(members) for name in section['symbols'])
+                direct = any(function_labels.get((section['path'], name), set()) & set(members) for name in section['symbols'])
+                if direct or 'PUBLIC_PANEL_MEMBERS' in snippet or any(
+                        re.search(r"['\"]"+re.escape(axis)+r"['\"]", snippet) for axis in members):
                     score = (100 if direct else 0)+sum(len(re.findall(r"['\"]"+re.escape(axis)+r"['\"]", snippet)) for axis in members)
                     if any(section['start_line']<=line<=section['end_line'] and axis in members for line,axis in binding_lines.get(section['path'], [])):
                         score += 80
@@ -149,8 +165,29 @@ def build_from_sources(sources, chart):
 
 
 def build(project, chart):
+    project=Path(project)
     sources = source_files(project, chart)
-    result = build_from_sources(sources, chart)
+    declared=[]
+    from native_project import selection
+    ident=selection(project,f'charts/{chart}.py')
+    if ident:
+        root=project/'data/native'/ident/'source'
+        for metadata in sorted(root.rglob('*.json'))[:200] if root.exists() else []:
+            if metadata.stat().st_size>2_000_000: continue
+            try: value=json.loads(metadata.read_text(encoding='utf-8-sig'))
+            except (OSError,ValueError,UnicodeError): continue
+            stack=[value]
+            while stack:
+                item=stack.pop()
+                if isinstance(item,dict):
+                    mapping=item.get('public_panel_map') or item.get('PUBLIC_PANEL_MEMBERS')
+                    if (isinstance(mapping,dict) and mapping
+                            and all(isinstance(k,str) and isinstance(v,(list,tuple)) and v
+                                    and all(isinstance(label,str) for label in v) for k,v in mapping.items())):
+                        declared.append((metadata.relative_to(project).as_posix(),mapping))
+                    stack.extend(item.values())
+                elif isinstance(item,list): stack.extend(item)
+    result = build_from_sources(sources, chart, declared)
     manual = Path(project)/'panel-mappings'/f'{chart}.json'
     if manual.is_file():
         value = validate_mapping(json.loads(manual.read_text(encoding='utf-8')))
@@ -189,8 +226,8 @@ def read_range(sources, request):
     return content
 
 
-def model_source_reads(sources, requests, budget=24000):
-    """Normalize model ranges and page large reads without ending the edit turn."""
+def model_source_reads(sources, requests):
+    """Normalize model ranges and page large reads without a character budget."""
     result, feedback, remaining = [], [], []
     if not isinstance(requests, list):
         return [], ['source_requests must be an array of {path,start_line,end_line} objects.'], []
@@ -242,22 +279,10 @@ def model_source_reads(sources, requests, budget=24000):
             feedback.append(path+': '+str(error))
             continue
         while start<=end:
-            stop=start-1
-            used=0
-            while stop<end and stop-start+1<240:
-                size=len(lines[stop])
-                if used+size>min(16000,budget):
-                    break
-                used+=size
-                stop+=1
-            if stop<start:
-                remaining.append({'path':path,'start_line':start,'end_line':end})
-                feedback.append(f'{path}:{start}-{end} remains unread due to the per-call character budget; request a narrower range next.')
-                break
+            stop=min(end,start+239)
             result.append({'path':path,'start_line':start,'end_line':stop,
                            'content':''.join(lines[start-1:stop]),'read_only':True,
                            'source_line_count':len(lines)})
-            budget-=used
             start=stop+1
     return result,feedback,remaining
 
@@ -265,14 +290,17 @@ def model_source_reads(sources, requests, budget=24000):
 def local_edit(entry, path, old, new):
     """Store exact native source patches in the chart entry; originals stay frozen."""
     tree = ast.parse(entry)
+    universal=any(isinstance(node,ast.Assign) and any(isinstance(target,ast.Name)
+                  and target.id=='UNIVERSAL_FIGURE' for target in node.targets) for node in tree.body)
+    variable='UNIVERSAL_SOURCE_EDITS' if universal else 'NATIVE_SOURCE_EDITS'
     edits = {}
     assignment = next((n for n in tree.body if isinstance(n, ast.Assign)
-                       and any(isinstance(t, ast.Name) and t.id == 'NATIVE_SOURCE_EDITS' for t in n.targets)), None)
+                       and any(isinstance(t, ast.Name) and t.id == variable for t in n.targets)), None)
     if assignment:
         edits = ast.literal_eval(assignment.value)
     edits.setdefault(path, []).append({'old': old, 'new': new})
     # repr preserves all strings without executing or interpolating their content.
-    value = 'NATIVE_SOURCE_EDITS = '+repr(edits)+'\n'
+    value = variable+' = '+repr(edits)+'\n'
     lines = entry.splitlines(keepends=True)
     if assignment:
         lines[assignment.lineno-1:assignment.end_lineno] = [value]
@@ -280,6 +308,13 @@ def local_edit(entry, path, old, new):
         lines.insert(0, value)
     entry = ''.join(lines)
     tree = ast.parse(entry)
+    if universal:
+        calls=[node for node in ast.walk(tree) if isinstance(node,ast.Call)
+               and isinstance(node.func,ast.Name) and node.func.id=='render_original']
+        if len(calls)!=1 or not (len(calls[0].args)>=3 and isinstance(calls[0].args[2],ast.Name)
+                                and calls[0].args[2].id==variable):
+            raise ValueError('通用绘图入口未绑定唯一的源码补丁参数')
+        return entry
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
              and n.func.id == 'prepare_native']
     if len(calls)!=1:

@@ -8,20 +8,41 @@ import desktop_launcher as desktop
 
 
 class DesktopTests(unittest.TestCase):
+    def test_extract_runtime_handles_deep_unicode_paths(self):
+        import io
+        import os
+        import tarfile
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); archive=root/'runtime.tar.gz'
+            unpack='Scripts/conda-unpack-script.py' if os.name=='nt' else 'bin/conda-unpack'
+            deep='Lib/site-packages/'+('nested-module-'*9)+'/module.py'
+            with tarfile.open(archive,'w:gz') as bundle:
+                for name in (unpack,deep):
+                    item=tarfile.TarInfo(name);item.size=4
+                    bundle.addfile(item,io.BytesIO(b'pass'))
+            target=root/('中文运行环境'*6)/'runtime'
+            with patch.object(desktop.subprocess,'run'):
+                desktop.extract_runtime(archive,target)
+            self.assertEqual((target/deep).read_bytes(),b'pass')
+            self.assertTrue((target/'.ready').is_file())
+
     def test_packaging_can_seed_projects_from_canonical_repository(self):
         import build_desktop
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'source';target=Path(folder)/'app'
             for name in ('static','skills','docs','projects/demo/data','projects/demo/code/charts'):
                 (source/name).mkdir(parents=True,exist_ok=True)
-            for name in ('team_collaboration.json','README.md','requirements.txt','docs/DESKTOP_APP.md'):
+            for name in ('team_collaboration.json','README.md','requirements.txt','VERSION','native_folder_dialog.ps1','docs/DESKTOP_APP.md'):
                 (source/name).write_text('{}')
+            (source/'test_server_local.py').write_text('raise RuntimeError("QA only")')
             (source/'projects/demo/code/project.json').write_text('{}')
             (source/'projects/demo/code/charts/a.py').write_text('pass')
             (source/'projects/demo/data/a.csv').write_text('x\n1\n')
             with patch.object(build_desktop,'ROOT',source):
                 projects=build_desktop.stage_application(target)
             self.assertEqual(projects,['demo'])
+            self.assertFalse((target/'test_server_local.py').exists())
+            self.assertTrue((target/'native_folder_dialog.ps1').exists())
             self.assertTrue((target/'projects/demo/charts/a.py').is_file())
             self.assertTrue((target/'projects/demo/project.json').is_file())
             self.assertEqual((target/'projects/demo/data/a.csv').read_text(),'x\n1\n')

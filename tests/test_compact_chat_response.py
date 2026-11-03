@@ -12,6 +12,40 @@ from tests.test_model_config import FakeStream
 
 
 class CompactResponseTests(unittest.TestCase):
+    def test_skill_references_are_loaded_only_for_relevant_context(self):
+        context={'user_message':'修改颜色','source_files':[{'writable':True,'content':'UNIVERSAL_FIGURE="x"'}],
+                 'plot_data':[{'content_scope':'truncated_sample','source_row_count':None}]}
+        instruction,references=chat_agent.skill_guidance(context)
+        self.assertEqual(references,['adapters.md','large-data.md'])
+        self.assertIn('UNIVERSAL_SOURCE_EDITS',instruction)
+        self.assertIn('sample length is never the full sample size',instruction)
+        self.assertNotIn('multiply by 1.2',instruction)
+        instruction,references=chat_agent.skill_guidance({**context,'user_message':'字体大一些'})
+        self.assertIn('appearance.md',references)
+        self.assertIn('scatter area s by 1.44',instruction)
+
+    def test_presentation_only_edit_sends_schema_without_numeric_rows(self):
+        context=copy.deepcopy(self.context)
+        context['user_message']='将配色改为深紫到浅粉'
+        context['_model_auth']={'api_key':'test-key','api_url':'https://example.test/v1/chat/completions','model':'test-model'}
+        response=copy.deepcopy(self.response)
+        response['interpreted_request']['operations'][0]['source_quotes']=[context['user_message']]
+        with patch.object(chat_agent.urllib.request,'urlopen',return_value=FakeStream(json.dumps(response))) as request:
+            chat_agent.propose(context)
+        supplied=json.loads(json.loads(request.call_args.args[0].data)['messages'][-1]['content'])
+        self.assertTrue(supplied['plot_data'])
+        self.assertTrue(all(item['content_scope']=='schema_only' for item in supplied['plot_data']))
+        self.assertEqual([item['content'].splitlines() for item in supplied['plot_data']],
+                         [[original['content'].splitlines()[0]] for original in context['plot_data']])
+        self.assertTrue(any(item['content'] for item in context['plot_data']))
+
+    def test_numeric_palette_choice_inherits_presentation_intent(self):
+        context=copy.deepcopy(self.context)
+        context['user_message']='2'
+        context['conversation_context']={'recent_turns':[{'user_message':'更换图a的色谱',
+            'message':'请选择 1、2 或 3 种配色'}]}
+        self.assertTrue(chat_agent.presentation_only_edit(context))
+
     def test_simple_edit_shortens_prompt_without_removing_target_or_data(self):
         context=copy.deepcopy(self.context)
         context['user_message']='更改为折线图，横纵坐标加粗'
@@ -158,6 +192,85 @@ class CompactResponseTests(unittest.TestCase):
         self.assertEqual(checked['status'],'candidate')
         self.assertEqual(request.call_count,3)
         self.assertEqual(checked['model_attempts_used'],3)
+
+    def test_unresolved_candidates_are_repaired_without_silently_accepting_them(self):
+        for kind in ('operation','intent'):
+            with self.subTest(kind=kind):
+                context=copy.deepcopy(self.context)
+                context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+                bad=copy.deepcopy(self.response)
+                if kind=='operation':bad['interpreted_request']['operations'][0]['disposition']='unresolved'
+                else:bad['intent_check']={'status':'unresolved','unresolved_items':['Need source mapping']}
+                with self.assertRaises(chat_agent.OperationSchemaMismatch):
+                    chat_agent.validate_response(context,self.expanded(bad))
+                with patch.object(chat_agent.urllib.request,'urlopen',side_effect=[
+                        FakeStream(json.dumps(bad)),FakeStream(json.dumps(self.response))]) as request:
+                    result=chat_agent.propose(context)
+                self.assertEqual(result['status'],'candidate');self.assertEqual(request.call_count,2)
+                hint=json.loads(request.call_args.args[0].data)['messages'][1]['content']
+                self.assertIn('do not merely relabel unresolved operations',hint)
+                self.assertIn('return needs_context',hint)
+                if kind=='operation':self.assertEqual(bad['interpreted_request']['operations'][0]['disposition'],'unresolved')
+
+    def test_unresolved_operation_can_request_local_source_before_returning_candidate(self):
+        context=copy.deepcopy(self.context)
+        context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+        context['source_files'].append({'path':'lib/helpers.py','content':'def finalize():\n    ax.set_ylim(0, 1)\n','writable':False})
+        bad=copy.deepcopy(self.response);bad['interpreted_request']['operations'][0]['disposition']='blocked'
+        read={'status':'needs_context','reason':'需读取最终坐标范围','source_requests':[
+            {'path':'lib/helpers.py','start_line':1,'end_line':2}]}
+        with patch.object(chat_agent.urllib.request,'urlopen',side_effect=[
+                FakeStream(json.dumps(bad)),FakeStream(json.dumps(read)),FakeStream(json.dumps(self.response))]):
+            result=chat_agent.propose(context)
+        self.assertEqual(result['status'],'candidate');self.assertEqual(result['model_attempts_used'],3)
+        self.assertEqual(result['model_context_reads_used'],1)
+
+    def test_persistently_unresolved_operation_stops_with_localized_reason(self):
+        context=copy.deepcopy(self.context)
+        context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+        bad=copy.deepcopy(self.response);bad['interpreted_request']['operations'][0]['disposition']='unresolved'
+        with patch.object(chat_agent.urllib.request,'urlopen',side_effect=lambda *a,**k:FakeStream(json.dumps(bad))) as request:
+            with self.assertRaisesRegex(chat_agent.ProposalNotReady,'你不需要补充技术信息'):
+                chat_agent.propose(context)
+        self.assertEqual(request.call_count,3)
+
+    def test_repair_feedback_preserves_actual_problem_and_updates_progress(self):
+        context=copy.deepcopy(self.context);progress=[]
+        context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+        context['_model_attempt_budget']={'used':0};context['_context_progress']=progress.append
+        bad=copy.deepcopy(self.response);bad['interpreted_request']['operations'][0]['disposition']='done'
+        with patch.object(chat_agent.urllib.request,'urlopen',side_effect=[
+                FakeStream(json.dumps(bad)),FakeStream(json.dumps(self.response))]) as request:
+            result=chat_agent.propose(context)
+        self.assertEqual(result['status'],'candidate')
+        feedback=json.loads(json.loads(request.call_args.args[0].data)['messages'][-1]['content'])['proposal_feedback']
+        self.assertEqual(feedback['detail']['disposition'],'done')
+        self.assertEqual(feedback['detail']['target_element'],'Obs line')
+        self.assertEqual(progress[0]['stage'],'repairing_proposal')
+        self.assertEqual(context['_model_attempt_budget']['validation_diagnostics'][0],feedback)
+
+    def test_user_quote_errors_are_automatically_corrected(self):
+        for quotes in ([],['invented user request']):
+            with self.subTest(quotes=quotes):
+                context=copy.deepcopy(self.context)
+                context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+                bad=copy.deepcopy(self.response);bad['interpreted_request']['operations'][0]['source_quotes']=quotes
+                with patch.object(chat_agent.urllib.request,'urlopen',side_effect=[
+                        FakeStream(json.dumps(bad)),FakeStream(json.dumps(self.response))]) as request:
+                    self.assertEqual(chat_agent.propose(context)['status'],'candidate')
+                self.assertEqual(request.call_count,2)
+
+    def test_exhausted_schema_repairs_hide_internal_fields_but_keep_diagnostics(self):
+        context=copy.deepcopy(self.context)
+        context['_model_auth']={'api_key':'fake','api_url':'https://example.test/v1/chat/completions'}
+        context['_model_attempt_budget']={'used':0}
+        bad=copy.deepcopy(self.response);bad.pop('intent_check')
+        with patch.object(chat_agent.urllib.request,'urlopen',side_effect=lambda *a,**k:FakeStream(json.dumps(bad))):
+            with self.assertRaises(chat_agent.ProposalNotReady) as caught:
+                chat_agent.propose(context)
+        self.assertNotIn('intent_check',str(caught.exception))
+        self.assertIn('intent_check',caught.exception.detail['reason'])
+        self.assertEqual(len(context['_model_attempt_budget']['validation_diagnostics']),3)
 
     def test_redundant_parent_code_omitted_but_repair_candidate_kept(self):
         context=copy.deepcopy(self.context)

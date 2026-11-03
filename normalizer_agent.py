@@ -18,24 +18,16 @@ MODEL_PROMPT_CHAR_LIMIT = 80_000
 
 
 def compact_model_data(items, budget=25_000):
-    """Send whole CSV sample rows under a shared budget; retain schema and hashes."""
+    """Expose schema metadata while keeping every original data value local."""
     result = []
     for item in items:
-        entry = dict(item)
-        lines = item.get('content', '').splitlines(keepends=True)
-        if lines:
-            content = lines[0]
-            included = 0
-            for row in lines[1:]:
-                if len(content) + len(row) > min(12_000, budget):
-                    break
-                content += row
-                included += 1
-            entry['content'] = content
-            if included < len(lines)-1:
-                entry['content_scope'] = 'truncated_sample' if included else 'schema_only'
-                entry['included_row_count'] = included
-            budget -= len(content)
+        entry = {key:item[key] for key in
+                 ('path','file','columns','keys','format','source_row_count','sha256','read_only')
+                 if key in item}
+        columns = entry.get('columns') or []
+        delimiter = '\t' if entry.get('format') == 'tsv' else ','
+        entry.update(content=delimiter.join(str(column) for column in columns),
+                     content_scope='schema_only', included_row_count=0)
         result.append(entry)
     return result
 
