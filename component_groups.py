@@ -3,6 +3,21 @@ import numpy as np
 from functools import wraps
 
 
+def compatible_orientation(callable_, kwargs):
+    """Translate Matplotlib's orientation keyword for pre-3.10 releases."""
+    import inspect
+    kwargs=dict(kwargs)
+    parameters=inspect.signature(callable_).parameters
+    if 'orientation' in kwargs and 'orientation' not in parameters and 'vert' in parameters:
+        value=kwargs.pop('orientation')
+        if value not in ('vertical','horizontal'):
+            raise ValueError("orientation must be 'vertical' or 'horizontal'")
+        if 'vert' in kwargs and kwargs['vert'] is not None and kwargs['vert'] != (value=='vertical'):
+            raise ValueError('orientation and vert specify conflicting directions')
+        kwargs['vert']=value=='vertical'
+    return kwargs
+
+
 class CollectionSegment:
     """A selectable presentation layer for one shared LineCollection segment.
 
@@ -89,8 +104,82 @@ def _orientation(original, axis, args, kwargs):
     return 'y' if bound.arguments.get('orientation') == 'horizontal' or bound.arguments.get('vert') is False else 'x'
 
 
+def _already_custom_grouped(axis, artist):
+    return any(artist in members for members, _label in getattr(axis, '_component_custom_groups', []))
+
+
+def _line_matches_fill(line, band, x, lower, upper):
+    """Conservatively identify a center curve, not an area-fill boundary."""
+    from matplotlib.colors import to_rgba
+    try:
+        lx=np.asarray(line.get_xdata(),dtype=float);y=np.asarray(line.get_ydata(),dtype=float)
+        if lx.shape!=x.shape or y.shape!=lower.shape or not np.allclose(lx,x,equal_nan=True): return False
+        tolerance=np.maximum(1,np.maximum(np.abs(lower),np.abs(upper)))*1e-10
+        finite=np.isfinite(y)&np.isfinite(lower)&np.isfinite(upper)
+        if not finite.any(): return False
+        if not np.all((y[finite]>=lower[finite]-tolerance[finite])&(y[finite]<=upper[finite]+tolerance[finite])): return False
+        strict=(y[finite]>lower[finite]+tolerance[finite])&(y[finite]<upper[finite]-tolerance[finite])
+        if strict.mean()<.5: return False
+        faces=band.get_facecolor()
+        return bool(len(faces)) and np.allclose(to_rgba(line.get_color())[:3],faces[0][:3],atol=1/255)
+    except (TypeError,ValueError):
+        return False
+
+
 def install_group_tracking():
     from matplotlib.axes import Axes
+    for method in ('boxplot','violinplot'):
+        original=getattr(Axes,method)
+        if getattr(original,'_plot_forge_orientation_compat',False):continue
+        @wraps(original)
+        def compatible(axis,*args,__original=original,**kwargs):
+            return __original(axis,*args,**compatible_orientation(__original,kwargs))
+        compatible._plot_forge_orientation_compat=True
+        setattr(Axes,method,compatible)
+    # A paper curve and its fill_between uncertainty band are one semantic
+    # series.  Matplotlib returns independent Line2D/PolyCollection artists,
+    # so remember the call inputs and expose them as one editable component.
+    if not getattr(Axes.fill_between,'_plot_forge_band_tracking',False):
+        original_fill_between=Axes.fill_between
+        @wraps(original_fill_between)
+        def fill_between(axis,*args,**kwargs):
+            result=original_fill_between(axis,*args,**kwargs)
+            try:
+                import inspect
+                bound=inspect.signature(original_fill_between).bind(axis,*args,**kwargs)
+                bound.apply_defaults()
+                x=np.asarray(bound.arguments['x'],dtype=float)
+                y1=np.broadcast_to(np.asarray(bound.arguments['y1'],dtype=float),x.shape)
+                y2=np.broadcast_to(np.asarray(bound.arguments['y2'],dtype=float),x.shape)
+                lower,upper=np.minimum(y1,y2),np.maximum(y1,y2)
+                match=next((line for line in reversed(axis.lines)
+                            if not _already_custom_grouped(axis,line)
+                            and _line_matches_fill(line,result,x,lower,upper)),None)
+                if match is not None:
+                    register_component_group(axis,[result,match],'曲线与填充区域')
+                else:
+                    axis._plot_forge_pending_bands=getattr(axis,'_plot_forge_pending_bands',[])
+                    axis._plot_forge_pending_bands.append((result,x,lower,upper))
+            except (KeyError,TypeError,ValueError):
+                pass
+            return result
+        fill_between._plot_forge_band_tracking=True
+        Axes.fill_between=fill_between
+    if not getattr(Axes.plot,'_plot_forge_band_tracking',False):
+        original_plot=Axes.plot
+        @wraps(original_plot)
+        def plot(axis,*args,**kwargs):
+            result=original_plot(axis,*args,**kwargs)
+            pending=getattr(axis,'_plot_forge_pending_bands',[])
+            if pending:
+                for line in result:
+                    for index,(band,bx,lower,upper) in reversed(list(enumerate(pending))):
+                        if _already_custom_grouped(axis,line) or not _line_matches_fill(line,band,bx,lower,upper):continue
+                        register_component_group(axis,[band,line],'曲线与填充区域')
+                        pending.pop(index);break
+            return result
+        plot._plot_forge_band_tracking=True
+        Axes.plot=plot
     if not getattr(Axes.bxp, '_component_tracking', False):
         original_bxp = Axes.bxp
         @wraps(original_bxp)
@@ -263,7 +352,10 @@ def group_report(figure, records):
             kind=key.split('.')[1].rsplit('_',1)[0]
             label={'box':'箱型图','violin':'小提琴图','mean_error':'均值与 error bar','bars':'柱形系列','stem':'茎状图'}.get(kind)
             if kind=='group': label=figure.axes[int(key.split('.')[0][5:])]._component_custom_groups[int(key.rsplit('_',1)[1])][1]
+            locked_selection=label=='曲线与填充区域'
             result.append({'key': key, 'kind': 'statistical_group', 'plot_type': kind, 'label': label,
+                           'locked_selection': locked_selection,
+                           'linked_properties': ['color'] if locked_selection else [],
                            'members': keys, 'part_targets': parts, 'hit_paths_px': paths,
                            'bbox': [*points.min(axis=0).tolist(), *points.max(axis=0).tolist()]})
     return result

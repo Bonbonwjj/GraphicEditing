@@ -27,6 +27,11 @@ def validate_components(value):
             elif name in ('font_family', 'text'):
                 if not isinstance(item, str) or len(item) > 500:
                     raise ValueError('文字属性无效')
+                if name=='font_family':
+                    from matplotlib import font_manager
+                    try: font_manager.findfont(font_manager.FontProperties(family=[item]),fallback_to_default=False)
+                    except ValueError:
+                        raise ValueError('字体不可用：'+item+'。请选择本机已安装字体后重试') from None
             elif name in ('xlim', 'ylim'):
                 if not isinstance(item, (list, tuple)) or len(item) != 2 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in item) or item[0] == item[1]:
                     raise ValueError('坐标范围需要两个不同的有限数值')

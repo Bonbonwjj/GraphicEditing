@@ -164,6 +164,63 @@ def build_from_sources(sources, chart, declared_mappings=()):
             'source_hashes': {p: hashlib.sha256(c.encode()).hexdigest() for p, c in sources.items()}}
 
 
+def _source_axis_labels(sources):
+    """Find stable labels without importing or executing figure code.
+
+    Native reconstructions commonly create repeated axes with expressions such
+    as ``axis(fig, f'a{n}', ...)``.  The ordinary AST constant scan cannot see
+    those labels, although their public panel prefix is unambiguous.
+    """
+    labels = set()
+    for content in sources.values():
+        labels.update(re.findall(r"(?:axis|add_axes)\s*\([^\n]*?f?['\"]([A-Za-z][A-Za-z0-9_-]*)['\"]", content))
+        for prefix in re.findall(r"(?:axis|set_label)\s*\([^\n]*?f['\"]([A-Za-z][A-Za-z0-9_-]*)\{[A-Za-z_]\w*\}", content):
+            labels.add(prefix+'1')
+            labels.add(prefix+'2')
+    return labels
+
+
+def _public_panel(axis_label):
+    if not isinstance(axis_label, str) or not axis_label or axis_label.startswith('<'):
+        return None
+    if axis_label.startswith('source_task_behavior_'):
+        return None
+    # Secondary/twin axes belong to their leading visible panel.  Plain labels
+    # (including multi-letter names) remain unchanged.
+    match = re.fullmatch(r'([A-Za-z]+)(?:\d+(?:[_-].*)?|[_-].+)', axis_label)
+    return match.group(1) if match else axis_label
+
+
+def infer_rendered_panels(result, sources, rendered_labels=()):
+    """Add a safe navigation mapping from actual render metadata/source labels."""
+    if result['panels']:
+        return result
+    labels = {label for label in rendered_labels if isinstance(label, str)}
+    origin = 'render_metadata'
+    if not labels:
+        labels = _source_axis_labels(sources)
+        origin = 'static_source'
+    grouped = {}
+    for label in sorted(labels):
+        public = _public_panel(label)
+        if public:
+            grouped.setdefault(public, []).append(label)
+    if not grouped:
+        return result
+    all_sections = [section['id'] for section in result['sections']]
+    result['panels'] = [
+        {'id': public, 'label': '图 '+public, 'axis_labels': members,
+         'status': 'rendered' if origin == 'render_metadata' else 'inferred',
+         'mapping_source': origin, 'source_sections': all_sections,
+         'note': ('依据当前预览的真实轴标签自动建立。' if origin == 'render_metadata'
+                  else '依据源码中的稳定轴命名静态推断；未执行绘图代码。')}
+        for public, members in grouped.items()
+    ]
+    result['axis_label_candidates'] = sorted(set(result['axis_label_candidates']) | labels)
+    result['warning'] = ''
+    return result
+
+
 def build(project, chart):
     project=Path(project)
     sources = source_files(project, chart)
@@ -188,6 +245,16 @@ def build(project, chart):
                     stack.extend(item.values())
                 elif isinstance(item,list): stack.extend(item)
     result = build_from_sources(sources, chart, declared)
+    rendered_labels=[]
+    preview=project/'previews'/f'{chart}.json'
+    if preview.is_file():
+        try:
+            metadata=json.loads(preview.read_text(encoding='utf-8'))
+            rendered_labels=[axis.get('axis_label') for axis in
+                             ((metadata.get('interaction') or {}).get('axes') or [])]
+        except (OSError, ValueError, TypeError, AttributeError):
+            rendered_labels=[]
+    result = infer_rendered_panels(result, sources, rendered_labels)
     manual = Path(project)/'panel-mappings'/f'{chart}.json'
     if manual.is_file():
         value = validate_mapping(json.loads(manual.read_text(encoding='utf-8')))

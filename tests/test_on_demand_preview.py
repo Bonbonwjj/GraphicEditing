@@ -2,6 +2,7 @@
 import unittest
 from unittest.mock import patch
 from urllib.request import urlopen
+import urllib.request
 
 import server
 from tests import test_collaboration_api as api_tests
@@ -82,6 +83,35 @@ class OnDemandPreviewTests(unittest.TestCase):
                 self.assertEqual(response.read(), b'cached-image')
             render.assert_not_called()
 
+    def test_legacy_low_resolution_native_cache_is_healed_once(self):
+        import io,json
+        from PIL import Image
+        source=self.set_source('one',"NATIVE_FIGURE='fig1'")
+        (self.project/'native-project.json').write_text(json.dumps({'schema':'plot-forge-native/1','figures':{'fig1':{}}}))
+        output=io.BytesIO();Image.new('RGB',(680,741),'white').save(output,format='PNG')
+        folder=self.project/'previews';folder.mkdir();(folder/'one.png').write_bytes(output.getvalue())
+        (folder/'one.json').write_text(json.dumps({'signature':server.preview_signature(self.project,source),
+            'suffix':'.png','interaction':{'axes':[],'render_size_px':[680,741]}}))
+        self.assertIsNone(server.preview_asset(self.project,'one',source,cached_only=True))
+        with patch.object(server,'render',return_value=b'healed-formal') as render:
+            data,mime=server.preview_asset(self.project,'one',source)
+        self.assertEqual((data,mime),(b'healed-formal','image/png'));render.assert_called_once()
+        meta=json.loads((folder/'one.json').read_text())
+        self.assertEqual(meta['cache_version'],server.PREVIEW_CACHE_VERSION)
+        self.assertEqual(server.preview_asset(self.project,'one',source,cached_only=True)[0],b'healed-formal')
+
+    def test_transient_style_preview_never_replaces_formal_preview(self):
+        import json
+        from chart_naming import RenderedImage
+        source=self.set_source('one');server.save_preview(self.project,'one',source,b'formal')
+        transient=RenderedImage(b'transient');transient.render_report={'interactive_seed_reused':True}
+        request=urllib.request.Request(self.url('one').replace('/preview','/style-preview'),
+            data=json.dumps({'base_revision':server.source_revision(source),'style':{},'zoomed':True}).encode(),
+            headers={'Content-Type':'application/json','Origin':f'http://127.0.0.1:{self.port}'})
+        with patch('interactive_preview.render_preview',return_value=transient):
+            with urlopen(request) as response:self.assertEqual(response.status,200)
+        self.assertEqual((self.project/'previews/one.png').read_bytes(),b'formal')
+
     def test_only_explicit_target_can_trigger_a_render(self):
         self.set_source('one'); self.set_source('two')
         with patch.object(server, 'render', return_value=b'selected-image') as render:
@@ -93,6 +123,17 @@ class OnDemandPreviewTests(unittest.TestCase):
             render.assert_called_once_with(self.project, 'pass')
             self.assertFalse((self.project/'previews/one.png').exists())
             self.assertTrue((self.project/'previews/two.png').exists())
+
+    def test_formal_png_download_has_image_headers_and_filename(self):
+        self.set_source('one')
+        png=b'\x89PNG\r\n\x1a\nformal-image'
+        with patch.object(server,'render',return_value=png) as render:
+            with urlopen(self.url('one').replace('/preview','/png')) as response:
+                self.assertEqual(response.read(),png)
+                self.assertEqual(response.headers.get_content_type(),'image/png')
+                self.assertIn('attachment',response.headers['Content-Disposition'])
+                self.assertIn('one.png',response.headers['Content-Disposition'])
+            render.assert_called_once_with(self.project,'pass','.png')
 
     def test_legacy_warmup_hook_does_not_execute_any_chart(self):
         self.set_source('one'); self.set_source('two')

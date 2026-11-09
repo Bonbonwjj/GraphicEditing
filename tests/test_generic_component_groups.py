@@ -81,6 +81,57 @@ fig.savefig(os.environ['CHART_OUTPUT'])
         np.testing.assert_allclose(segment.get_color(),[0,.4,1,1])
         np.testing.assert_allclose(CollectionSegment(result['cmedians'],1).get_color(),other)
 
+    def test_orientation_keyword_is_compatible_and_conflicts_fail_closed(self):
+        result=self.axis.boxplot([[1,2,3]],orientation='horizontal')
+        x,y=result['medians'][0].get_data()
+        self.assertGreater(np.ptp(y),np.ptp(x))
+        with self.assertRaisesRegex(ValueError,'conflicting'):
+            self.axis.violinplot([[1,2,3]],orientation='horizontal',vert=True)
+
+    def test_curve_and_uncertainty_band_are_one_editable_group(self):
+        x=np.array([0.,1.,2.]);mean=np.array([2.,3.,2.5]);error=np.array([.2,.3,.1])
+        band=self.axis.fill_between(x,mean-error,mean+error,color='#336699',alpha=.2)
+        line,=self.axis.plot(x,mean,color='#336699')
+        groups=component_groups(self.fig)
+        members=next(value for key,value in groups.items() if '.group_' in key)
+        self.assertEqual(members,[band,line])
+        from interactive_style import apply_interactive_style
+        key=next(key for key in groups if '.group_' in key)
+        apply_interactive_style(self.fig,{'component_styles':{key:{'color':'#ff0000'}}})
+        self.assertEqual(line.get_color(),'#ff0000')
+        np.testing.assert_allclose(band.get_facecolor()[0,:3],[1,0,0])
+        report=next(item for item in group_report(self.fig,[]) if item['key']==key)
+        self.assertEqual(report['label'],'曲线与填充区域')
+        self.assertTrue(report['locked_selection'])
+        self.assertEqual(report['linked_properties'],['color'])
+
+    def test_plot_before_fill_is_linked_and_area_under_curve_is_not(self):
+        x=np.array([0.,1.,2.]);mean=np.array([2.,3.,2.5]);error=np.array([.2,.3,.1])
+        line,=self.axis.plot(x,mean,color='#336699')
+        band=self.axis.fill_between(x,mean-error,mean+error,color='#336699',alpha=.2)
+        groups=component_groups(self.fig)
+        self.assertTrue(any(members==[band,line] for members in groups.values()))
+        fig,axis=plt.subplots();self.addCleanup(plt.close,fig)
+        density=np.array([0.,.8,.2])
+        area=axis.fill_between(x,0,density,color='#8844aa',alpha=.2)
+        boundary,=axis.plot(x,density,color='#8844aa')
+        self.assertFalse(any(area in members and boundary in members for members in component_groups(fig).values()))
+
+    def test_linked_color_and_band_opacity_preserve_data_and_line_width(self):
+        x=np.array([0.,1.,2.]);mean=np.array([2.,3.,2.5]);error=np.array([.2,.3,.1])
+        band=self.axis.fill_between(x,mean-error,mean+error,color='#336699',alpha=.2,linewidth=0)
+        line,=self.axis.plot(x,mean,color='#336699',linewidth=2,alpha=.9)
+        original_line=line.get_xydata().copy();original_band=band.get_paths()[0].vertices.copy()
+        key=next(key for key in component_groups(self.fig) if '.group_' in key)
+        apply_components(self.fig,{key:{'color':'#00aa55','fill_alpha':.35},'axes_0.line_0':{'linewidth':4}})
+        from matplotlib.colors import to_rgba
+        np.testing.assert_allclose(to_rgba(line.get_color())[:3],[0,2/3,1/3])
+        np.testing.assert_allclose(band.get_facecolor()[0],[0,2/3,1/3,.35])
+        self.assertEqual(line.get_linewidth(),4)
+        np.testing.assert_allclose(band.get_linewidth(),[0])
+        np.testing.assert_array_equal(line.get_xydata(),original_line)
+        np.testing.assert_array_equal(band.get_paths()[0].vertices,original_band)
+
     def test_group_properties_are_inherited_independent_of_style_order(self):
         for reverse in (False,True):
             fig,axis=plt.subplots();self.addCleanup(plt.close,fig)

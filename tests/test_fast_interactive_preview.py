@@ -125,9 +125,20 @@ class FastInteractiveCacheTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'数据在预览期间发生变化'):
             render_preview(self.project,'fig1',self.source,{},change,self.signature)
 
-    def test_regular_projects_keep_original_render_path(self):
+    def test_regular_projects_also_reuse_the_safe_figure_cache(self):
         (self.project/'native-project.json').unlink()
-        self.preview({});self.assertEqual(self.calls,[{}])
+        self.preview({});self.preview({'axes_styles':{'axes_0':{'xlabel':'Renamed'}}})
+        self.assertEqual(self.calls[0],{'capture_interactive_seed':True})
+        self.assertEqual(self.calls[1],{'interactive_seed':b'opaque-worker-only-cache'})
+
+    def test_lightweight_mode_is_used_only_after_safe_seed_exists(self):
+        render_preview(self.project,'fig1',self.source,{},self.renderer,self.signature,
+                       preview_dpi=120,lightweight=True)
+        self.assertEqual(self.calls[0],{'capture_interactive_seed':True})
+        render_preview(self.project,'fig1',self.source,{},self.renderer,self.signature,
+                       preview_dpi=120,lightweight=True)
+        self.assertEqual(self.calls[1],{'interactive_seed':b'opaque-worker-only-cache',
+                                        'preview_dpi':120,'lightweight_preview':True})
 
 
 if __name__=='__main__':unittest.main()

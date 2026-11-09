@@ -258,7 +258,7 @@ def _native_sandbox_command(command, work, snapshot, writable, environment_root,
 
 
 def _one_render(project, entry, files, directory, strict_io=False, preview_dpi=None,
-                interactive_seed=None, capture_interactive_seed=False):
+                interactive_seed=None, capture_interactive_seed=False, lightweight_preview=False):
     cancellation.check()
     backend = isolation_backend()
     if backend == "local-python":
@@ -315,6 +315,7 @@ def _one_render(project, entry, files, directory, strict_io=False, preview_dpi=N
         ((snapshot/path).stat().st_size for path in input_hashes), default=0
     )) if config['universal'] else MAX_IMAGE_BYTES
     config['preview_dpi'] = preview_dpi if config['native'] or config['universal'] else None
+    config['lightweight_preview'] = bool(lightweight_preview and interactive_seed is not None)
     config['profile_render'] = os.environ.get('PLOT_FORGE_PROFILE_RENDER') == '1'
     if config['native'] or config['universal']:
         config['strict_io'] = True
@@ -1191,13 +1192,20 @@ def _worker_main(config_path):
                 requested=kwargs.get('dpi',fig.dpi)
                 if isinstance(requested,(int,float)):
                     kwargs['dpi']=min(float(requested),float(config['preview_dpi']))
-            font_audit = audit_figure_fonts(fig)
+            font_audit = None if config.get('lightweight_preview') else audit_figure_fonts(fig)
             font_audit_finished = time.monotonic()
             draws = []
             capture_seconds = []
             def on_draw(event):
                 capture_started = time.monotonic()
-                captured_figure = _capture(fig, event.renderer, config["panel_gap_multiple"])
+                if config.get('lightweight_preview'):
+                    from chart_naming import figure_naming
+                    canvas=event.renderer
+                    captured_figure={'naming':figure_naming(fig),'render_size_px':[round(canvas.width),round(canvas.height)],
+                                     'layout':{'status':'unverified','issues':[],'limitations':['lightweight interactive preview']},
+                                     'artists':[],'axes':[],'component_groups':[],'point_targets':[]}
+                else:
+                    captured_figure = _capture(fig, event.renderer, config["panel_gap_multiple"])
                 capture_seconds.append(time.monotonic() - capture_started)
                 captured_figure["font_audit"] = font_audit
                 draws.append(captured_figure)
@@ -1401,6 +1409,8 @@ def _install_stat_capture(axes_type):
                 from matplotlib.cbook import _reshape_2D
                 import numpy as np
                 from chart_transform import sample_signature
+                from component_groups import compatible_orientation
+                kwargs=compatible_orientation(original,kwargs)
                 signature = inspect.signature(original)
                 bound = signature.bind(self, *args, **kwargs)
                 bound.apply_defaults()

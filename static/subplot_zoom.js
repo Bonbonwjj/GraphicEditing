@@ -1,6 +1,6 @@
 // Use the full-resolution bitmap with a clipped viewport. Keeping its full
 // image coordinates lets the existing hit tests and drag distances stay valid.
-let subplotZoomAxis=null,subplotInspectorTimer=null,pendingSubplotPoint=null;
+let subplotZoomAxis=null,subplotInspectorTimer=null,pendingSubplotPoint=null,subplotSizeFrame=null,subplotFitPending=false;
 const subplotStatus=document.createElement('span');subplotStatus.id='subplotInteractionStatus';subplotStatus.className='dim';
 const subplotList=document.createElement('select');subplotList.id='subplotQuickPick';subplotList.setAttribute('aria-label','选择子图并放大');subplotList.disabled=true;
 const subplotZoomButton=document.createElement('button');
@@ -15,6 +15,7 @@ selectSubplot=function(img,result,key){
 };
 function closeSubplotZoom(){
   const dialog=$('subplotZoomDialog');if(!dialog)return;
+  if(subplotSizeFrame!==null){cancelAnimationFrame(subplotSizeFrame);subplotSizeFrame=null;subplotFitPending=false;}
   dialog.querySelector('#componentInspector')?.remove();dialog.close();dialog.remove();subplotZoomAxis=null;
 }
 function subplotCrop(result,key){
@@ -34,6 +35,11 @@ function sizeSubplotZoom(fit=false){
   img.style.cssText=`position:absolute;max-width:none;max-height:none;width:${size[0]*scale}px;height:${size[1]*scale}px;left:${-crop[0]*scale}px;top:${-crop[1]*scale}px;object-fit:fill;`;
   dialog.querySelector('[data-subplot-percent]').textContent=slider.value+'%';
 }
+function scheduleSubplotZoomSize(fit=false){
+  subplotFitPending=subplotFitPending||fit;
+  if(subplotSizeFrame!==null)return;
+  subplotSizeFrame=requestAnimationFrame(()=>{const requestedFit=subplotFitPending;subplotFitPending=false;subplotSizeFrame=null;sizeSubplotZoom(requestedFit);});
+}
 function updateSubplotZoom(result){
   const dialog=$('subplotZoomDialog');if(!dialog)return;
   if(dialog.dataset.chart!==state.project+'/'+state.chart){closeSubplotZoom();return;}
@@ -44,6 +50,8 @@ function updateSubplotZoom(result){
   for(const field of ['texts','targets','legends','component_groups'])focused[field]=(result[field]||[]).filter(belongs);
   focused._rawTargets=(result._rawTargets||result.targets||[]).filter(belongs);
   const fullData=stylePreviewData;attachDirectManipulation(image,focused);stylePreviewData=fullData;
+  const dpi=result._previewDpi||result.dpi;
+  subplotStatus.textContent=dpi?`当前为 ${dpi} DPI 交互预览`:'当前预览已放大；后台高清校准将在需要时加载';
 }
 function openSubplotZoom(){
   if(!selectedAxisKey||!stylePreviewData?.image){alertStatus('请先等待交互准备完成，再点击要放大的子图');return;}
@@ -53,14 +61,18 @@ function openSubplotZoom(){
   const picker=dialog.querySelector('[data-subplot-picker]');
   for(let i=0;i<stylePreviewData.axes.length;i++){const option=document.createElement('option');option.value='axes_'+i;option.textContent='子图 '+(i+1);picker.append(option);}picker.value=key;
   const title=()=>dialog.querySelector('strong').textContent='放大编辑 · 子图 '+(Number(subplotZoomAxis.slice(5))+1);
-  picker.onchange=()=>{subplotZoomAxis=picker.value;selectedAxisKey=picker.value;componentSelection.clear();dialog.querySelector('#componentInspector')?.remove();title();updateSubplotZoom(stylePreviewData);sizeSubplotZoom(true);};
+  picker.onchange=()=>{subplotZoomAxis=picker.value;selectedAxisKey=picker.value;componentSelection.clear();dialog.querySelector('#componentInspector')?.remove();title();updateSubplotZoom(stylePreviewData);scheduleSubplotZoomSize(true);};
   dialog.querySelector('[data-subplot-close]').onclick=closeSubplotZoom;
-  dialog.querySelector('[data-subplot-fit]').onclick=()=>sizeSubplotZoom(true);
-  dialog.querySelector('[data-subplot-zoom]').oninput=()=>sizeSubplotZoom();
+  dialog.querySelector('[data-subplot-fit]').onclick=()=>scheduleSubplotZoomSize(true);
+  dialog.querySelector('[data-subplot-zoom]').oninput=()=>scheduleSubplotZoomSize();
   dialog.addEventListener('cancel',event=>{event.preventDefault();closeSubplotZoom();});
   dialog.querySelector('.subplotZoomToolbar').append(componentInteractionToolbar());
   document.body.append(dialog);syncComponentInteractionControls();dialog.showModal();title();
-  updateSubplotZoom(stylePreviewData);sizeSubplotZoom(true);
+  updateSubplotZoom(stylePreviewData);scheduleSubplotZoomSize(true);
+  // Show the existing bitmap immediately, then upgrade old/low-DPI
+  // interaction previews without blocking the dialog.
+  const currentDpi=stylePreviewData._previewDpi||stylePreviewData.dpi||0;
+  if(currentDpi<360){subplotStatus.textContent='已即时放大当前预览；正在后台生成 360 DPI 高清版本…';stylePreviewData._dirty=true;previewInteractiveStyle();}
   // Show the selected subplot's controls initially, then let direct clicks
   // choose smaller components in the enlarged view.
   const img=dialog.querySelector('img');selectSubplot(img,stylePreviewData,key);

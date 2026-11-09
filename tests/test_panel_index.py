@@ -37,6 +37,21 @@ class PanelIndexTests(unittest.TestCase):
         self.assertTrue(index['panels'][0]['source_sections'])
         self.assertEqual(index['panels'][0]['mapping_source'],'data/native/fig1/source/style.json')
 
+    def test_rendered_axis_labels_create_visible_panel_mapping(self):
+        result=panel_index.build_from_sources({'render.py':'pass\n'},'fig')
+        panel_index.infer_rendered_panels(result, {'render.py':'pass\n'},
+            ['a1','a2','a1_probability','b','g_effect','source_task_behavior_0.1'])
+        self.assertEqual([(p['id'],p['axis_labels']) for p in result['panels']],
+                         [('a',['a1','a1_probability','a2']),('b',['b']),('g',['g_effect'])])
+        self.assertFalse(result['warning'])
+
+    def test_dynamic_native_axis_names_have_static_fallback(self):
+        source="a=axis(fig,f'c{n}',12,y)\nright.set_label(f'c{n}_probability')\n"
+        result=panel_index.build_from_sources({'render.py':source},'fig')
+        panel_index.infer_rendered_panels(result, {'render.py':source})
+        self.assertEqual(result['panels'][0]['id'],'c')
+        self.assertEqual(result['panels'][0]['status'],'inferred')
+
     def test_large_source_excerpts_and_range_reads_preserve_full_local_source(self):
         source='PUBLIC_PANEL_MEMBERS={"a":["x"]}\n'+''.join(f'v{i}="'+('z'*160)+'"\n' for i in range(400))
         context={'source_files':[{'path':'charts/a.py','content':'pass\n','writable':True},

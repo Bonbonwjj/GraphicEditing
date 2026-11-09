@@ -9,6 +9,48 @@ LOCATIONS = {'best','upper right','upper left','lower left','lower right','right
              'center left','center right','lower center','upper center','center'}
 
 
+def _copy_legend_handle_style(source, proxy):
+    for getter, setter in (('get_color','set_color'),('get_linewidth','set_linewidth'),
+                           ('get_linestyle','set_linestyle'),('get_marker','set_marker'),
+                           ('get_markersize','set_markersize'),
+                           ('get_markerfacecolor','set_markerfacecolor'),
+                           ('get_markeredgecolor','set_markeredgecolor'),
+                           ('get_facecolor','set_facecolor'),('get_edgecolor','set_edgecolor')):
+        if hasattr(source,getter) and hasattr(proxy,setter):
+            try: getattr(proxy,setter)(getattr(source,getter)())
+            except (TypeError, ValueError): pass
+
+
+def _sync_legend_handles(legend, sources, labels=None):
+    """Synchronize proxies without confusing duplicate legend labels."""
+    proxies=list(legend.legend_handles if hasattr(legend,'legend_handles') else getattr(legend,'legendHandles',[]))
+    if labels is None:pairs=zip(sources,proxies)
+    else:
+        positions={}
+        for index,text in enumerate(legend.get_texts()):positions.setdefault(text.get_text(),[]).append(index)
+        matched=[]
+        for source,label in zip(sources,labels):
+            choices=positions.get(label,[])
+            if choices:
+                index=choices.pop(0)
+                if index<len(proxies):matched.append((source,proxies[index]))
+        pairs=matched if matched else zip(sources,proxies)
+    for source,proxy in pairs:_copy_legend_handle_style(source,proxy)
+
+
+def _sync_all_legend_handles(figure):
+    """Refresh legend proxies after every artist-level styling path."""
+    for axis in figure.axes:
+        legend=axis.get_legend()
+        if legend is not None:
+            sources,labels=axis.get_legend_handles_labels()
+            _sync_legend_handles(legend,sources,labels)
+    sources=[]
+    for axis in figure.axes:
+        handles,_labels=axis.get_legend_handles_labels();sources.extend(handles)
+    for legend in figure.legends:_sync_legend_handles(legend,sources)
+
+
 def validate_style(value):
     if not isinstance(value, dict):
         raise ValueError('交互样式必须是对象')
@@ -147,6 +189,15 @@ def apply_interactive_style(figure, style):
             if spec.get('color') is not None: collection.set_color(spec['color'])
             if spec.get('linewidth') is not None: collection.set_linewidth(spec['linewidth'])
             if spec.get('markersize') is not None: collection.set_sizes([spec['markersize']**2])
+        # Matplotlib legends contain proxy artists copied when legend() is
+        # called.  Updating the plotted artist afterwards does not update that
+        # copy, so keep each visible proxy in sync with its source series.
+        # Match by the stable legend order/label instead of artist indices;
+        # this also works when private (``_label``) artists are interleaved.
+        legend = axis.get_legend()
+        if legend is not None:
+            sources, labels = axis.get_legend_handles_labels()
+            _sync_legend_handles(legend,sources,labels)
         if local.get('font_size') is not None:
             axis.tick_params(labelsize=local['font_size'])
             for text in (axis.title,axis.xaxis.label,axis.yaxis.label,*axis.texts):
@@ -174,6 +225,27 @@ def apply_interactive_style(figure, style):
                     legend._set_loc(Legend.codes[local['legend_location']])
             if local.get('legend_anchor') is not None:
                 legend.set_bbox_to_anchor(local['legend_anchor'],transform=figure.transFigure)
+
+    # Shared paper-figure legends created by fig.legend() are not Axes-owned.
+    for legend in list(figure.legends):
+        sources=[]
+        for axis in figure.axes:
+            handles,_=axis.get_legend_handles_labels();sources.extend(handles)
+        _sync_legend_handles(legend,sources)
+        if style.get('legend_visible') is False:legend.remove();continue
+        if 'legend_names' in style:
+            for text in legend.get_texts():text.set_text(style['legend_names'].get(text.get_text(),text.get_text()))
+        if 'legend_location' in style:
+            # Matplotlib rejects loc='best' for figure-level legends.  The
+            # sparse default means "keep the renderer's original placement"
+            # here; explicit fixed locations remain editable.
+            if style['legend_location']=='best':pass
+            elif hasattr(legend,'set_loc'):legend.set_loc(style['legend_location'])
+            else:
+                from matplotlib.legend import Legend
+                legend._set_loc(Legend.codes[style['legend_location']])
+        if style.get('legend_anchor') is not None:
+            legend.set_bbox_to_anchor(style['legend_anchor'],transform=figure.transFigure)
 
     # Apply text-level overrides last, after any axis-wide settings or legend changes.
     for key,spec in style.get('text_styles',{}).items():
@@ -204,6 +276,10 @@ def apply_interactive_style(figure, style):
         apply_components(figure,style['component_styles'])
     from component_editor import sync_axis_ticks
     sync_axis_ticks(figure,style.get('component_styles',{}))
+    # component_styles is applied after the legacy series path.  Legends own
+    # copies of their handles, so a final synchronization is required for
+    # direct component edits (including linked center-line/uncertainty bands).
+    _sync_all_legend_handles(figure)
 
 
 def style_block(style):

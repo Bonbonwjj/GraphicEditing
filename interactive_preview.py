@@ -52,10 +52,9 @@ def _save(meta, seed, signature, data):
     temporary.write_text(json.dumps(record), encoding='utf-8'); temporary.replace(meta)
 
 
-def render_preview(project, chart, source, style, renderer, signature):
+def render_preview(project, chart, source, style, renderer, signature, preview_dpi=None, lightweight=False):
     from interactive_style import upsert_style
     candidate = upsert_style(source, style)
-    if not (project/'native-project.json').is_file(): return renderer(project, candidate)
     from render_environment import describe
     from chat_runner import isolation_backend
     environment = describe(project, isolation_backend())
@@ -69,14 +68,22 @@ def render_preview(project, chart, source, style, renderer, signature):
         except (OSError, ValueError): return renderer(project, candidate)
         seed, unavailable = _load(meta, seed_path, revision)
         started = time.monotonic()
+        preview_options={'preview_dpi':preview_dpi} if preview_dpi is not None else {}
         if seed is not None:
-            try: image = renderer(project, candidate, interactive_seed=seed)
+            replay_options={**preview_options}
+            if lightweight:replay_options['lightweight_preview']=True
+            try: image = renderer(project, candidate, interactive_seed=seed, **replay_options)
             except ValueError:
                 # Version-specific/custom artist problems fall back to the
                 # original isolated renderer and refresh this chart's cache.
                 seed = None
         if seed is None:
-            image = renderer(project, candidate, **({} if unavailable else {'capture_interactive_seed': True}))
+            # Build the reusable figure at its authored DPI. Some scientific
+            # layouts validate pixel spacing while constructing the figure;
+            # lowering DPI before that validation can change or reject layout.
+            # Only seed replay uses the lower interactive output DPI.
+            image = renderer(project, candidate,
+                             **({} if unavailable else {'capture_interactive_seed': True}))
         if fingerprint() != revision or (project/'charts'/(chart+'.py')).read_text(encoding='utf-8') != source:
             raise ValueError('绘图代码或数据在预览期间发生变化，请重新加载后重试')
         if seed is None and not unavailable:

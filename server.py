@@ -2,6 +2,7 @@
 import ast
 import base64
 import cgi
+import traceback
 import csv
 import hashlib
 import json
@@ -49,6 +50,7 @@ SKILL_CATALOG = ROOT / "skills" / "normalization-catalog"
 PREVIEW_LOCKS = {}
 PREVIEW_LOCKS_GUARD = threading.Lock()
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
+PREVIEW_CACHE_VERSION = 2
 MAX_BODY = 12_000_000
 MAX_UPLOAD_BODY = 550_000_000
 
@@ -125,6 +127,29 @@ def write_history(p, chart, entries):
     (p / "history").mkdir(exist_ok=True)
     (p / "history" / (chart + ".json")).write_text(
         json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def interactive_style_note(before, after):
+    """Describe the actual persisted style delta for reproducible history."""
+    before,after=before or {},after or {}
+    changed={key for key in set(before)|set(after) if before.get(key)!=after.get(key)}
+    axes_fields=set()
+    for key in changed & {'axes_styles'}:
+        for axis in set(before.get(key,{}) or {})|set(after.get(key,{}) or {}):
+            left=(before.get(key,{}) or {}).get(axis,{}) or {};right=(after.get(key,{}) or {}).get(axis,{}) or {}
+            axes_fields.update(name for name in set(left)|set(right) if left.get(name)!=right.get(name))
+    categories=[]
+    def add(label,condition):
+        if condition and label not in categories:categories.append(label)
+    add('坐标轴名称/标题',bool((changed|axes_fields)&{'title','xlabel','ylabel'}))
+    add('数据系列',bool(changed&{'line_width','line_color','marker_size','series_styles'}))
+    add('图例',bool((changed|axes_fields)&{'legend_visible','legend_names','legend_location','legend_anchor'}))
+    add('字体',bool((changed|axes_fields)&{'font_size','text_styles'}))
+    add('边框',bool((changed|axes_fields)&{'border_width','border_color','spine_styles'}))
+    add('网格',bool((changed|axes_fields)&{'grid'}))
+    add('图形组件',bool(changed&{'component_styles'}))
+    add('新增标注',bool(changed&{'added_items'}))
+    return '交互样式：'+('、'.join(categories) if categories else '属性更新')
 
 
 def skill_catalog():
@@ -244,7 +269,7 @@ def save_preview(p, chart, source, data, suffix=".png"):
         temp.write_bytes(data)
         temp.replace(target)
         report=getattr(data,'render_report',None) or {}
-        (folder / (chart + ".json")).write_text(json.dumps({"signature": preview_signature(p, source), "suffix": suffix,'interaction':interaction_payload(report) if report else None,'preview_status':report.get('preview_status','complete'),'native_layout_warnings':report.get('native_layout_warnings',[])}), encoding="utf-8", newline="\n")
+        (folder / (chart + ".json")).write_text(json.dumps({"cache_version":PREVIEW_CACHE_VERSION,"signature": preview_signature(p, source), "suffix": suffix,'interaction':interaction_payload(report) if report else None,'preview_status':report.get('preview_status','complete'),'native_layout_warnings':report.get('native_layout_warnings',[])}), encoding="utf-8", newline="\n")
         if getattr(data, "naming", None) is not None:
             save_naming(p, chart, source, data.naming)
         if report and (p/'native-project.json').is_file():
@@ -278,7 +303,17 @@ def preview_asset(p, chart, source, cached_only=False):
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
                 target = folder / (chart + meta["suffix"])
                 if meta["signature"] == signature and target.is_file():
-                    return target.read_bytes(), IMAGE_TYPES[meta["suffix"]]
+                    stale_legacy_native=False
+                    if (p/'native-project.json').is_file() and meta.get('cache_version',0)<PREVIEW_CACHE_VERSION:
+                        interaction=meta.get('interaction') or {}
+                        if not interaction.get('axes'):
+                            try:
+                                from PIL import Image
+                                with Image.open(target) as image:width,height=image.size
+                                stale_legacy_native=min(width,height)<1000 or width*height<2_000_000
+                            except OSError:stale_legacy_native=True
+                    if not stale_legacy_native:
+                        return target.read_bytes(), IMAGE_TYPES[meta["suffix"]]
             except (KeyError, ValueError):
                 pass
         if cached_only:return None
@@ -342,7 +377,8 @@ def copy_uploaded_images(upload, p):
     return count
 
 
-def render(p, source, suffix=".png", library_path=None, interactive_seed=None, capture_interactive_seed=False):
+def render(p, source, suffix=".png", library_path=None, interactive_seed=None, capture_interactive_seed=False,
+           preview_dpi=None, lightweight_preview=False):
     if ((p/'data/plot-data/manifest.json').is_file() or (p/'validation/direct.json').is_file()
             or (p/'native-project.json').is_file() or (p/'universal-project.json').is_file()):
         # Extracted charts use the same read-only snapshot/audits for previews
@@ -359,6 +395,8 @@ def render(p, source, suffix=".png", library_path=None, interactive_seed=None, c
             options={}
             if interactive_seed is not None: options['interactive_seed']=interactive_seed
             if capture_interactive_seed: options['capture_interactive_seed']=True
+            if preview_dpi is not None: options['preview_dpi']=preview_dpi
+            if lightweight_preview: options['lightweight_preview']=True
             report = _one_render(p, entry, overrides, Path(temp)/'render', **options)
             image = RenderedImage(report['image_bytes'])
             image.interactive_seed=report.pop('interactive_seed_bytes',None)
@@ -576,6 +614,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
+
+    def request_error(self, error):
+        # Browser navigation and superseded previews routinely close the socket
+        # after a render has started.  That is a cancellation, not a second
+        # rendering failure, and attempting another JSON response only creates
+        # a misleading HTTP 400/BrokenPipe traceback.
+        if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+            print(f'{self.command} {self.path}: client disconnected', flush=True)
+            return
+        print(f'{self.command} {self.path}: {type(error).__name__}: {error}', flush=True)
+        if any(marker in self.path for marker in ('/preview', '/style-preview', '/svg', '/pdf', '/png')):
+            traceback.print_exc()
+        try:
+            self.json_response({"error": str(error)}, 400)
+        except (BrokenPipeError, ConnectionResetError):
+            print(f'{self.command} {self.path}: client disconnected before error response', flush=True)
 
     def route(self):
         port = int(os.environ.get('CHART_STUDIO_PORT', '8765'))
@@ -891,15 +945,33 @@ class Handler(BaseHTTPRequestHandler):
                     if body.get('base_revision') != source_revision(current_code):
                         raise ValueError('绘图入口已改变，请重新加载后预览')
                     from interactive_preview import render_preview
-                    image = render_preview(p, chart, current_code, body.get('style'), render, preview_signature)
+                    try:interactive_dpi=int(os.environ.get('PLOT_FORGE_INTERACTIVE_PREVIEW_DPI','96'))
+                    except ValueError:interactive_dpi=96
+                    interactive_dpi=max(72,min(200,interactive_dpi))
+                    if body.get('zoomed'):
+                        try:interactive_dpi=int(os.environ.get('PLOT_FORGE_ZOOM_PREVIEW_DPI','360'))
+                        except ValueError:interactive_dpi=360
+                        interactive_dpi=max(240,min(600,interactive_dpi))
+                    # fig1 composes an approved pixel raster above native axes.
+                    # Replaying that fixed-pixel composite at a lower DPI clips
+                    # the approved top panels, so preserve its authored DPI.
+                    if chart=='fig1':interactive_dpi=None
+                    lightweight=bool(body.get('lightweight'))
+                    image = render_preview(p, chart, current_code, body.get('style'), render, preview_signature,
+                                           preview_dpi=interactive_dpi, lightweight=lightweight)
                     report = getattr(image,'render_report',{}) or {}
                     def meaningful(value):
                         return {k:meaningful(v) if isinstance(v,dict) else v for k,v in value.items() if v is not None and v!={}}
-                    if meaningful(body.get('style') or {})==meaningful(read_style(current_code)):
-                        save_preview(p,chart,current_code,image)
+                    # A transient style preview may use reduced DPI or a
+                    # lightweight report. Never replace the formal gallery
+                    # artifact here; only the confirmed style/save path may do so.
+                    payload={} if lightweight and report.get('interactive_seed_reused') else interaction_payload(report)
                     return self.json_response({'image':'data:image/png;base64,'+base64.b64encode(image).decode(),
                         'preview_seconds':report.get('interactive_preview_seconds'),
-                        'fast_preview':report.get('interactive_seed_reused',False),**interaction_payload(report)})
+                        'preview_dpi':interactive_dpi,
+                        'fast_preview':report.get('interactive_seed_reused',False),
+                        'lightweight':bool(lightweight and report.get('interactive_seed_reused')),
+                        **payload})
                 if action in ('panel-index', 'panel-source', 'panel-edit', 'panel-mapping'):
                     if self.command == 'POST':
                         self.check_local_json()
@@ -949,8 +1021,8 @@ class Handler(BaseHTTPRequestHandler):
                                                "interactive_style": read_style(current_code), "panel_index": panel_index.build(p, chart),
                                                "history": history_view(p, chart),
                                                "data": data_preview(p), "data_sources": project_data_sources(p), "style": NORMALIZATION_SKILL.read_text(encoding="utf-8")})
-                if self.command == "GET" and action in ("preview", "svg", "pdf"):
-                    suffix = {"preview": ".png", "svg": ".svg", "pdf": ".pdf"}[action]
+                if self.command == "GET" and action in ("preview", "png", "svg", "pdf"):
+                    suffix = {"preview": ".png", "png": ".png", "svg": ".svg", "pdf": ".pdf"}[action]
                     source = f.read_text(encoding="utf-8")
                     if action == "preview":
                         if "cached_only=1" in parsed.query.split("&"):
@@ -960,7 +1032,8 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             data, mime = save_preview(p, chart, source, render(p, source)) if "force=1" in parsed.query.split("&") else preview_asset(p, chart, source)
                     else:
-                        data, mime = render(p, source, suffix), {".svg": "image/svg+xml", ".pdf": "application/pdf"}[suffix]
+                        data, mime = render(p, source, suffix), {
+                            ".png": "image/png", ".svg": "image/svg+xml", ".pdf": "application/pdf"}[suffix]
                     if action == 'preview' and 'thumbnail=1' in parsed.query.split('&'):
                         data, mime = thumbnail_image(data), 'image/png'
                     return self.bytes_response(data, mime, f"{chart}{suffix}" if action != "preview" else None)
@@ -983,8 +1056,9 @@ class Handler(BaseHTTPRequestHandler):
                         code = llm_proposal(prompt, f.read_text(encoding="utf-8"), csv_preview(p), validator)
                         return self.json_response({"code": code, "reply": "代码已生成。检查后点击“应用修改”以渲染和保存。"})
                     if action == "style":
-                        new_code = upsert_style(current_code, body.get('style'))
-                        note = '交互样式：边框与图例'
+                        next_style=body.get('style')
+                        new_code = upsert_style(current_code, next_style)
+                        note = interactive_style_note(read_style(current_code),next_style)
                     elif action == "restore":
                         history = read_history(p, chart)
                         entry = next((x for x in history if x["id"] == body.get("id")), None)
@@ -1071,7 +1145,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.route()
         except Exception as e:
-            self.json_response({"error": str(e)}, 400)
+            self.request_error(e)
 
     def do_POST(self):
         path = unquote(urlparse(self.path).path)
@@ -1103,7 +1177,7 @@ class Handler(BaseHTTPRequestHandler):
                 with workflow_lock(project_path(parts[2])):self.route()
             else:self.route()
         except Exception as e:
-            self.json_response({"error": str(e)}, 400)
+            self.request_error(e)
 
     def do_DELETE(self):
         with SYNC.lock:
@@ -1113,7 +1187,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.route()
         except Exception as e:
-            self.json_response({"error": str(e)}, 400)
+            self.request_error(e)
 
 
 class LocalHTTPServer(ThreadingHTTPServer):

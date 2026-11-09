@@ -1,6 +1,6 @@
-# Plot Forge v0.2.2
+# Plot Forge v0.2.3
 
-[v0.2.2 下载](https://github.com/Bonbonwjj/GraphicEditing/releases/tag/v0.2.2) · [更新与使用说明](docs/RELEASE-v0.2.2.zh-CN.md)
+[v0.2.3 源码（wjj 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/wjj) · [v0.2.2 发布包与说明](https://github.com/Bonbonwjj/GraphicEditing/releases/tag/v0.2.2)
 
 # Plot Forge · 共享科研图表工坊
 

@@ -111,6 +111,27 @@ function buildConnectionGroups(result){
   return families.filter(group=>group.members.length>1).map(group=>({axis:group.axis,members:group.members}));
 }
 function connectionGroupForMember(key){return stylePreviewData?._connectionGroups?.find(group=>group.members.includes(key));}
+function offlineComponentPreview(property,value,keys){
+  if(!['color','fill_color','edge_color','linewidth','alpha','fill_alpha','edge_alpha'].includes(property)||!stylePreviewData?.render_size_px)return;
+  const img=document.querySelector('#subplotZoomDialog .subplotZoomFrame img')||document.querySelector('.chartCard.active .chartImage img');if(!img)return;
+  const host=img.parentElement,rect=chartImageRect(img),hostRect=host.getBoundingClientRect(),size=stylePreviewData.render_size_px;
+  let svg=host.querySelector('svg.offlineComponentPreview');
+  if(!svg){svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.classList.add('offlineComponentPreview');svg.setAttribute('aria-hidden','true');svg.style.cssText='position:absolute;pointer-events:none;z-index:5';host.append(svg);}
+  svg.style.left=(rect.left-hostRect.left)+'px';svg.style.top=(rect.top-hostRect.top)+'px';svg.style.width=rect.width+'px';svg.style.height=rect.height+'px';svg.setAttribute('viewBox',`0 0 ${size[0]} ${size[1]}`);svg.setAttribute('preserveAspectRatio','none');
+  const expanded=new Set(keys.flatMap(key=>stylePreviewData.component_groups?.find(group=>group.key===key)?.members||[key]));
+  for(const target of stylePreviewData._rawTargets||stylePreviewData.targets||[]){
+    if(!expanded.has(target.key)||!(target.hit_path_px||[]).length)continue;
+    const id='offline-'+target.key.replace(/[^a-zA-Z0-9_-]/g,'-'),old=svg.querySelector('#'+id);old?.remove();
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path'),points=target.hit_path_px;
+    path.id=id;path.setAttribute('d',points.map((point,index)=>(index?'L':'M')+point[0]+' '+(size[1]-point[1])).join(' '));
+    const groupKey=keys.find(key=>stylePreviewData.component_groups?.find(group=>group.key===key)?.members?.includes(target.key)),effective={...(groupKey?baseInteractiveStyle.component_styles?.[groupKey]:{}),...(baseInteractiveStyle.component_styles?.[target.key]||{})};
+    const patch=target.kind==='patch'||target.kind==='heatmap';
+    if(patch){path.setAttribute('fill',effective.color||effective.fill_color||componentColorHex(target.style?.facecolor)||'none');path.setAttribute('stroke',effective.edge_color||'none');path.setAttribute('fill-opacity',effective.fill_alpha??effective.alpha??componentRgba(target.style?.facecolor)?.[3]??1);}
+    else{path.setAttribute('fill','none');path.setAttribute('stroke',effective.color||effective.edge_color||componentColorHex(target.style?.color)||'#111');path.setAttribute('stroke-width',Math.max(.5,(effective.linewidth??target.style?.linewidth??1)*(stylePreviewData.dpi||96)/72));path.setAttribute('stroke-linejoin','round');path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-opacity',effective.edge_alpha??effective.alpha??1);}
+    svg.append(path);
+  }
+  $('stylePreviewState').textContent='已在本地即时预览，后台正在校准图例和正式渲染…';
+}
 function updateComponents(property,value,keys=[...componentSelection]){
   const styles=baseInteractiveStyle.component_styles||{};
   if(['color','linewidth','linestyle','alpha'].includes(property))keys=[...new Set(keys.flatMap(key=>{
@@ -158,7 +179,9 @@ function updateComponents(property,value,keys=[...componentSelection]){
     if(property==='color'&&(key.includes('.line_')||key.includes('.segment_'))&&statisticalGroupForMember(key))styles[key].edge_color=value;
   }
   baseInteractiveStyle.component_styles=styles;
-  scheduleInteractiveStylePreview();
+  offlineComponentPreview(property,value,keys);
+  const geometric=new Set(['dx','dy','scale','x_scale','y_scale','width_scale','xlim','ylim']);
+  scheduleInteractiveStylePreview(!geometric.has(property));
 }
 const openBasicInspector=openComponentInspector;
 openComponentInspector=function(event,title,ids,scope='axis'){
@@ -183,13 +206,13 @@ openComponentInspector=function(event,title,ids,scope='axis'){
   info.textContent=componentSelectionHint();
   body.append(info);
   const spec=baseInteractiveStyle.component_styles?.[key]||{};
-  const add=(name,property,type='number',initial='',constraints={})=>{
+  const add=(name,property,type='number',initial='',constraints={},targetKeys=null)=>{
     const row=document.createElement('label'),label=document.createElement('span'),input=document.createElement(type==='multiline'?'textarea':'input');
     label.textContent=name;if(type!=='multiline')input.type=type;else input.rows=3;input.dataset.componentProp=property;
     input.value=spec[property]??initial;for(const [attr,val]of Object.entries(constraints))input.setAttribute(attr,val);
     input.addEventListener('input',()=>{
       if(type==='number'&&(input.value===''||!input.validity.valid))return;
-      updateComponents(property,type==='number'?Number(input.value):input.value);
+      updateComponents(property,type==='number'?Number(input.value):input.value,targetKeys||undefined);
     });row.append(label,input);body.append(row);return input;
   };
   const isText=scope==='text',isArtist=scope==='line';
@@ -245,16 +268,27 @@ openComponentInspector=function(event,title,ids,scope='axis'){
   if(isArtist&&!selectedPoint&&!key.includes('.line_')&&!key.includes('.image_')&&!linePart){
     const renderedStyles=(selectedGroup?.members||[key]).map(member=>stylePreviewData?._rawTargets?.find(target=>target.key===member)?.style).filter(Boolean);
     const fillRgba=renderedStyles.map(style=>componentRgba(style.facecolor)).find(Boolean),edgeRgba=renderedStyles.map(style=>componentRgba(style.edgecolor)).find(Boolean);
-    if(selectedGroup)add('整体颜色','color','color','#111111');
-    const fill=add(key.includes('.box_')?'箱体填充色':key.includes('.violin_')?'小提琴主体填充色':'填充色 / 线条色','fill_color','color',componentColorHex(fillRgba)||'#1f77b4');
-    const edge=add(key.includes('.box_')?'整体边框颜色（箱体、须线、端帽、中位线）':selectedGroup?'整体边框 / 统计线颜色':'边框颜色','edge_color','color',componentColorHex(edgeRgba)||'#111111');
-    if(fillRgba?.length===4)fill.dataset.renderedAlpha=fillRgba[3];
-    if(edgeRgba?.length===4)edge.dataset.renderedAlpha=edgeRgba[3];
+    const linkedBand=selectedGroup?.locked_selection&&selectedGroup?.linked_properties?.includes('color');
+    if(linkedBand){
+      const stroke=renderedStyles.map(style=>componentColorHex(style.color)).find(Boolean)||componentColorHex(fillRgba)||'#1f77b4';
+      const color=add('线段与填充区域颜色','color','color',stroke);color.dataset.skipOpacity='true';
+      add('填充区域不透明度（0～1）','fill_alpha','number',fillRgba?.[3]??.2,{min:0,max:1,step:.05});
+      const lineKey=(selectedGroup.members||[]).find(member=>stylePreviewData?._rawTargets?.find(target=>target.key===member)?.kind==='line');
+      const lineStyle=stylePreviewData?._rawTargets?.find(target=>target.key===lineKey)?.style||{};
+      if(lineKey)add('中心线粗细','linewidth','number',lineStyle.linewidth??1,{min:0,max:50,step:.25},[lineKey]);
+      const note=document.createElement('small');note.dataset.linkedBandInfo='';note.textContent='线段与填充区域属于同一数据系列，颜色始终联动；填充透明度可独立调整。';body.append(note);
+    }else{
+      if(selectedGroup)add('整体颜色','color','color','#111111');
+      const fill=add(key.includes('.box_')?'箱体填充色':key.includes('.violin_')?'小提琴主体填充色':'填充色 / 线条色','fill_color','color',componentColorHex(fillRgba)||'#1f77b4');
+      const edge=add(key.includes('.box_')?'整体边框颜色（箱体、须线、端帽、中位线）':selectedGroup?'整体边框 / 统计线颜色':'边框颜色','edge_color','color',componentColorHex(edgeRgba)||'#111111');
+      if(fillRgba?.length===4)fill.dataset.renderedAlpha=fillRgba[3];
+      if(edgeRgba?.length===4)edge.dataset.renderedAlpha=edgeRgba[3];
+    }
     if(key.includes('.box_')){const note=document.createElement('small');note.textContent='当前选中一个完整箱型；整体边框修改会覆盖其中各条线之前的边框设置。填充色单独控制。';body.append(note);}
     if(key.includes('.box_'))add('箱体胖瘦倍数','width_scale','number',1,{min:.05,max:20,step:.05});
     if(key.includes('.violin_')){const note=document.createElement('small');note.textContent='当前选中一个完整小提琴：主体、极值线、均值/中位线及分位线一起编辑。';body.append(note);add('小提琴胖瘦倍数','width_scale','number',1,{min:.05,max:20,step:.05});}
     if(key.includes('.mean_error_'))add('均值点直径 pt','marker_size','number',10,{min:0,max:100,step:.5});
-    add('边框 / 线条粗细','linewidth','number','',{min:0,max:50,step:.25});
+    if(!linkedBand)add('边框 / 线条粗细','linewidth','number','',{min:0,max:50,step:.25});
   }
   if(scope==='axis'||scope==='spine'){
     const ai=Number(key.match(/^axes_(\d+)/)[1]),axisKey='axes_'+ai,axis=stylePreviewData?.axis_ranges?.[ai];
@@ -284,16 +318,18 @@ openComponentInspector=function(event,title,ids,scope='axis'){
 const attachBasicManipulation=attachDirectManipulation;
 attachDirectManipulation=function(img,result){
   img._cancelComponentDrag?.();
+  img.parentElement?.querySelectorAll('.offlineComponentPreview').forEach(node=>node.remove());
   result._rawTargets??=result.targets||[];
   result._connectionGroups??=buildConnectionGroups(result);
   result.targets=result._rawTargets;
-  if(componentSelectionMode==='group'){
-    const members=new Map((result.component_groups||[]).flatMap(group=>(group.members||[]).map(key=>[key,group])));
+  {
+    const activeGroups=(result.component_groups||[]).filter(group=>componentSelectionMode==='group'||group.locked_selection);
+    const members=new Map(activeGroups.flatMap(group=>(group.members||[]).map(key=>[key,group])));
     result.targets=result._rawTargets.map(target=>{
       const group=members.get(target.key)||result.component_groups?.find(item=>item.key===target.group_key),key=target.group_key||group?.key;
-      return key?{...target,key,label:group?.label||'整体图形'}:target;
+      return key&&(componentSelectionMode==='group'||group?.locked_selection)?{...target,key,label:group?.label||'整体图形'}:target;
     });
-    for(const group of result.component_groups||[]){for(const path of group.hit_paths_px||[])result.targets.push({key:group.key,label:group.label,kind:'line',hit_path_px:path});}
+    for(const group of activeGroups){for(const path of group.hit_paths_px||[])result.targets.push({key:group.key,label:group.label,kind:'line',hit_path_px:path});}
   }
   attachBasicManipulation(img,result);
   img.dataset.dragEnabled=String(componentDragEnabled);
@@ -360,6 +396,7 @@ function addRgbColorControls(panel){
     const palette=document.createElement('div');palette.className='componentPalette';
     for(const hex of ['#111111','#ffffff','#ff0000','#00aa55','#0066ff','#ff9900','#9933cc','#777777']){const button=document.createElement('button');button.type='button';button.title=hex;button.setAttribute('aria-label','色卡 '+hex);button.style.cssText='width:18px;height:18px;padding:0;border:1px solid #888;background:'+hex;button.onclick=()=>{color.value=hex;color.dispatchEvent(new Event('input',{bubbles:true}));};palette.append(button);}
     wrap.append(palette);
+    if(color.dataset.skipOpacity==='true'){color.closest('label').append(wrap);continue;}
     const property=color.dataset.componentProp==='fill_color'?'fill_alpha':color.dataset.componentProp==='edge_color'?'edge_alpha':'alpha';
     const selected=[...componentSelection][0],spec=baseInteractiveStyle.component_styles?.[selected]||{};
     const current=spec[property]??spec.alpha??Number(color.dataset.renderedAlpha??1);

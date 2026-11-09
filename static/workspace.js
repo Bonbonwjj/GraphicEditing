@@ -46,7 +46,7 @@
     const result = await originalSelect(...args);
     if(result !== false) {
       const formats=(projectInfo(state.project)||{}).render_formats||['png','svg','pdf'];
-      $('svg').hidden=!formats.includes('svg');$('pdf').hidden=!formats.includes('pdf');
+      $('png').hidden=!formats.includes('png');$('svg').hidden=!formats.includes('svg');$('pdf').hidden=!formats.includes('pdf');
     }
     return result;
   };
@@ -593,5 +593,12 @@
     };
   }
   updateChatControls();
-  setTimeout(openWorkspace,100);
+  // Do not cover an already usable gallery with the import/open dialog on
+  // every launch. Open it automatically only for a genuinely empty workspace.
+  setTimeout(async()=>{
+    try{
+      const value=await api('/api/workspace/projects');
+      if(!(value.projects||[]).some(project=>project.can_open))await openWorkspace();
+    }catch(error){console.warn('无法检查工作区状态',error);}
+  },100);
 })();

@@ -82,6 +82,11 @@ dialog{width:min(690px,92vw);color:var(--text);background:var(--surface);border:
 #gallery .chartCard:not(.active) .chartImage img{width:100%;height:100%;object-fit:contain}
 #gallery .chartCard.active{grid-column:1/-1}
 
+/* Keep overview figures large enough to be recognizable. Six narrow columns
+   made wide publication figures look like empty white cards. */
+#gallery{grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr))}
+#gallery .chartCard:not(.active){grid-column:auto}
+
 .rgbColorControls{grid-column:1/-1;display:grid;gap:6px}.componentPalette{display:flex;gap:5px;flex-wrap:wrap}
 
 .componentInspectorBody textarea{min-height:76px;resize:vertical;white-space:pre-wrap}.axisLabelNewlineHint{grid-column:1/-1;color:var(--muted);font-size:10px;line-height:1.5}
