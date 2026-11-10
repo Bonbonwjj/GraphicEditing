@@ -7,6 +7,9 @@ def compatible_orientation(callable_, kwargs):
     """Translate Matplotlib's orientation keyword for pre-3.10 releases."""
     import inspect
     kwargs=dict(kwargs)
+    if ('orientation' in kwargs and kwargs.get('vert') is not None
+            and kwargs['vert'] != (kwargs['orientation']=='vertical')):
+        raise ValueError('orientation and vert specify conflicting directions')
     parameters=inspect.signature(callable_).parameters
     if 'orientation' in kwargs and 'orientation' not in parameters and 'vert' in parameters:
         value=kwargs.pop('orientation')
@@ -250,6 +253,27 @@ def register_component_group(axis, members, label='自定义图形'):
     groups.append((list(members), str(label)))
     axis._component_custom_groups = groups
     return f'axes_{axis.figure.axes.index(axis)}.group_{len(groups)-1}'
+
+
+def summary_group_regions(axis):
+    """Categorical anchors for means/error bars and bar containers."""
+    from matplotlib.container import ErrorbarContainer, BarContainer
+    result = {}
+    bar_errors = {id(c.errorbar) for c in axis.containers if isinstance(c, BarContainer) and c.errorbar is not None}
+    for i, container in enumerate(c for c in axis.containers if isinstance(c, ErrorbarContainer)):
+        if id(container) in bar_errors: continue
+        dimension = 0 if container.has_xerr and not container.has_yerr else 1
+        line, _caps, bars = container.lines
+        centers = line.get_xydata() if line is not None else [np.mean(s,axis=0) for bar in bars for s in bar.get_segments() if len(s)]
+        result[f'mean_error_{i}'] = [{'dimension':dimension,'position':float(p[1-dimension]),
+            'mean':float(p[dimension]),'low':None,'high':None,'rule':'display_iqr'} for p in centers]
+    for i, container in enumerate(c for c in axis.containers if isinstance(c, BarContainer)):
+        horizontal = container.orientation == 'horizontal'
+        result[f'bars_{i}'] = [{'dimension':0 if horizontal else 1,
+            'position':float(p.get_y()+p.get_height()/2 if horizontal else p.get_x()+p.get_width()/2),
+            'mean':float(p.get_x()+p.get_width() if horizontal else p.get_y()+p.get_height()),
+            'low':None,'high':None,'rule':'display_iqr'} for p in container.patches]
+    return result
 
 
 def component_groups(figure):

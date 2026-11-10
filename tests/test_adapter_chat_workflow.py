@@ -66,6 +66,34 @@ class AdapterChatWorkflowTests(unittest.TestCase):
         self.assertEqual(supplied['data_access_policy']['mode'], 'preserve_existing')
         self.assertLess(len(json.dumps(supplied)), 15000)
 
+    def test_fast_cosmetic_context_preserves_selected_panel_and_visible_mapping(self):
+        context=copy.deepcopy(self.context)
+        context['selected_panel']={'id':'e','axis_labels':['g','h'],'source_sections':['huge']}
+        context['panel_index']={'panels':[context['selected_panel']], 'sections':[{'id':'huge','content':'analysis'*10000}]}
+        small=chat_agent.adapter_model_context(context)
+        self.assertEqual(small['selected_panel'],context['selected_panel'])
+        self.assertEqual(small['panel_index']['panels'][0]['axis_labels'],['g','h'])
+        self.assertNotIn('sections',small['panel_index'])
+        self.assertTrue(all(item['writable'] for item in small['source_files']))
+        self.assertEqual(small['plot_data'],[])
+        self.assertLess(len(json.dumps(small)),len(json.dumps(context))*.1)
+
+    def test_fast_selected_style_prompt_is_smaller_with_same_proposal_validation(self):
+        context=copy.deepcopy(self.context)
+        context['selected_panel']={'id':'e','axis_labels':['g','h']}
+        context['panel_index']={'panels':[context['selected_panel']], 'sections':[]}
+        context['_model_auth']={'api_key':'test','api_url':'https://example.test/v1/chat/completions'}
+        sizes=[]
+        for fast in (False,True):
+            with patch.object(chat_agent,'fast_adapter_edit',return_value=fast),patch.object(chat_agent.urllib.request,'urlopen',return_value=FakeStream(json.dumps(self.response))) as request:
+                result=chat_agent.propose(context)
+            payload=json.loads(request.call_args.args[0].data)
+            sizes.append(sum(len(message['content']) for message in payload['messages']))
+            self.assertEqual(result['status'],'candidate')
+            self.assertEqual(result['model_attempts_used'],1)
+            self.assertEqual(json.loads(payload['messages'][-1]['content'])['selected_panel'],context['selected_panel'])
+        self.assertLess(sizes[1],sizes[0]*.6)
+
     def test_scientific_mixed_requests_do_not_take_style_route(self):
         for message in ('轴加粗并过滤异常值','轴加粗并改成箱线图','轴加粗并重新计算均值','坐标范围改为0到2，刻度加粗'):
             self.assertFalse(chat_agent.adapter_style_context({**self.context,'user_message':message}))

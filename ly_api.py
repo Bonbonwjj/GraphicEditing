@@ -75,7 +75,7 @@ def handle_data_sources(handler, path):
     if not runtime:
         raise ValueError('请先设置 behavior_analysis 绘图运行时代码目录')
     result = import_plot_bundle(host.ROOT, source, project_id=body['project_id'], name=body.get('name', ''),
-                                mode=mode, trusted=True, runtime_source=Path(runtime))
+                                mode=mode, trusted=True, runtime_source=Path(runtime),projects_root=host.PROJECTS)
     project = host.PROJECTS / result['project']
     make_portable(project, share)
     metadata_file = project / 'project.json'

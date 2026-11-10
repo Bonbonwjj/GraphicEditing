@@ -30,7 +30,9 @@ def layers(figure):
     result=[]
     for ai,axis in enumerate(figure.axes):
         owners=list(_owners(axis))
-        regions=getattr(axis,'_component_point_regions',[]) or getattr(axis,'_component_violin_point_regions',[])
+        from component_groups import summary_group_regions
+        regions=(getattr(axis,'_component_point_regions',[]) or getattr(axis,'_component_violin_point_regions',[])
+                 or [r for items in summary_group_regions(axis).values() for r in items])
         categories=[];category_indexes=[]
         for region in regions:
             identity=(region['dimension'],float(region['position']))
@@ -227,8 +229,9 @@ def apply_points(figure,specs):
                 obj.axes.add_collection(display,autolim=False);faces[indices,3]=0;edges[indices,3]=0
                 obj.set_facecolors(faces);obj.set_edgecolors(edges)
         if spec.get('dx') or spec.get('dy'):
-            from matplotlib.transforms import Affine2D
-            offset=Affine2D().translate(spec.get('dx',0)*figure.dpi/72,spec.get('dy',0)*figure.dpi/72)
+            from matplotlib.transforms import ScaledTranslation
+            offset=ScaledTranslation(spec.get('dx',0)/72,spec.get('dy',0)/72,figure.dpi_scale_trans)
+            display.set_clip_on(False)
             if isinstance(display,PathCollection):display.set_offset_transform(display.get_offset_transform()+offset)
             else:display.set_transform(display.get_transform()+offset)
         if isinstance(display,Line2D) or display is not obj:display.set_visible(not spec.get('hidden',False))

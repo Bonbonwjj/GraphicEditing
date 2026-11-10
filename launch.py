@@ -166,17 +166,63 @@ def health(port):
         return None
 
 
+def runtime_fingerprint(root=None):
+    """Identify the backend sources, including newly added runtime modules."""
+    root = Path(root) if root is not None else ROOT
+    digest = hashlib.sha256()
+    files = sorted(root.glob('*.py'))
+    if (root/'requirements.txt').is_file():
+        files.append(root/'requirements.txt')
+    for path in files:
+        digest.update(path.name.encode('utf-8'))
+        digest.update(b'\0')
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def own_server(existing):
+    return (isinstance(existing, dict) and existing.get('app') == 'plot-forge'
+            and Path(existing.get('root', '')).resolve() == ROOT.resolve())
+
+
+def stop_stale_server(port, existing):
+    """Stop only the verified backend for this checkout, preserving active jobs."""
+    import signal
+    current = health(port)
+    if (not own_server(current) or current.get('pid') != existing.get('pid')
+            or type(current.get('pid')) is not int or current['pid'] <= 0
+            or current['pid'] == os.getpid()):
+        raise RuntimeError('后台进程归属已变化，未自动停止；请重新启动工作台')
+    for path in (ROOT/'projects').glob('*/.chat/sessions/*/session.json'):
+        try:
+            session = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if session.get('status') == 'running':
+            raise RuntimeError('后台正在处理改图任务，请等待任务完成后再启动新版工作台')
+    print('检测到绘图程序已更新，正在重启本工程的后台服务…', flush=True)
+    os.kill(current['pid'], signal.SIGTERM)
+    for _ in range(50):
+        if health(port) is None:
+            return
+        time.sleep(.1)
+    raise RuntimeError('旧版后台尚未退出，请稍后重试')
+
+
 def main():
     if os.environ.get('PLOT_FORGE_BOOTSTRAP') != '1' and sys.version_info < (3, 10):
         bootstrap_python_if_needed()
         return
     import socket
     port = None
+    expected_runtime = runtime_fingerprint()
     for candidate in range(8765, 8795):
         existing = health(candidate)
-        if existing and existing.get('root') == str(ROOT):
-            webbrowser.open(f'http://127.0.0.1:{candidate}/')
-            return
+        if own_server(existing):
+            if existing.get('runtime_fingerprint') == expected_runtime:
+                webbrowser.open(f'http://127.0.0.1:{candidate}/')
+                return
+            stop_stale_server(candidate, existing)
         with socket.socket() as probe:
             try:
                 probe.bind(('127.0.0.1', candidate))

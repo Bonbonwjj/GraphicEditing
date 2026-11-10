@@ -16,7 +16,9 @@ def validate_tree(project):
         attributes = getattr(path.lstat(), 'st_file_attributes', 0)
         if path.is_symlink() or attributes & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0):
             raise ValueError('工程副本包含符号链接或重解析目录，已停止删除；请先检查路径')
-        if path.is_mount():
+        try:mounted=path.is_mount()
+        except NotImplementedError:mounted=os.path.ismount(path)
+        if mounted:
             raise ValueError('工程副本包含挂载目录，已停止删除')
     def fail(error):
         raise error

@@ -13,6 +13,59 @@ class StatisticalGroupTests(unittest.TestCase):
         self.figure, self.axis = plt.subplots()
         self.addCleanup(plt.close, self.figure)
 
+    def test_color_only_group_edit_preserves_geometry_and_clipping_at_export_dpi(self):
+        for kind in ('box', 'violin', 'band'):
+            with self.subTest(kind=kind):
+                fig, axis = plt.subplots(dpi=100)
+                try:
+                    if kind == 'box':
+                        axis.boxplot([[1,2,3,4]], patch_artist=True)
+                        key = 'axes_0.box_0'
+                    elif kind == 'violin':
+                        axis.violinplot([[1,2,3,4]], showmedians=True)
+                        key = 'axes_0.violin_0'
+                    else:
+                        line, = axis.plot([0,1,2], [2,3,2], label='A')
+                        axis.fill_between([0,1,2], [1,2,1], [3,4,3], label='A')
+                        key = next(iter(component_groups(fig)))
+                    fig.canvas.draw()
+                    members = component_groups(fig)[key]
+                    before = [artist_points(obj, fig.canvas.get_renderer()).copy()/fig.dpi for obj in members]
+                    clips = [getattr(obj, 'collection', obj).get_clip_on() for obj in members]
+                    apply_components(fig, {key: {'color':'#ff0000'}})
+                    for dpi in (200, 72, 100):
+                        fig.set_dpi(dpi); fig.canvas.draw()
+                        for obj, points, clip in zip(members, before, clips):
+                            np.testing.assert_allclose(artist_points(obj, fig.canvas.get_renderer())/dpi, points, atol=1e-9)
+                            self.assertEqual(getattr(obj, 'collection', obj).get_clip_on(), clip)
+                finally:
+                    plt.close(fig)
+
+    def test_legend_color_does_not_change_anchor_or_location(self):
+        self.axis.plot([0,1], [1,2], label='A')
+        legend = self.axis.legend(loc='upper left', bbox_to_anchor=(.2, .8))
+        self.figure.canvas.draw()
+        anchor = legend.get_bbox_to_anchor().bounds
+        location = legend._loc
+        before = legend.get_window_extent().bounds
+        apply_components(self.figure, {'axes_0.legend': {'color':'#ff0000'}})
+        self.figure.canvas.draw()
+        self.assertEqual(legend._loc, location)
+        np.testing.assert_allclose(legend.get_bbox_to_anchor().bounds, anchor)
+        np.testing.assert_allclose(legend.get_window_extent().bounds, before)
+
+    def test_group_geometry_edits_keep_physical_positions_across_dpi(self):
+        self.axis.boxplot([[1,2,3,4]], patch_artist=True)
+        self.figure.canvas.draw()
+        apply_components(self.figure, {'axes_0.box_0': {'scale':.7, 'dx':12, 'dy':8}})
+        self.figure.canvas.draw()
+        members = component_groups(self.figure)['axes_0.box_0']
+        before = [artist_points(obj, self.figure.canvas.get_renderer()).copy()/self.figure.dpi for obj in members]
+        for dpi in (200, 72):
+            self.figure.set_dpi(dpi); self.figure.canvas.draw()
+            for obj, points in zip(members, before):
+                np.testing.assert_allclose(artist_points(obj, self.figure.canvas.get_renderer())/dpi, points, atol=1e-9)
+
     def test_box_width_changes_without_changing_statistical_heights(self):
         result=self.axis.boxplot([[1,2,3,4,5]],patch_artist=True)
         self.figure.canvas.draw()

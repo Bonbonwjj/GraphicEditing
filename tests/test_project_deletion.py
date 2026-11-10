@@ -83,7 +83,8 @@ class ProjectDeletionTests(unittest.TestCase):
         linked.symlink_to(self.source, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, '符号链接'):self.remove()
         linked.unlink()
-        with patch.object(Path, 'is_mount', return_value=True):
+        # WindowsPath overrides Path.is_mount in Python 3.11.
+        with patch.object(type(self.project), 'is_mount', return_value=True):
             with self.assertRaisesRegex(ValueError, '挂载'):self.remove()
         alias = self.root / 'linked-projects'
         alias.symlink_to(self.projects, target_is_directory=True)

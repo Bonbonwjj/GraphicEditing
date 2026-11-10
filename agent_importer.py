@@ -7,13 +7,13 @@ def safe_id(v):
     if not v: raise ValueError("Invalid project ID")
     return v
 
-def import_package(root, source_relative, project_id, name=None):
+def import_package(root, source_relative, project_id, name=None,*,projects_root=None):
     base=(root/"data").resolve(); source=(base/source_relative).resolve()
     if base not in source.parents or not source.is_dir(): raise ValueError("Source must be inside data/")
     csv_dir,code_dir=source/"csv",source/"code"
     required=csv_dir/"direct_panel_metadata.csv"; renderer_file=code_dir/"render_figures_from_csv.py"
     if not required.is_file() or not renderer_file.is_file(): raise ValueError("Expected code/render_figures_from_csv.py and direct panel CSVs")
-    project_id=safe_id(project_id); target=root/"projects"/project_id
+    project_id=safe_id(project_id); target=(Path(projects_root) if projects_root is not None else root/"projects")/project_id
     if target.exists(): raise ValueError("Project already exists")
     for d in ("data","charts","history","lib"): (target/d).mkdir(parents=True)
     csv_files=sorted(csv_dir.glob("*.csv"))

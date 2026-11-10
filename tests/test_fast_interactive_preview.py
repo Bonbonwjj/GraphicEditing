@@ -43,6 +43,21 @@ def render():
 
 
 class FastInteractiveWorkerTests(unittest.TestCase):
+    def test_replayed_pixel_anchored_raster_scales_with_edit_preview_dpi(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project,source=fixture(root);entry='charts/fig1.py'
+            code=project/'lib/native/fig1/code/plot.py'
+            code.write_text(code.read_text(encoding='utf-8').replace("    fig.savefig(",
+                "    fig.figimage(np.tile(np.array([255,0,0],dtype=np.uint8),(80,300,1)),xo=0,yo=120,origin='upper')\n    fig.savefig("),encoding='utf-8')
+            baseline=_one_render(project,entry,{},root/'baseline',capture_interactive_seed=True)
+            preview=_one_render(project,entry,{},root/'preview',interactive_seed=baseline['interactive_seed_bytes'],preview_dpi=50)
+            formal=_one_render(project,entry,{},root/'formal',interactive_seed=baseline['interactive_seed_bytes'])
+            small=Image.open(io.BytesIO(preview['image_bytes'])).convert('RGB')
+            self.assertEqual(small.size,(150,100))
+            self.assertEqual(small.getpixel((140,10)),(255,0,0))
+            self.assertNotEqual(small.getpixel((140,90)),(255,0,0))
+            self.assertEqual(formal['image_bytes'],baseline['image_bytes'])
+
     def test_cached_image_hash_detects_in_place_pixel_changes(self):
         import numpy as np
         import matplotlib.pyplot as plt

@@ -40,13 +40,22 @@ function scheduleSubplotZoomSize(fit=false){
   if(subplotSizeFrame!==null)return;
   subplotSizeFrame=requestAnimationFrame(()=>{const requestedFit=subplotFitPending;subplotFitPending=false;subplotSizeFrame=null;sizeSubplotZoom(requestedFit);});
 }
+function preserveSubplotPreviewScale(dialog,result){
+  const old=dialog._previewSize,next=result.render_size_px;
+  if(old&&next&&old[0]!==next[0]){
+    const slider=dialog.querySelector('[data-subplot-zoom]');
+    slider.value=Math.max(10,Math.min(400,Math.round(Number(slider.value)*old[0]/next[0])));
+  }
+  if(next)dialog._previewSize=[...next];
+}
 function updateSubplotZoom(result){
   const dialog=$('subplotZoomDialog');if(!dialog)return;
   if(dialog.dataset.chart!==state.project+'/'+state.chart){closeSubplotZoom();return;}
   const image=dialog.querySelector('.subplotZoomFrame img');
+  preserveSubplotPreviewScale(dialog,result);
   image.src=result.image;sizeSubplotZoom();
   const family=subplotFamily(result,subplotZoomAxis),focused={...result,allowedAxisKeys:family};
-  const belongs=item=>family.includes(axisKeyFromObject(item.key));
+  const belongs=item=>family.includes(item.subplot_key||axisKeyFromObject(item.key));
   for(const field of ['texts','targets','legends','component_groups'])focused[field]=(result[field]||[]).filter(belongs);
   focused._rawTargets=(result._rawTargets||result.targets||[]).filter(belongs);
   const fullData=stylePreviewData;attachDirectManipulation(image,focused);stylePreviewData=fullData;
@@ -57,13 +66,14 @@ function openSubplotZoom(){
   if(!selectedAxisKey||!stylePreviewData?.image){alertStatus('请先等待交互准备完成，再点击要放大的子图');return;}
   const key=selectedAxisKey;closeSubplotZoom();subplotZoomAxis=key;
   const dialog=document.createElement('dialog');dialog.id='subplotZoomDialog';dialog.dataset.chart=state.project+'/'+state.chart;
-  dialog.innerHTML='<div class="subplotZoomToolbar"><strong></strong><label>切换子图 <select data-subplot-picker></select></label><label>缩放 <input data-subplot-zoom type="range" min="10" max="400" step="1" value="100"></label><span data-subplot-percent></span><button type="button" data-subplot-fit>适合窗口</button><button type="button" data-subplot-close>返回整图</button></div><div class="subplotZoomWorkspace"><div class="subplotZoomViewport"><div class="subplotZoomFrame"><img data-subplot-image="true" alt="放大的可编辑子图"></div></div><aside class="subplotZoomInspector"><p>点击线条、文字、统计图形或坐标轴进行修改；Shift+点击可多选。确认后仍保存到原来的整张 figure。</p></aside></div>';
+  dialog.innerHTML='<div class="subplotZoomToolbar"><strong></strong><label>切换子图 <select data-subplot-picker></select></label><label>缩放 <input data-subplot-zoom type="range" min="10" max="400" step="1" value="100"></label><span data-subplot-percent></span><button type="button" data-subplot-fit>适合窗口</button><button type="button" data-subplot-hd title="编辑使用快速预览；需要检查细节时生成高清图。保存和导出仍使用原始清晰度。">高清检查</button><button type="button" data-subplot-close>返回整图</button></div><div class="subplotZoomWorkspace"><div class="subplotZoomViewport"><div class="subplotZoomFrame"><img data-subplot-image="true" alt="放大的可编辑子图"></div></div><aside class="subplotZoomInspector"><p>点击线条、文字、统计图形或坐标轴进行修改；Shift+点击可多选。确认后仍保存到原来的整张 figure。</p></aside></div>';
   const picker=dialog.querySelector('[data-subplot-picker]');
   for(let i=0;i<stylePreviewData.axes.length;i++){const option=document.createElement('option');option.value='axes_'+i;option.textContent='子图 '+(i+1);picker.append(option);}picker.value=key;
   const title=()=>dialog.querySelector('strong').textContent='放大编辑 · 子图 '+(Number(subplotZoomAxis.slice(5))+1);
   picker.onchange=()=>{subplotZoomAxis=picker.value;selectedAxisKey=picker.value;componentSelection.clear();dialog.querySelector('#componentInspector')?.remove();title();updateSubplotZoom(stylePreviewData);scheduleSubplotZoomSize(true);};
   dialog.querySelector('[data-subplot-close]').onclick=closeSubplotZoom;
   dialog.querySelector('[data-subplot-fit]').onclick=()=>scheduleSubplotZoomSize(true);
+  dialog.querySelector('[data-subplot-hd]').onclick=()=>previewInteractiveStyle({highQuality:true});
   dialog.querySelector('[data-subplot-zoom]').oninput=()=>scheduleSubplotZoomSize();
   dialog.addEventListener('cancel',event=>{event.preventDefault();closeSubplotZoom();});
   dialog.querySelector('.subplotZoomToolbar').append(componentInteractionToolbar());
@@ -72,7 +82,7 @@ function openSubplotZoom(){
   // Show the existing bitmap immediately, then upgrade old/low-DPI
   // interaction previews without blocking the dialog.
   const currentDpi=stylePreviewData._previewDpi||stylePreviewData.dpi||0;
-  if(currentDpi<360){subplotStatus.textContent='已即时放大当前预览；正在后台生成 360 DPI 高清版本…';stylePreviewData._dirty=true;previewInteractiveStyle();}
+  if(currentDpi<160){subplotStatus.textContent='已即时放大；正在准备快速编辑预览，高清检查可单独加载…';stylePreviewData._dirty=true;previewInteractiveStyle();}
   // Show the selected subplot's controls initially, then let direct clicks
   // choose smaller components in the enlarged view.
   const img=dialog.querySelector('img');selectSubplot(img,stylePreviewData,key);

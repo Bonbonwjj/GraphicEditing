@@ -100,3 +100,9 @@ dialog{width:min(690px,92vw);color:var(--text);background:var(--surface);border:
 .opacityControls{display:grid;grid-template-columns:65px minmax(60px,1fr) 56px;align-items:center;gap:6px}.opacityControls input[type=range]{min-width:0;padding:0}.opacityControls input[type=number]{min-width:0}
 .componentInteractionToolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;margin:8px 0 12px}.componentInteractionToolbar label{display:flex;align-items:center;gap:6px}.componentInteractionToolbar small{flex-basis:100%;color:var(--muted)}.subplotZoomToolbar .componentInteractionToolbar{margin:0}.directEditable[data-drag-enabled="false"]{cursor:crosshair}.directEditable[data-drag-enabled="true"]{cursor:grab}
 .componentPreviewStatus{flex-basis:100%;font-size:12px;color:var(--text);white-space:normal}
+
+.plotModePicker{position:relative;margin:0;flex:none;align-self:center}
+.plotModePicker[hidden]{display:none}.plotModePicker>summary{cursor:pointer;padding:6px 10px;border:1px solid var(--line);border-radius:6px;list-style:none;white-space:nowrap}
+.plotModePicker>summary::-webkit-details-marker{display:none}
+.plotModeBody{position:fixed;z-index:60;min-width:0;width:min(380px,calc(100vw - 24px));padding:14px;overflow:auto;display:grid;gap:10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text,#222);box-shadow:0 8px 28px #0003}
+.plotModeBody fieldset{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;border:1px solid var(--line);border-radius:6px}.plotModeBody fieldset label{display:flex;align-items:center;gap:6px;font-size:12px}.plotModeBody input[type=checkbox]{width:auto}.plotModeBody p{margin:0;white-space:normal}.plotModeBody small{color:var(--muted);white-space:normal}.plotModeActions{display:flex;flex-wrap:wrap;gap:6px}.plotModeActions button{font-size:12px}

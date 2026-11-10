@@ -41,6 +41,9 @@ class CollaborationSync:
         return result.stdout.strip()
 
     def config(self):
+        if (self.team_target() or {}).get('mode') in ('folder','direct'):
+            from shared_folder_sync import SharedFolderSync
+            return SharedFolderSync(self.root,self.team_target()).config()
         return json.loads(self.config_file.read_text(encoding='utf-8')) if self.config_file.exists() else {}
 
     def team_target(self):
@@ -48,6 +51,9 @@ class CollaborationSync:
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
 
     def status(self):
+        if (self.team_target() or {}).get('mode') in ('folder','direct'):
+            from shared_folder_sync import SharedFolderSync
+            return SharedFolderSync(self.root,self.team_target()).status()
         config = self.config()
         target = self.team_target()
         matches = target is None or all(config.get(k) == target.get(k) for k in ('remote', 'branch'))
@@ -57,6 +63,9 @@ class CollaborationSync:
                 'projects': sorted(p.name for p in (self.root / 'projects').iterdir() if (p / 'project.json').is_file())}
 
     def configure(self, body, *, reader=False):
+        if (self.team_target() or {}).get('mode') in ('folder','direct'):
+            from shared_folder_sync import SharedFolderSync
+            return SharedFolderSync(self.root,self.team_target()).configure(body)
         with self.lock:
             target = self.team_target()
             if target is not None:
@@ -90,7 +99,7 @@ class CollaborationSync:
             return self.status()
 
     @staticmethod
-    def files(root):
+    def files(root, *, include_private=(), only_projects=None, normalize_text=True):
         result = {}
         root = Path(root)
         if not root.exists():
@@ -99,13 +108,15 @@ class CollaborationSync:
             raise ValueError('共享项目目录不能是符号链接')
         references = set()
         from private_projects import names
-        private = names(root.parent)
+        private = names(root.parent)-set(include_private)
         for metadata in [*root.glob('*/data_sources.json'), *root.glob('*/code/data_sources.json')]:
             value=json.loads(metadata.read_text(encoding='utf-8'))
             if any(item.get('kind')=='plot_bundle' and str(item.get('location','')).startswith('binding:') for item in value.get('sources',[])):
                 references.add(metadata.parent.parent.name if metadata.parent.name == 'code' else metadata.parent.name)
         for path in root.rglob('*'):
             relative = path.relative_to(root)
+            if only_projects is not None and relative.parts and relative.parts[0] not in only_projects:
+                continue
             if relative.parts and relative.parts[0] in private:
                 continue
             if relative.parts and relative.parts[0] in references and relative.parts[1:3] == ('data','bundle'):
@@ -118,7 +129,7 @@ class CollaborationSync:
                 if any(':' in part or '\\' in part for part in relative.parts):
                     raise ValueError('文件名不兼容 Windows：' + str(relative))
                 data = path.read_bytes()
-                if relative.parts[1:3] != ('data', 'bundle') and path.suffix.lower() in {'.py', '.csv', '.tsv', '.json', '.md', '.svg'}:
+                if normalize_text and relative.parts[1:3] != ('data', 'bundle') and path.suffix.lower() in {'.py', '.csv', '.tsv', '.json', '.md', '.svg'}:
                     data = data.replace(b'\r\n', b'\n')
                 if len(data) > 95 * 1024 * 1024:
                     raise ValueError('单文件超过 95 MiB，请使用较小的绘图数据文件：' + str(relative))
@@ -178,6 +189,9 @@ class CollaborationSync:
         return config
 
     def sync(self, publish=False, message=''):
+        if (self.team_target() or {}).get('mode') in ('folder','direct'):
+            from shared_folder_sync import SharedFolderSync
+            return SharedFolderSync(self.root,self.team_target()).sync(publish,message)
         with self.lock:
             if publish and not (self.config().get('name') and self.config().get('email')):
                 raise ValueError('提交修改前请在团队协作中保存姓名和 Git 提交邮箱')

@@ -1,0 +1,11 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync('static/subplot_zoom.js','utf8');
+const ctx=vm.createContext({});
+vm.runInContext(source.slice(source.indexOf('function preserveSubplotPreviewScale('),source.indexOf('function updateSubplotZoom(')),ctx);
+const slider={value:25},dialog={querySelector:()=>slider};
+ctx.preserveSubplotPreviewScale(dialog,{render_size_px:[4200,3200]});
+ctx.preserveSubplotPreviewScale(dialog,{render_size_px:[1120,854]});
+assert.equal(slider.value,94);assert(Math.abs(1120*slider.value/100-4200*.25)<4);
+ctx.preserveSubplotPreviewScale(dialog,{render_size_px:[1120,854]});assert.equal(slider.value,94);
+ctx.preserveSubplotPreviewScale(dialog,{render_size_px:[4200,3200]});assert.equal(slider.value,25);
+console.log('PASS: precise redraws with changed preview DPI keep the enlarged subplot at the same visual scale.');

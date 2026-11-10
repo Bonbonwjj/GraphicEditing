@@ -1,4 +1,5 @@
 {
-  "remote": "https://github.com/Bonbonwjj/GraphicEditing.git",
-  "branch": "main"
+  "mode": "direct",
+  "path": "X:\\figure_DATA_code",
+  "projects": ["jiahui"]
 }

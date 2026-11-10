@@ -1,12 +1,12 @@
-# Plot Forge v0.2.3
+# Plot Forge v0.3.0
 
-[v0.2.3 源码（wjj 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/wjj) · [v0.2.2 发布包与说明](https://github.com/Bonbonwjj/GraphicEditing/releases/tag/v0.2.2)
+[v0.3.0 源码（lc 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/lc) · [v0.3.0 团队启动包](releases/v0.3.0/Plot-Forge-v0.3.0-team.zip) · [版本说明](docs/RELEASE-v0.3.0.zh-CN.md)
 
 # Plot Forge · 共享科研图表工坊
 
 使用说明：[当前功能与操作指南](docs/Plot-Forge功能说明.zh-CN.md)。
 
-团队通过 GitHub 共享绘图代码、数据、图片和正式修改历史；每位成员使用本机 Python 执行绘图，在本地网页中上传、查看、修改、预览和发布。默认不需要 Docker。
+当前团队分发版直接读写公共文件夹 `X:\figure_DATA_code\projects` 中的同一份绘图工程；正式代码、数据、图片和历史都保存在这里。每位成员在本机运行程序、保留自己的账号配置。图表保存带跨进程文件锁与版本检查，旧页面不会直接覆盖其他成员的新版本。使用步骤见 [团队共享文件夹与打包](docs/团队共享文件夹与打包.md)。此源码启动包需要本机 Python，默认不需要 Docker。原有 GitHub 与手动文件夹同步实现仍保留，可由维护者修改团队配置切换。
 
 ## ChatGPT 订阅与本地工程准备
 

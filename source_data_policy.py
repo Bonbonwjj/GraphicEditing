@@ -33,8 +33,30 @@ DISPLAY = {'figsize', 'color', 'colors', 'c', 'facecolor', 'edgecolor', 'palette
            'xlim', 'ylim', 'xticks', 'yticks', 'ticks', 'bbox_to_anchor', 'position'}
 
 
-def _inputs(source):
+def _input_tree(source):
     tree = ast.parse(source)
+    # Platform-generated range policy is display metadata, not an input array.
+    # Normalize only this validated field; keep all other literals/readers checked.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not any(isinstance(t, ast.Name) and t.id == 'INTERACTIVE_STYLE' for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for index in reversed(range(len(node.value.keys))):
+            key = node.value.keys[index]
+            if isinstance(key, ast.Constant) and key.value in ('auto_range', 'plot_modes', 'plot_mode_palettes'):
+                try:
+                    from interactive_style import validate_style
+                    validate_style({key.value: ast.literal_eval(node.value.values[index])})
+                except (ValueError, TypeError, SyntaxError):
+                    continue
+                del node.value.keys[index]
+                del node.value.values[index]
+    return tree
+
+
+def _inputs(source):
+    tree = _input_tree(source)
     anchors = Counter()
     aliases = dict(ALIASES)
     definitions = {}
@@ -158,7 +180,7 @@ def compare_source_inputs(baseline, candidate):
         # followed by a direct overwrite of the same input or one of its cells.
         def writes(text):
             found = Counter()
-            tree = ast.parse(text)
+            tree = _input_tree(text)
             roots = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and
                      any(ast.dump(n, include_attributes=False) in binding for binding in protected)}
             def root(node):

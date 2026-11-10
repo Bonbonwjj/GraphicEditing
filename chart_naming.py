@@ -38,6 +38,9 @@ def figure_naming(fig):
 
 
 def install_capture(output, metadata, interaction_report=None):
+    from matplotlib.axes import Axes
+    from chat_runner import _install_stat_capture
+    _install_stat_capture(Axes)
     from component_groups import install_group_tracking
     install_group_tracking()
     from matplotlib.figure import Figure

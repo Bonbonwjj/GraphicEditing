@@ -38,7 +38,9 @@ LOCK_GUARD = threading.Lock()
 
 def lock(key):
     with LOCK_GUARD:
-        return LOCKS.setdefault(str(key), threading.RLock())
+        from shared_workspace import shared_lock_path,SharedFileLock
+        path=shared_lock_path(key)
+        return LOCKS.setdefault(str(key),SharedFileLock(path) if path else threading.RLock())
 
 
 def uid(prefix):
@@ -57,7 +59,18 @@ def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8', newline="\n")
-    temporary.replace(path)
+    for attempt in range(6):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as error:
+            # Windows readers/indexers can briefly deny replacement while
+            # polling progress. Retry the atomic swap, never truncate the live file.
+            if os.name != 'nt' or getattr(error,'winerror',None) not in (5,32,33) or attempt == 5:
+                try: temporary.unlink(missing_ok=True)
+                except OSError: pass
+                raise
+            time.sleep(.01 * 2**attempt)
 
 
 MAX_PROMPT_CSV_CHARS = 40_000
@@ -748,7 +761,7 @@ class ChatHarness:
                                     draft=self.build_draft(session,record,turn,parent,context,repaired)
                                 else:
                                     draft['repair_result']={k:repaired.get(k) for k in ('status','reason','question')}
-                                    draft['reason']=repaired.get('reason') or draft.get('reason')
+                                    draft['reason']=draft.get('reason') or repaired.get('reason')
                                     break
                             except Exception as error:
                                 draft['warnings'].append('自动修复未完成：'+str(error))
@@ -771,6 +784,7 @@ class ChatHarness:
                 if attempt_budget.get('validation_diagnostics'):
                     turn.setdefault('_diagnostics',{})[record['chart_id']]=attempt_budget['validation_diagnostics']
                 result['model_attempts']=attempt_budget['used']
+                if 'model_seconds' in attempt_budget: result['model_seconds']=round(attempt_budget['model_seconds'],3)
                 turn['results'].append(result);session.pop('progress',None);self.save(session)
             session['status']='open';session['completed_at']=time.time();session.pop('progress',None);self.save(session)
             return self.public(session)
@@ -865,6 +879,19 @@ class ChatHarness:
         output.mkdir(parents=True)
         code={f['path']:f['content'] for f in response['proposed_files']}
         baseline={f['path']:f['content'] for f in context['source_files'] if f['writable']}
+        from chart_transform import requested_distribution, requested_scatter, requested_line
+        message = context.get('user_message', '')
+        if requested_distribution(message) or requested_scatter(message) or requested_line(message):
+            from interactive_style import prepare_conversion_source
+            labels = (context.get('selected_panel') or {}).get('axis_labels')
+            # Explicit numeric range requests retain the model's requested limits.
+            import re
+            explicit_range = bool(re.search(r'(?:范围|上限|下限|lim|range).{0,24}[-+]?\d', message, re.I))
+            if not explicit_range:
+                for path in code:
+                    code[path] = prepare_conversion_source(code[path], baseline.get(path, ''), labels, requested_distribution(message))
+                response = {**response, 'proposed_files': [
+                    {**item, 'content': code[item['path']]} for item in response['proposed_files']]}
         draft={**record,'id':did,'turn_id':turn['id'],'base_revision':context['base_revision'],
                'selected_panel':context.get('selected_panel'),
                'parent_draft_id':context['parent_draft_id'],'code':code,'summary':response.get('summary') or '候选修改',
@@ -873,7 +900,9 @@ class ChatHarness:
         atomic_json(output/'proposal.json',response)
         try:
             render=self.renderer or render_candidate
+            render_started=time.monotonic()
             report=render(self.host.project_path(session['project']),context['allowed_write_paths'][0],code,output,baseline_files=baseline)
+            report['validation_seconds']=round(time.monotonic()-render_started,3)
             draft.update({k:v for k,v in report.items() if k not in ('status',)})
             draft['warnings']=[*response.get('warnings',[]),*report.get('warnings',[])]
             if context.get('selected_panel'):
@@ -1233,12 +1262,12 @@ class ChatHarness:
             added_ids.append(revision)
             image=RenderedImage(Path(draft['image_path']).read_bytes());image.naming=draft.get('naming');image.render_report=draft
             temporary=f.with_suffix('.tmp');temporary.write_text(source,encoding='utf-8', newline="\n");temporary.replace(f)
+            (history_dir/(revision+'.py')).write_text(source,encoding='utf-8', newline="\n")
             self.host.save_preview(p,chart,source,image)
             self.host.snapshot_image(p,chart,revision,source,image)
             history.append({'id':revision,'time':now,'note':str(draft['summary'])[:300],'draft_id':draft['id'],'author':self.host.SYNC.config().get('name','本地协作者')})
-            keep={history[0]['id'],history[-2]['id']}
-            for item in history:
-                if item['id'] not in keep:(history_dir/(item['id']+'.py')).unlink(missing_ok=True)
+            # Preserve the initial, previous, current and intermediate source
+            # snapshots. Only the explicit finalize action clears history.
             self.host.write_history(p,chart,history)
         except Exception:
             patterns=[(history_dir,ident+'.*') for ident in added_ids]+[(history_dir,chart+'.json'),(p/'previews',chart+'.*'),(p/'chart_metadata',chart+'.*')]

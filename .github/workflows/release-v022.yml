@@ -1,8 +1,5 @@
 name: Release v0.2.2 Windows
 on:
-  push:
-    branches: [lc]
-    paths: [app_version.py, .github/workflows/release-v022.yml]
   workflow_dispatch:
 permissions:
   contents: write

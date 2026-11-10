@@ -84,10 +84,15 @@ def _verify_points(context, report, target):
     if not before or not after or report.get('unsupported_artists'):
         return stop('缺少完整绘图元素记录或含不支持的元素，不能自动放行图型转换。', 'unverified')
     data = report.get('data_report') or {}
-    if data.get('status') in ('fail', 'changed', 'conflict') or data.get('axes_changes'):
+    ranges_only = all(isinstance(change.get('before'), dict) and isinstance(change.get('after'), dict)
+                      and {k: v for k, v in change['before'].items() if k not in ('xlim', 'ylim')}
+                      == {k: v for k, v in change['after'].items() if k not in ('xlim', 'ylim')}
+                      for change in data.get('axes_changes', []))
+    if data.get('status') in ('fail', 'changed', 'conflict') or not ranges_only:
         return stop('图型转换同时改变了坐标范围、轴尺度或数据，未放行。')
     def annotations(signature):
-        return sorted((t['key'], t['text']) for t in (signature or {}).get('texts', []))
+        return sorted((t['key'], t['text']) for t in (signature or {}).get('texts', [])
+                      if not re.search(r'\.[xy](?:tick_|offset)', t['key']))
     if annotations(report.get('baseline_layout_signature')) != annotations(report.get('layout_signature')):
         return stop('图型转换改变了标题、轴标签、组名或标注，请保留原有科学含义。')
     remaining = list(after)
@@ -229,7 +234,9 @@ def _verify_recorded_distributions(context,report,kind):
     selected=(context.get('selected_panel') or {}).get('axis_labels')
     eligible={i for i,axis in enumerate(before_axes) if not selected or axis.get('axis_label') in selected}
     old_calls=report.get('baseline_distribution_inputs',[]);new_calls=report.get('distribution_inputs',[])
-    converted={call['axis'] for call in old_calls if call['kind']==source_kind and call.get('axis') in eligible}
+    target_axes={call.get('axis') for call in new_calls if call.get('kind')==kind}
+    converted={call['axis'] for call in old_calls if call['kind']==source_kind
+               and call.get('axis') in eligible & target_axes}
     if not converted:return stop('目标子图未记录可转换的原始逐样本分布输入。','unverified')
     for i,(a,b) in enumerate(zip(before_axes,after_axes)):
         if a.get('axis_label')!=b.get('axis_label') or a.get('labels')!=b.get('labels'):

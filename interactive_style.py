@@ -21,20 +21,24 @@ def _copy_legend_handle_style(source, proxy):
             except (TypeError, ValueError): pass
 
 
-def _sync_legend_handles(legend, sources, labels=None):
+def _sync_legend_handles(legend, sources, labels=None, fallback_order=True):
     """Synchronize proxies without confusing duplicate legend labels."""
     proxies=list(legend.legend_handles if hasattr(legend,'legend_handles') else getattr(legend,'legendHandles',[]))
     if labels is None:pairs=zip(sources,proxies)
     else:
         positions={}
-        for index,text in enumerate(legend.get_texts()):positions.setdefault(text.get_text(),[]).append(index)
+        for index,text in enumerate(legend.get_texts()):
+            original = proxies[index].get_label() if not fallback_order and index<len(proxies) else text.get_text()
+            positions.setdefault(getattr(text,'_plot_forge_source_label',original),[]).append(index)
         matched=[]
         for source,label in zip(sources,labels):
             choices=positions.get(label,[])
             if choices:
                 index=choices.pop(0)
-                if index<len(proxies):matched.append((source,proxies[index]))
-        pairs=matched if matched else zip(sources,proxies)
+                if index<len(proxies):
+                    legend.get_texts()[index]._plot_forge_source_label=label
+                    matched.append((source,proxies[index]))
+        pairs=matched if matched or not fallback_order else zip(sources,proxies)
     for source,proxy in pairs:_copy_legend_handle_style(source,proxy)
 
 
@@ -45,15 +49,29 @@ def _sync_all_legend_handles(figure):
         if legend is not None:
             sources,labels=axis.get_legend_handles_labels()
             _sync_legend_handles(legend,sources,labels)
-    sources=[]
+    sources=[];labels=[]
     for axis in figure.axes:
-        handles,_labels=axis.get_legend_handles_labels();sources.extend(handles)
-    for legend in figure.legends:_sync_legend_handles(legend,sources)
+        handles,names=axis.get_legend_handles_labels();sources.extend(handles);labels.extend(names)
+    for legend in figure.legends:_sync_legend_handles(legend,sources,labels,fallback_order=False)
 
 
 def validate_style(value):
     if not isinstance(value, dict):
         raise ValueError('交互样式必须是对象')
+    from plot_modes import validate_modes, validate_palettes
+    plot_palettes = validate_palettes(value.get('plot_mode_palettes', {}))
+    plot_modes = validate_modes(value.get('plot_modes', {}))
+    auto_range = value.get('auto_range')
+    if auto_range is not None:
+        if not isinstance(auto_range, dict) or set(auto_range) - {'axis_labels', 'inherited_limits', 'target_kind'}:
+            raise ValueError('Invalid automatic range policy')
+        if auto_range.get('target_kind') not in (None, 'boxplot', 'violinplot'):
+            raise ValueError('Invalid automatic range chart kind')
+        labels = auto_range.get('axis_labels')
+        if labels is not None and (not isinstance(labels, list) or any(not isinstance(v, str) for v in labels)):
+            raise ValueError('Invalid automatic range axes')
+        from component_editor import validate_components
+        validate_components(auto_range.get('inherited_limits', {}))
     width = value.get('border_width', 1.0)
     border_color = value.get('border_color', '#333333')
     location = value.get('legend_location', 'best')
@@ -146,7 +164,7 @@ def validate_style(value):
     components=validate_components(value.get('component_styles',{}))
     from drawing_items import validate_items
     added_items=validate_items(value.get('added_items',{}))
-    normalized = {'added_items':added_items,'component_styles':components,'border_width':float(width),'border_color':border_color,
+    normalized = {'plot_mode_palettes':plot_palettes,'plot_modes':plot_modes,'auto_range':auto_range,'added_items':added_items,'component_styles':components,'border_width':float(width),'border_color':border_color,
             'legend_location':location,'legend_names':names,
             'line_width':None if line_width is None else float(line_width),
             'line_color':line_color or None,
@@ -160,6 +178,12 @@ def validate_style(value):
 
 def apply_interactive_style(figure, style):
     style = validate_style(style)
+    if style.get('plot_modes'):
+        from plot_modes import apply_modes
+        apply_modes(figure, style['plot_modes'], style.get('plot_mode_palettes'))
+    if style.get('auto_range') is not None:
+        figure._conversion_range_style = style
+        style = apply_conversion_ranges(figure, style)
     if style.get('added_items'):
         from drawing_items import apply_items
         apply_items(figure,style['added_items'])
@@ -228,10 +252,10 @@ def apply_interactive_style(figure, style):
 
     # Shared paper-figure legends created by fig.legend() are not Axes-owned.
     for legend in list(figure.legends):
-        sources=[]
+        sources=[];labels=[]
         for axis in figure.axes:
-            handles,_=axis.get_legend_handles_labels();sources.extend(handles)
-        _sync_legend_handles(legend,sources)
+            handles,names=axis.get_legend_handles_labels();sources.extend(handles);labels.extend(names)
+        _sync_legend_handles(legend,sources,labels,fallback_order=False)
         if style.get('legend_visible') is False:legend.remove();continue
         if 'legend_names' in style:
             for text in legend.get_texts():text.set_text(style['legend_names'].get(text.get_text(),text.get_text()))
@@ -280,6 +304,76 @@ def apply_interactive_style(figure, style):
     # copies of their handles, so a final synchronization is required for
     # direct component edits (including linked center-line/uncertainty bands).
     _sync_all_legend_handles(figure)
+
+
+def apply_conversion_ranges(figure, style):
+    """Autoscale converted panels while letting later manual ranges take priority."""
+    from component_editor import lock_range_layout
+    from matplotlib.ticker import FixedLocator, MaxNLocator, LogLocator, AutoMinorLocator, NullLocator
+    policy = style['auto_range']
+    labels = policy.get('axis_labels')
+    inherited = policy.get('inherited_limits', {})
+    components = {key: dict(spec) for key, spec in style.get('component_styles', {}).items()}
+    kind = policy.get('target_kind')
+    target_type = {'violinplot': 'violin_statistics', 'boxplot': 'box_statistics'}.get(kind)
+    targets = [axis for axis in figure.axes if axis.name == 'rectilinear'
+               and (labels is None or axis.get_label() in labels)
+               and (target_type is None or any(
+                   getattr(artist, '_chat_semantic_data', {}).get('type') == target_type
+                   for artist in [*axis.lines, *axis.patches, *axis.collections]))]
+    if not targets:
+        return style
+    lock_range_layout(figure)
+    for axis in targets:
+        key = f'axes_{figure.axes.index(axis)}'
+        spec = components.get(key, {})
+        position = axis.get_position().frozen()
+        axis.set_box_aspect(None)
+        axis.set_aspect('auto')
+        axis.set_position(position)
+        # dataLim already includes collections, error bars and distribution
+        # bodies. relim() would discard scatter/collection bounds.
+        axis.autoscale(enable=True, axis='both')
+        for dimension, sides in (('x', ('bottom', 'top')), ('y', ('left', 'right'))):
+            field = dimension + 'lim'
+            if field in spec and spec[field] == inherited.get(key, {}).get(field):
+                spec.pop(field)
+            obj = axis.xaxis if dimension == 'x' else axis.yaxis
+            log = getattr(axis, 'get_' + dimension + 'scale')() == 'log'
+            labels = [text.get_text().strip() for text in obj.get_ticklabels()]
+            try:
+                for label in labels:
+                    if label: float(label.replace('−', '-'))
+                numeric = True
+            except ValueError:
+                numeric = False
+            if isinstance(obj.get_major_locator(), FixedLocator) and (obj.get_converter() if hasattr(obj, 'get_converter') else obj.converter) is None and numeric:
+                obj.set_major_locator(LogLocator() if log else MaxNLocator(nbins=5))
+            if isinstance(obj.get_minor_locator(), FixedLocator):
+                obj.set_minor_locator(NullLocator() if log else AutoMinorLocator())
+            if field in spec:
+                getattr(axis, 'set_' + field)(spec[field])
+            bounds = getattr(axis, 'get_' + field)()
+            for side in sides:
+                axis.spines[side].set_bounds(*sorted(bounds))
+    return {**style, 'component_styles': components}
+
+
+def finalize_conversion_ranges(figure):
+    style = getattr(figure, '_conversion_range_style', None)
+    if style is not None:
+        apply_conversion_ranges(figure, style)
+
+
+def prepare_conversion_source(source, baseline, axis_labels=None, target_kind=None):
+    """Persist conversion range behavior in candidate and applied chart code."""
+    old_style = read_style(baseline)
+    style = read_style(source)
+    inherited = {key: {field: spec[field] for field in ('xlim', 'ylim') if field in spec}
+                 for key, spec in old_style.get('component_styles', {}).items()
+                 if re.fullmatch(r'axes_\d+', key)}
+    style['auto_range'] = {'axis_labels': axis_labels, 'inherited_limits': inherited, 'target_kind': target_kind}
+    return upsert_style(source, style)
 
 
 def style_block(style):

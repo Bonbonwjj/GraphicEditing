@@ -18,6 +18,7 @@ INTERACTIVE_SEED_OUTPUT = None
 INTERACTIVE_SEED_HASHES = {}
 INTERACTIVE_SEED_REUSED = False
 INTERACTIVE_SEED_PREPARE = None
+INTERACTIVE_PREVIEW_DPI = None
 
 
 def _capture_interactive_seed(figure_id, figure, args, kwargs):
@@ -59,6 +60,8 @@ def _replay_interactive_seed(figure_id, customize):
     matplotlib.rcParams.update(payload.get('rc_params',{}))
     if 'numpy_random_state' in payload: np.random.set_state(payload['numpy_random_state'])
     if 'random_state' in payload: random.setstate(payload['random_state'])
+    if INTERACTIVE_PREVIEW_DPI:
+        figure.set_dpi(min(figure.dpi, INTERACTIVE_PREVIEW_DPI))
     from matplotlib.text import Text
     for text in figure.findobj(match=Text):
         props=text.get_fontproperties();file=props.get_file()
@@ -108,11 +111,18 @@ def _compose_native_results(figure, settings):
     import numpy as np
     from PIL import Image
     root=Path(os.environ['CHART_OUTPUT']).parent/'native-work/fig1'
+    scale = figure.dpi / settings.get('source_dpi', 600)
     with Image.open(root/settings['approved_top']) as image:
-        top=np.asarray(image.convert('RGB')).copy()
+        image = image.convert('RGB')
+        if scale != 1:
+            image = image.resize((round(image.width*scale), round(image.height*scale)),
+                                 Image.Resampling.LANCZOS)
+        top=np.asarray(image).copy()
     width, old_height=figure.get_size_inches()*figure.dpi
-    bottom_height=round(old_height)-settings['cut_px']
-    if bottom_height <= 0 or int(width) != top.shape[1]:
+    bottom_height=round(old_height)-round(settings['cut_px']*scale)
+    # Authored millimetres produce fractional pixel widths. PNG dimensions
+    # are integers, so a sub-pixel difference is expected at the source DPI.
+    if bottom_height <= 0 or abs(width - top.shape[1]) > 1:
         raise ValueError('Fig.1 native crop boundary differs from its approved source')
     new_height=bottom_height+top.shape[0]
     axes=[]
@@ -232,6 +242,8 @@ def render_native(figure_id, customize, produce):
             _compose_native_results(figure,settings)
         _capture_interactive_seed(figure_id,figure,args,kwargs)
         customize(figure)
+        from interactive_style import finalize_conversion_ranges
+        finalize_conversion_ranges(figure)
         # Original target saves do not crop. Preserve their exact DPI/size/style.
         SAVE_TARGET(figure, output, *args, **kwargs)
         raise FigureComplete()

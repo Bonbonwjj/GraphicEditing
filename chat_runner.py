@@ -278,7 +278,7 @@ def _one_render(project, entry, files, directory, strict_io=False, preview_dpi=N
     package_root = work / "packages"
     for package in (package_root / "projects", snapshot):
         (package / "__init__.py").touch()
-    for trusted in ("studio_style.py", "interactive_style.py", "component_editor.py", "component_groups.py", "point_components.py", "drawing_items.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "native_plot_runtime.py", "universal_plot_runtime.py"):
+    for trusted in ("studio_style.py", "plot_modes.py", "interactive_style.py", "component_editor.py", "component_groups.py", "component_links.py", "subplot_layout.py", "point_components.py", "drawing_items.py", "chart_naming.py", "font_policy.py", "chart_transform.py", "native_plot_runtime.py", "universal_plot_runtime.py"):
         shutil.copyfile(ROOT / trusted, package_root / trusted)
     if interactive_seed is not None or capture_interactive_seed:
         import cloudpickle
@@ -387,7 +387,10 @@ def _one_render(project, entry, files, directory, strict_io=False, preview_dpi=N
                         pass
                     process.kill()
                 elif os.name == "nt":
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10)
+                    # This is our own Python worker; its audit hook forbids
+                    # spawning children. Kill it directly instead of waiting
+                    # for taskkill's process-tree scan (or a denied command).
+                    process.kill()
                 else:
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -523,16 +526,43 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
         temp = Path(temporary)
         native=(project/'native-project.json').is_file()
         universal=(project/'universal-project.json').is_file()
-        try:preview_dpi=int(os.environ.get('PLOT_FORGE_CHAT_PREVIEW_DPI','200'))
-        except ValueError:preview_dpi=200
+        try:preview_dpi=int(os.environ.get('PLOT_FORGE_CHAT_PREVIEW_DPI','150'))
+        except ValueError:preview_dpi=150
         preview_dpi=max(72,min(600,preview_dpi)) if native or universal else None
         def render_one(overrides,directory):
             if preview_dpi is None:return _one_render(project,entry,overrides,directory)
             return _one_render(project,entry,overrides,directory,preview_dpi=preview_dpi)
-        # Separate snapshots, workers and timeouts; never skip either validation render.
+        cached_baseline = None
+        baseline_key = None
+        replay_compatible = False
+        if native:
+            from chat_render_cache import identity, peek, remember, baseline as render_baseline, native_replay_compatible
+            baseline_key = identity(project, entry, baseline_files or {}, preview_dpi)
+            cached_baseline = peek(baseline_key)
+            original=(baseline_files or {}).get(entry)
+            if original is None: original=(project/entry).read_text(encoding='utf-8')
+            replay_compatible=(set(files).issubset({entry}) and set(baseline_files or {}).issubset({entry})
+                               and native_replay_compatible(original, files.get(entry, original)))
+        def render_before():
+            if baseline_key is None: return render_one(baseline_files or {}, temp/'baseline')
+            return render_baseline(project,entry,baseline_files or {},temp/'baseline',preview_dpi,_one_render,key=baseline_key)
+        def render_after():
+            if replay_compatible:
+                if cached_baseline and cached_baseline.get('interactive_seed_bytes'):
+                    try:
+                        return _one_render(project,entry,files,temp/'candidate',preview_dpi=preview_dpi,
+                                           interactive_seed=cached_baseline['interactive_seed_bytes'])
+                    except CandidateRenderError as error:
+                        if error.code == 'scope_rejected': raise
+                        # An incompatible/custom artist retains the full-render fallback.
+                return _one_render(project,entry,files,temp/'candidate-full',preview_dpi=preview_dpi,
+                                   capture_interactive_seed=True)
+            return render_one(files,temp/'candidate')
+        # A cached baseline already has a full data/font/layout audit. Every
+        # candidate gets a fresh isolated render and the complete comparison.
         with ThreadPoolExecutor(max_workers=2) as workers:
-            before = workers.submit(copy_context().run, render_one, baseline_files or {}, temp / "baseline")
-            after = workers.submit(copy_context().run, render_one, files, temp / "candidate")
+            before = workers.submit(copy_context().run, render_before)
+            after = workers.submit(copy_context().run, render_after)
             candidate = after.result()
             baseline_error = None
             try:
@@ -541,6 +571,16 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                 if exc.code=='scope_rejected':raise
                 baseline_error=str(exc)
                 baseline={'layout':{'status':'unverified','issues':[]}}
+        if baseline_key is not None and identity(project,entry,baseline_files or {},preview_dpi) != baseline_key:
+            raise CandidateRenderError('校验期间绘图依赖发生变化，请重试', 'revision_conflict')
+        if replay_compatible:
+            # The next chat turn normally uses this candidate as its parent.
+            # Preserve its full audit and pristine pre-customize seed as well.
+            if candidate.get('interactive_seed_reused') and cached_baseline:
+                candidate['interactive_seed_bytes']=cached_baseline.get('interactive_seed_bytes')
+            remember(identity(project,entry,{**(baseline_files or {}),**files},preview_dpi),candidate)
+        candidate.pop('interactive_seed_bytes', None)
+        baseline.pop('interactive_seed_bytes', None)
         output.mkdir(parents=True, exist_ok=True)
         target = output / "candidate.png"
         if target.exists():
@@ -582,6 +622,7 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "visual_change": visual_change,
                   "axis_details": candidate.get("axis_details"), "baseline_axis_details": baseline.get("axis_details"),
                   "axes": candidate.get("axes", []),
+                  "plot_mode_axes": candidate.get("plot_mode_axes", []),
                   "component_groups": candidate.get("component_groups", []),
                   "point_targets": candidate.get("point_targets", []),
                   "naming": candidate["naming"], "render_size_px": candidate.get("render_size_px"),
@@ -596,6 +637,8 @@ def render_candidate(project_path, chart_path_relative, files, output_dir, basel
                   "font_audit": candidate.get("font_audit"),
                   "baseline_font_audit": baseline.get("font_audit"),
                   "render_timings": candidate.get("render_timings"),
+                  "baseline_cache_hit": cached_baseline is not None,
+                  "candidate_seed_reused": candidate.get('interactive_seed_reused', False),
                   "baseline_render_timings": baseline.get("render_timings"),
                   "render_environment": candidate.get('render_environment'),
                   "warnings": [*_runtime_warnings(candidate.get("stderr")),*(candidate.get('render_environment') or {}).get('warnings',[])],
@@ -658,8 +701,22 @@ def _image_array_description(image, prime=False):
 
 
 def _prepare_interactive_seed(figure):
+    for image in figure.images:
+        image._interactive_source_dpi = figure.dpi
     for axis in figure.axes:
         for image in axis.images: _image_array_description(image,prime=True)
+
+
+def _preview_figure_image(image, renderer, magnification=1.0, unsampled=False):
+    """Scale pixel-anchored figure rasters without altering the frozen pixels."""
+    from matplotlib.transforms import Bbox
+    figure = image.get_figure(root=True)
+    scale = renderer.dpi/image._interactive_source_dpi
+    height, width = image.get_array().shape[:2]
+    bounds = Bbox([[image.ox*scale,image.oy*scale],[(image.ox+width)*scale,(image.oy+height)*scale]])
+    clip = Bbox([[0,0],figure.get_size_inches()*renderer.dpi])
+    return image._make_image(image.get_array(),bounds,bounds,clip,magnification=magnification,
+                             unsampled=unsampled,round_to_pixel_border=False)
 
 
 def _distribution_values(obj, dimension):
@@ -799,7 +856,7 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         style = {}
         if hasattr(obj, "_chat_semantic_data"):
             style["display_geometry"] = geometry
-        for prop in ("color", "facecolor", "edgecolor", "linewidth", "markersize"):
+        for prop in ("color", "facecolor", "edgecolor", "linewidth", "markersize", "marker", "linestyle"):
             getter = getattr(obj, "get_" + prop, None)
             if getter is not None:
                 value = getter()
@@ -991,8 +1048,12 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         region = Bbox.from_bounds(image.ox,image.oy,values.shape[1],values.shape[0])
         if image.get_visible() and outside(region,canvas):
             issue('image_clipping',['figure.image_'+str(ii)],'Native raster panel exceeds figure bounds')
+    from subplot_layout import panel_text_links
+    panel_links=panel_text_links(fig)
     for ti, text in enumerate(fig.texts):
         collect_text(text, "figure.text_" + str(ti), "figure", None)
+        if texts and texts[-1]['key']=="figure.text_"+str(ti):
+            texts[-1]['subplot_key']=panel_links.get(texts[-1]['key'])
     for li, legend in enumerate(fig.legends):
         if not legend.get_visible():
             continue
@@ -1095,14 +1156,18 @@ def _capture(fig, renderer, panel_gap_multiple=2.0):
         limitations.append(unsupported[-1])
     from component_groups import group_report
     grouped_components=group_report(fig,records)
+    from component_links import report_links
     from point_components import targets as point_targets
-    return {"point_targets":point_targets(fig,records),"component_groups":grouped_components,"artists": records, "unsupported_artists": unsupported, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
+    points=point_targets(fig,records)
+    report_links(fig, records+points, grouped_components)
+    from plot_modes import capabilities
+    return {"plot_mode_axes":capabilities(fig), "point_targets":points,"component_groups":grouped_components,"artists": records, "unsupported_artists": unsupported, "axes": axes_info, "axis_details": axis_details, "naming": figure_naming(fig),
             "distribution_inputs": distribution_inputs,
             "normalization_report": getattr(fig, "_normalization_report", None),
             "render_size_px": [round(canvas.width), round(canvas.height)],
             "layout_signature": {"size_inches": list(map(float, fig.get_size_inches())), "dpi": float(fig.dpi),
                                  "axes": axes_layout,
-                                 "texts": [{"key": t["key"], "text": t["text"], "fontsize": t["fontsize"], "added_id":t.get("added_id"),
+                                 "texts": [{"key": t["key"], "text": t["text"], "fontsize": t["fontsize"], "added_id":t.get("added_id"), "subplot_key":t.get('subplot_key'),
                                             "bbox": [round(float(v), 4) for v in t["box"].extents]} for t in texts],
                                  "legends": [{"key": key, "bbox": list(map(float, box.extents))} for key, box, _ in legend_regions]},
             "layout": {"status": "conflict" if issues else "unverified" if unsupported else "pass",
@@ -1167,6 +1232,13 @@ def _worker_main(config_path):
                 return None
             return original_image_draw(image, renderer)
         _ImageBase.draw = preview_image_draw
+        from matplotlib.image import FigureImage
+        original_make_image = FigureImage.make_image
+        def preview_make_image(image, renderer, magnification=1.0, unsampled=False):
+            if hasattr(image, '_interactive_source_dpi'):
+                return _preview_figure_image(image,renderer,magnification,unsampled)
+            return original_make_image(image,renderer,magnification,unsampled)
+        FigureImage.make_image = preview_make_image
     else:
         preview_image_state = None
     setup_finished = time.monotonic()
@@ -1201,7 +1273,8 @@ def _worker_main(config_path):
                 if config.get('lightweight_preview'):
                     from chart_naming import figure_naming
                     canvas=event.renderer
-                    captured_figure={'naming':figure_naming(fig),'render_size_px':[round(canvas.width),round(canvas.height)],
+                    from plot_modes import capabilities
+                    captured_figure={'plot_mode_axes':capabilities(fig),'naming':figure_naming(fig),'render_size_px':[round(canvas.width),round(canvas.height)],
                                      'layout':{'status':'unverified','issues':[],'limitations':['lightweight interactive preview']},
                                      'artists':[],'axes':[],'component_groups':[],'point_targets':[]}
                 else:
@@ -1245,6 +1318,7 @@ def _worker_main(config_path):
         native_plot_runtime.INTERACTIVE_SEED_OUTPUT=config.get('interactive_seed_output')
         native_plot_runtime.INTERACTIVE_SEED_HASHES={k:v for k,v in config['input_hashes'].items() if k!=config['entry']}
         native_plot_runtime.INTERACTIVE_SEED_PREPARE=_prepare_interactive_seed
+        native_plot_runtime.INTERACTIVE_PREVIEW_DPI=config.get('preview_dpi')
         if preview_image_state is None:
             native_plot_runtime.SAVE_INTERMEDIATE = original
         else:
@@ -1418,15 +1492,33 @@ def _install_stat_capture(axes_type):
                 dataset = options[list(signature.parameters)[1]]
                 import matplotlib
                 dimension = 0 if options.get('orientation') == 'horizontal' or options.get('vert') is False else 1
-                groups = [sample_signature(group) for group in _reshape_2D(dataset, 'dataset')]
+                observations = [np.asarray(group, dtype=float).copy() for group in _reshape_2D(dataset, 'dataset')]
+                groups = [sample_signature(group) for group in observations]
                 record = {'kind': kind, 'dimension': dimension, 'groups': groups,
                           'positions':np.asarray(options.get('positions') if options.get('positions') is not None
                                                  else np.arange(1,len(groups)+1),dtype=float).tolist(),
                           'showfliers': options.get('showfliers', True),
                           'whis': (options.get('whis') if options.get('whis') is not None else matplotlib.rcParams['boxplot.whiskers'])}
                 result = original(self, *args, **kwargs)
+                bodies = result.get('boxes' if kind == 'boxplot' else 'bodies', [])
+                for position, body in zip(record['positions'], bodies):
+                    body._plot_mode_group_position = position
+                if kind == 'boxplot':
+                    for component in ('boxes', 'medians', 'whiskers', 'caps', 'fliers'):
+                        stride = 2 if component in ('whiskers', 'caps') else 1
+                        for index, artist in enumerate(result[component]):
+                            if index//stride < len(record['positions']):
+                                artist._plot_mode_group_position = record['positions'][index//stride]
+                                artist._plot_mode_stat_role = component
+                elif 'cmedians' in result:
+                    result['cmedians']._plot_mode_group_positions = record['positions']
+                    result['cmedians']._plot_mode_stat_role = 'medians'
                 if not hasattr(self, '_chat_distribution_inputs'): self._chat_distribution_inputs = []
                 self._chat_distribution_inputs.append(record)
+                if not getattr(self, '_plot_mode_drawing', False):
+                    if not hasattr(self, '_plot_mode_samples'): self._plot_mode_samples = []
+                    self._plot_mode_samples.append({'kind': kind, 'dimension': dimension,
+                                                    'positions': record['positions'], 'values': observations})
                 return result
             observed._chat_original = original
             return observed

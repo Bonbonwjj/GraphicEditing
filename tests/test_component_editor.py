@@ -121,6 +121,38 @@ fig.savefig(os.environ['CHART_OUTPUT'])
             after = line.get_transform().transform(line.get_xydata())
             np.testing.assert_allclose(after[1]-after[0], (points[1]-points[0])*.5)
 
+    def test_range_edit_keeps_frames_and_remaps_data_on_draw_and_export(self):
+        import io
+        for layout in (None, 'constrained'):
+            with self.subTest(layout=layout):
+                fig, axes = plt.subplots(1, 2, figsize=(8, 4), layout=layout)
+                try:
+                    axis, neighbor = axes
+                    line, = axis.plot([0, 1], [0, 1])
+                    axis.set(xlim=(0, 1), ylim=(0, 1))
+                    axis.set_aspect('equal')
+                    neighbor.plot([0, 1], [1, 0])
+                    fig.canvas.draw()
+                    frames = [a.bbox.bounds for a in axes]
+                    before = axis.transData.transform((1, 1))
+                    apply_interactive_style(fig, {'component_styles': {
+                        'axes_0': {'xlim': [0, 2], 'ylim': [0, 4]}}})
+                    fig.tight_layout()
+                    fig.canvas.draw()
+                    for a, frame in zip(axes, frames):
+                        np.testing.assert_allclose(a.bbox.bounds, frame)
+                    after = axis.transData.transform((1, 1))
+                    self.assertLess(after[0], before[0])
+                    self.assertLess(after[1], before[1])
+                    np.testing.assert_array_equal(line.get_xydata(), [[0, 0], [1, 1]])
+                    self.assertEqual(axis.get_xlim(), (0, 2))
+                    self.assertEqual(axis.get_ylim(), (0, 4))
+                    fig.savefig(io.BytesIO(), format='png')
+                    for a, frame in zip(axes, frames):
+                        np.testing.assert_allclose(a.bbox.bounds, frame)
+                finally:
+                    plt.close(fig)
+
     def test_invalid_properties_and_log_ranges_are_rejected(self):
         for spec in ({'scale': 0}, {'xlim': [1, 1]}, {'dy': float('nan')}, {'font_family': 1}, {'color': 'red'}):
             with self.assertRaises(ValueError): validate_components({'axes_0': spec})
@@ -128,3 +160,35 @@ fig.savefig(os.environ['CHART_OUTPUT'])
         self.addCleanup(plt.close, fig)
         axis.set_xscale('log')
         with self.assertRaises(ValueError): apply_interactive_style(fig, {'component_styles': {'axes_0': {'xlim': [-1, 2]}}})
+
+
+class RangeEndpointTests(unittest.TestCase):
+    def test_both_endpoints_are_labeled_without_changing_frame(self):
+        import io
+        from matplotlib.ticker import FixedFormatter, FixedLocator
+        for scale, limits in (('linear', (.13, 3.87)), ('linear', (3.87, .13)),
+                              ('linear', (-1.23, 8.76)), ('log', (.3, 73))):
+            with self.subTest(scale=scale, limits=limits):
+                fig, axis = plt.subplots()
+                try:
+                    axis.plot([1, 2], [1, 2]); axis.set_yscale(scale)
+                    if scale == 'linear':
+                        axis.yaxis.set_major_locator(FixedLocator([0, 1, 2]))
+                        axis.yaxis.set_major_formatter(FixedFormatter(['0', '1', '2']))
+                    fig.canvas.draw(); frame = axis.bbox.bounds
+                    for pair in (limits, (limits[0], limits[1]*1.1)):
+                        apply_interactive_style(fig, {'component_styles': {'axes_0': {'ylim': list(pair)}}})
+                        fig.tight_layout(); fig.canvas.draw()
+                        np.testing.assert_allclose(axis.bbox.bounds, frame)
+                        ticks = axis.get_yticks(); labels = axis.get_yticklabels()
+                        for endpoint in pair:
+                            index = np.flatnonzero(np.isclose(ticks, endpoint))[0]
+                            self.assertTrue(labels[index].get_visible())
+                            self.assertTrue(labels[index].get_text().strip())
+                        if scale == 'linear':
+                            np.testing.assert_allclose(np.diff(ticks), np.diff(ticks)[0])
+                        self.assertEqual(axis.get_ylim(), pair)
+                        fig.savefig(io.BytesIO(), format='png')
+                        np.testing.assert_allclose(axis.bbox.bounds, frame)
+                finally:
+                    plt.close(fig)

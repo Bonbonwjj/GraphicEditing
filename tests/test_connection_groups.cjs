@@ -29,3 +29,26 @@ assert.equal(found.length,2);assert(found.every(group=>new Set(group.map(k=>k.sp
 found=groups([dot('collection_0','a',[[10,0],[20,0]]),dot('collection_1','b',[[15,100],[25,100]]),line(0,[[10,0],[15,100]]),line(1,[[20,0],[25,100]])]);
 assert.deepEqual(found,[['axes_0.line_0','axes_0.line_1']]);
 console.log('PASS: linked observation strokes recognized; means, box parts, manual lines and brackets excluded; categories, labels and axes remain separate; horizontal plots supported.');
+
+found=groups([line(0,[[0,10],[100,15]],{connection_members:['axes_0.line_0','axes_0.line_1']}),line(1,[[0,20],[100,25]],{connection_members:['axes_0.line_0','axes_0.line_1']})]);
+assert.deepEqual(found,[['axes_0.line_0','axes_0.line_1']]);
+const updateSource=source.slice(source.indexOf('function updateComponents('),source.indexOf('const openBasicInspector='));
+const point={key:'axes_0.line_0.points_regular',owner_key:'axes_0.line_0',point_role:'regular',style:{fill_color:[1,0,0,.4],edge_color:[0,0,0,.8],linewidth:2}};
+const editContext=vm.createContext({
+  baseInteractiveStyle:{component_styles:{}},componentSelection:new Set(),
+  stylePreviewData:{_rawTargets:[point]},styleSeriesStyles:{'axes_0.line_1':{color:'#aaaaaa',linewidth:1}},
+  connectionGroupForMember:key=>['axes_0.line_0','axes_0.line_1'].includes(key)?{members:['axes_0.line_0','axes_0.line_1']}:null,
+  componentColorHex:color,pointTargetForKey:()=>null,statisticalGroupForMember:()=>null,
+  $:()=>null,selectedTextKey:null,offlineComponentPreview:()=>{},scheduleInteractiveStylePreview:()=>{}
+});
+vm.runInContext(updateSource,editContext);
+for(const [property,value]of [['color','#123456'],['linewidth',3],['linestyle','--'],['alpha',.5]]){
+  editContext.property=property;editContext.value=value;
+  vm.runInContext("updateComponents(property,value,['axes_0.line_0'])",editContext);
+  const styles=editContext.baseInteractiveStyle.component_styles;
+  assert.equal(styles['axes_0.line_0'][property],value);assert.equal(styles['axes_0.line_1'][property],value);
+  assert.equal(styles['axes_0.line_2'],undefined);
+}
+const marker=editContext.baseInteractiveStyle.component_styles[point.key];
+assert.equal(marker.fill_color,'#ff0000');assert.equal(marker.edge_color,'#000000');assert.equal(marker.fill_alpha,.4);assert.equal(marker.edge_alpha,.8);assert.equal(marker.linewidth,2);
+console.log('PASS: reported paired strokes link; editing one updates all family strokes while preserving marker colors, opacity and width.');

@@ -40,8 +40,14 @@ from local_execution import require_trust, trusted
 from chat_runner import isolation_backend
 
 ROOT = Path(__file__).resolve().parent
+from launch import runtime_fingerprint
+# Freeze at import: hashing files on each health request would falsely claim an
+# old in-memory renderer had loaded the newly edited source files.
+SERVER_RUNTIME_FINGERPRINT = runtime_fingerprint(ROOT)
 SYNC = CollaborationSync(ROOT)
-PROJECTS = ROOT / "projects"
+from shared_workspace import projects_path,register_shared_root
+PROJECTS = projects_path(ROOT,SYNC.team_target())
+register_shared_root(PROJECTS if (SYNC.team_target() or {}).get('mode')=='direct' else None)
 STATIC = ROOT / "static"
 STYLE = ROOT / "skills" / "plot-style" / "SKILL.md"
 NORMALIZATION_SKILL = ROOT / "skills" / "chart-normalization" / "SKILL.md"
@@ -125,8 +131,10 @@ def history_view(p, chart):
 
 def write_history(p, chart, entries):
     (p / "history").mkdir(exist_ok=True)
-    (p / "history" / (chart + ".json")).write_text(
-        json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    target=p / "history" / (chart + ".json")
+    temporary=target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
+    temporary.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    temporary.replace(target)
 
 
 def interactive_style_note(before, after):
@@ -219,7 +227,7 @@ def preview_signature(p, source):
     from bundle_bindings import signature as bundle_signature
     bundle_revision=bundle_signature(p)
     if bundle_revision: dependencies.append(('@bundle/source',bundle_revision))
-    for f in (ROOT/'studio_style.py',ROOT/'chart_naming.py',ROOT/'interactive_style.py',ROOT/'component_editor.py',ROOT/'component_groups.py',ROOT/'point_components.py',ROOT/'drawing_items.py',NORMALIZATION_PROFILE):
+    for f in (ROOT/'studio_style.py',ROOT/'plot_modes.py',ROOT/'chart_naming.py',ROOT/'interactive_style.py',ROOT/'component_editor.py',ROOT/'component_groups.py',ROOT/'component_links.py',ROOT/'subplot_layout.py',ROOT/'point_components.py',ROOT/'drawing_items.py',NORMALIZATION_PROFILE):
         dependencies.append(('@platform/'+str(f.relative_to(ROOT)),hashlib.sha256(f.read_bytes()).hexdigest()))
     if native_id:
         for f in (ROOT/'native_plot_runtime.py',ROOT/'chat_runner.py',ROOT/'requirements-native.txt'):
@@ -233,7 +241,7 @@ def preview_signature(p, source):
 def preview_lock(p, chart):
     key = (str(p), chart)
     with PREVIEW_LOCKS_GUARD:
-        return PREVIEW_LOCKS.setdefault(key, threading.RLock())
+        return PREVIEW_LOCKS.setdefault(key, workflow_lock(Path(p)/('.preview-'+chart)))
 
 
 def interaction_payload(report):
@@ -241,11 +249,11 @@ def interaction_payload(report):
     # Candidate reports retain their marks under candidate_artists. They must
     # remain selectable after applying the preview, just like direct renders.
     artists=report.get('artists',report.get('candidate_artists',[]))
-    targets=[{k:item.get(k) for k in ('key','kind','label','style','hit_path_px','group_key','added_id')}
+    targets=[{k:item.get(k) for k in ('key','kind','label','style','hit_path_px','group_key','added_id','connection_members','point_move_members','move_connection_members','point_move_vertices')}
              for item in artists if item.get('hit_path_px')]
     targets.extend(part for group in report.get('component_groups',[]) for part in group.get('part_targets',[]))
     targets.extend(report.get('point_targets',[]))
-    return {'schema_version':4,'point_editing_ready':'point_targets' in report,
+    return {'schema_version':11,'plot_mode_axes':report.get('plot_mode_axes',[]),'point_editing_ready':'point_targets' in report,
             'point_group_editing_ready':'point_targets' in report and all('point_group' in t for t in report['point_targets']),
             'render_size_px':report.get('render_size_px'),
             'targets':targets,
@@ -441,10 +449,17 @@ def render(p, source, suffix=".png", library_path=None, interactive_seed=None, c
 
 
 def git(*args):
+    if not PROJECTS.is_relative_to(ROOT):
+        return subprocess.CompletedProcess(["git",*args],1,"","Shared projects are saved through the shared filesystem, outside the local Git checkout")
     try:
         return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.TimeoutExpired) as error:
         return subprocess.CompletedProcess(["git", *args], 127, "", str(error))
+
+
+def git_project_path(path):
+    # Shared projects live outside the local application Git checkout.
+    return str(Path(path).relative_to(ROOT)) if Path(path).is_relative_to(ROOT) else str(Path(path))
 
 
 def list_projects():
@@ -648,12 +663,14 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/data-sources/"):
             return handle_data_sources(self, path)
         if path == "/api/health" and self.command == "GET":
-            return self.json_response({"app": "plot-forge", "root": str(ROOT), "backend": isolation_backend(),
-                "pid": os.getpid(), "desktop_release": os.environ.get('PLOT_FORGE_DESKTOP_RELEASE')})
+            from app_version import APP_VERSION
+            return self.json_response({"app": "plot-forge", "version":APP_VERSION, "root": str(ROOT), "backend": isolation_backend(),
+                "pid": os.getpid(), "runtime_fingerprint": SERVER_RUNTIME_FINGERPRINT,"projects_root":str(PROJECTS),
+                "desktop_release": os.environ.get('PLOT_FORGE_DESKTOP_RELEASE')})
         if path == "/api/collaboration":
             if self.command == "GET":
                 return self.json_response({**SYNC.status(), "backend": isolation_backend(),
-                    "trusted_projects": [p.name for p in PROJECTS.iterdir() if p.is_dir() and trusted(p)]})
+                    "trusted_projects": [p.name for p in PROJECTS.iterdir() if p.is_dir() and trusted(p)] if PROJECTS.is_dir() else []})
             if self.command == "POST":
                 self.check_local_json()
                 return self.json_response(SYNC.configure(self.body_json()))
@@ -676,7 +693,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
-        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js', '/static/component_editor.js', '/static/subplot_zoom.js', '/static/drawing_items.js'):
+        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js', '/static/component_editor.js', '/static/plot_modes.js', '/static/subplot_zoom.js', '/static/drawing_items.js'):
             return self.bytes_response((STATIC / Path(path).name).read_bytes(),
                 'text/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
@@ -828,11 +845,11 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         if existing:
                             raise ValueError("Use generic updater")
-                        result = import_package(ROOT, str(upload.relative_to(ROOT / "data")), project_id, name)
+                        result = import_package(ROOT, str(upload.relative_to(ROOT / "data")), project_id, name,projects_root=PROJECTS)
                         result["adapter"] = "reproducibility-package"
                     except ValueError as error:
                         if "Project already exists" in str(error): raise
-                        result = import_generic(ROOT, upload, project_id, name, progress=progress)
+                        result = import_generic(ROOT, upload, project_id, name, progress=progress,projects_root=PROJECTS)
                     metadata_file = PROJECTS / project_id / "project.json"
                     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                     metadata.setdefault("created_by", SYNC.config().get("name", "本地协作者"))
@@ -849,8 +866,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.command == "POST" and path == "/api/agent/import":
             body = self.body_json()
-            result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None)
-            git("add", str((PROJECTS / result["project"]).relative_to(ROOT)))
+            result = import_package(ROOT, str(body.get("source", "")), str(body.get("project_id", "")), str(body.get("name", "")) or None,projects_root=PROJECTS)
+            git("add", git_project_path(PROJECTS / result["project"]))
             git("-c", "user.name=Chart Studio Agent", "-c", "user.email=agent-at-localhost", "commit", "-m", "Agent import " + result["project"])
             return self.json_response(result)
         if self.command == "POST" and path == "/api/projects":
@@ -865,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                 directory.mkdir(parents=True, exist_ok=True)
             (p / "project.json").write_text(json.dumps({"name": str(body.get("name", ident))[:80],
                 "description": str(body.get("description", ""))[:300], "created_by": SYNC.config().get("name", "本地协作者")}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-            git("add", str(p.relative_to(ROOT)))
+            git("add", git_project_path(p))
             git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create project {ident}")
             return self.json_response({"project": ident})
         if len(parts) >= 3 and parts[:2] == ["api", "projects"]:
@@ -881,7 +898,7 @@ class Handler(BaseHTTPRequestHandler):
                 row_count = validate_tabular_content(name, content)
                 f = p / "data" / name
                 f.write_text(content, encoding="utf-8", newline="\n")
-                git("add", str(f.relative_to(ROOT)))
+                git("add", git_project_path(f))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Import data {parts[2]}/{name}")
                 return self.json_response({"file": name, "rows": row_count})
             if self.command == "POST" and len(parts) == 4 and parts[3] == "charts":
@@ -899,7 +916,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ax.set(xlabel='X', ylabel='Y', title='New chart')\n"
                     "finish_figure(fig, os.environ['CHART_OUTPUT'])\n")
                 f.write_text(source, encoding="utf-8", newline="\n")
-                git("add", str(f.relative_to(ROOT)))
+                git("add", git_project_path(f))
                 git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost", "commit", "-m", f"Create chart {parts[2]}/{name}")
                 return self.json_response({"chart": name})
             if self.command == "GET" and len(parts) == 4 and parts[3] == "data":
@@ -935,7 +952,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Older applied candidates could contain only labels/axes.
                     # Let the selected-chart preview rebuild that incomplete
                     # cache instead of falsely claiming all marks are ready.
-                    if not payload or not payload.get('axes') or not payload.get('axis_ranges') or not payload.get('point_group_editing_ready'):
+                    if not payload or payload.get('schema_version', 0)<11 or not payload.get('axes') or not payload.get('axis_ranges') or not payload.get('point_group_editing_ready'):
                         return self.json_response({'ready':False})
                     return self.json_response({'ready':True,**payload})
                 if action == 'style-preview' and self.command == 'POST':
@@ -949,13 +966,11 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:interactive_dpi=96
                     interactive_dpi=max(72,min(200,interactive_dpi))
                     if body.get('zoomed'):
-                        try:interactive_dpi=int(os.environ.get('PLOT_FORGE_ZOOM_PREVIEW_DPI','360'))
-                        except ValueError:interactive_dpi=360
-                        interactive_dpi=max(240,min(600,interactive_dpi))
-                    # fig1 composes an approved pixel raster above native axes.
-                    # Replaying that fixed-pixel composite at a lower DPI clips
-                    # the approved top panels, so preserve its authored DPI.
-                    if chart=='fig1':interactive_dpi=None
+                        try:interactive_dpi=int(os.environ.get('PLOT_FORGE_ZOOM_PREVIEW_DPI','160'))
+                        except ValueError:interactive_dpi=160
+                        interactive_dpi=max(96,min(300,interactive_dpi))
+                    if body.get('high_quality'):
+                        interactive_dpi=360
                     lightweight=bool(body.get('lightweight'))
                     image = render_preview(p, chart, current_code, body.get('style'), render, preview_signature,
                                            preview_dpi=interactive_dpi, lightweight=lightweight)
@@ -971,6 +986,7 @@ class Handler(BaseHTTPRequestHandler):
                         'preview_dpi':interactive_dpi,
                         'fast_preview':report.get('interactive_seed_reused',False),
                         'lightweight':bool(lightweight and report.get('interactive_seed_reused')),
+                        'plot_mode_axes':report.get('plot_mode_axes',[]),
                         **payload})
                 if action in ('panel-index', 'panel-source', 'panel-edit', 'panel-mapping'):
                     if self.command == 'POST':
@@ -1075,6 +1091,9 @@ class Handler(BaseHTTPRequestHandler):
                         if not isinstance(new_code, str) or len(new_code) > 100_000:
                             raise ValueError("Invalid source")
                     expected_revision = body.get("base_revision")
+                    from shared_workspace import shared_lock_path
+                    if shared_lock_path(p) is not None and not expected_revision:
+                        raise ValueError('共享图表保存需要当前版本，请重新选择图表后再保存')
                     if expected_revision and expected_revision != source_revision(current_code):
                         raise ValueError("Chart changed since normalization started; refresh before applying")
                     ast.parse(new_code)
@@ -1104,14 +1123,15 @@ class Handler(BaseHTTPRequestHandler):
                                 snapshot_image(p, chart, prior_id, old_code)
                             except ValueError:
                                 pass
-                    f.write_text(new_code, encoding="utf-8", newline="\n")
+                    temporary=f.with_name(f.name+'.'+uuid.uuid4().hex+'.tmp')
+                    temporary.write_text(new_code, encoding="utf-8", newline="\n");temporary.replace(f)
                     save_preview(p, chart, new_code, rendered)
                     snapshot_image(p, chart, revision, new_code, rendered)
-                    history.append({"id": revision, "time": stamp, "note": note})
+                    history.append({"id": revision, "time": stamp, "note": note,"author":SYNC.config().get('name') or socket.gethostname()})
                     # Keep every source snapshot so any visible historical
                     # format can later become the current image and code.
                     write_history(p, chart, history)
-                    git("add", "-A", str(f.relative_to(ROOT)), str((p / "history").relative_to(ROOT)), str((p / "previews").relative_to(ROOT)))
+                    git("add", "-A", git_project_path(f), git_project_path(p / "history"), git_project_path(p / "previews"))
                     commit = git("-c", "user.name=Chart Studio", "-c", "user.email=chart-studio@localhost",
                                  "commit", "-m", f"Update {project}/{chart}: {note[:80]}")
                     return self.json_response({"message": "已保存并记录版本", "revision": revision,

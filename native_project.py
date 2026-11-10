@@ -166,7 +166,7 @@ def prepare(project, source, progress=None, previous_state=None, environment_mod
         cache = project/'.preparation/native-cache'
         cache.mkdir(parents=True, exist_ok=True)
         platform = [prep.sha(prep.ROOT/name) for name in
-                    ('native_plot_runtime.py','interactive_style.py','component_editor.py','component_groups.py','drawing_items.py','chart_naming.py','chat_runner.py','font_policy.py','requirements-native.txt','render_environment.py')]
+                    ('native_plot_runtime.py','interactive_style.py','component_editor.py','component_groups.py','component_links.py','subplot_layout.py','drawing_items.py','chart_naming.py','chat_runner.py','font_policy.py','requirements-native.txt','render_environment.py')]
         try:
             environment = describe(staged,isolation_backend())
         except ValueError as exc:

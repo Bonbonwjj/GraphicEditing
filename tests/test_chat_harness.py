@@ -363,6 +363,41 @@ class HarnessTests(unittest.TestCase):
         self.assertIsNone(self.contexts[-1]['parent_draft_id'])
         self.assertIn('# first',next(f for f in self.contexts[-1]['source_files'] if f['writable'])['content'])
 
+    def test_all_applied_code_versions_and_candidates_remain_until_explicit_finalize(self):
+        sid=self.session['id'];sources=[self.source]
+        def snapshot(project,chart,revision,source,data=None):
+            (project/'history'/(revision+'.png')).write_bytes(data or b'initial-image')
+            return '.png'
+        with patch.object(server,'snapshot_image',side_effect=snapshot):
+            for label in ('first','second','third','fourth'):
+                result=self.turn({'user_message':label})
+                draft=result['drafts'][-1]
+                self.h.draft_action('test',sid,draft['id'],'apply')
+                sources.append((self.project/'charts/b.py').read_text(encoding='utf-8'))
+                history=server.read_history(self.project,'b')
+                self.assertEqual(len(history),len(sources))
+                for entry,source in zip(history,sources):
+                    self.assertEqual((self.project/'history'/(entry['id']+'.py')).read_text(encoding='utf-8'),source)
+                    self.assertTrue((self.project/'history'/(entry['id']+'.png')).is_file())
+        pending=self.turn({'user_message':'unapplied candidate'})
+        session=self.h.load('test',sid)
+        for draft in session['drafts']:
+            self.assertTrue((self.h.path('test',sid).parent/'drafts'/draft['id']/'proposal.json').is_file())
+        before=(self.project/'charts/b.py').read_bytes()
+        image=(self.project/'previews/b.png').read_bytes()
+        other=self.project/'history/other-chart.py';other.write_text('# other chart')
+        self.h.finalize('test','b')
+        self.assertEqual((self.project/'charts/b.py').read_bytes(),before)
+        self.assertEqual((self.project/'previews/b.png').read_bytes(),image)
+        self.assertEqual(server.read_history(self.project,'b'),[])
+        self.assertTrue(other.is_file())
+        for entry in history:
+            self.assertFalse((self.project/'history'/(entry['id']+'.py')).exists())
+            self.assertFalse((self.project/'history'/(entry['id']+'.png')).exists())
+        for draft in session['drafts']:
+            self.assertFalse((self.h.path('test',sid).parent/'drafts'/draft['id']).exists())
+        self.assertEqual(self.h.load('test',sid)['drafts'],[])
+
     def test_dependency_change_warns_and_allows_apply(self):
         a=self.turn({'user_message':'first'});(self.project/'shared_draw.py').write_text('# changed', encoding="utf-8", newline="\n")
         with patch.object(server,'snapshot_image',return_value='.png'):

@@ -89,10 +89,10 @@ def _unique_name(name, used):
     used.add(candidate)
     return candidate
 
-def import_generic(root, upload, project_id, name, progress=None):
+def import_generic(root, upload, project_id, name, progress=None,*,projects_root=None):
     notify = progress or (lambda **fields: None)
     notify(stage='copying', message='正在复制数据并检查代码目录。')
-    target=root/"projects"/project_id; updating=target.exists()
+    target=(Path(projects_root) if projects_root is not None else root/"projects")/project_id; updating=target.exists()
     for d in ("data","charts","lib","outputs","history"): (target/d).mkdir(parents=True,exist_ok=True)
     data_names=[]
     for p in sorted((upload/"csv").rglob("*")):

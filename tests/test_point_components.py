@@ -71,13 +71,13 @@ class PointComponentTests(unittest.TestCase):
         ax.violinplot([[1,2,2,3,3,4,20]],positions=[1]);scatter=ax.scatter([1]*7,[1,2,2,3,3,4,20])
         self.assertEqual(next(p for p in layers(fig) if p['owner'] is scatter and p['point_role']=='outliers')['indices'].tolist(),[6])
 
-    def test_scatter_subset_motion_does_not_move_outlier_or_rewrite_offsets(self):
+    def test_scatter_motion_follows_same_group_outliers_without_rewriting_offsets(self):
         _,points=self.plot();self.fig.canvas.draw();before=np.asarray(points.get_offsets()).copy();key=artist_key(self.fig,points)
         old=targets(self.fig,[]);original=next(p for p in old if p['key']==key+'.points_outliers')['hit_path_px']
         apply_components(self.fig,{key+'.points_regular':{'dx':9,'dy':-3,'marker_shape':'s'}})
         self.fig.canvas.draw();new=targets(self.fig,[])
         np.testing.assert_array_equal(points.get_offsets(),before)
-        np.testing.assert_allclose(next(p for p in new if p['key']==key+'.points_outliers')['hit_path_px'],original)
+        np.testing.assert_allclose(next(p for p in new if p['key']==key+'.points_outliers')['hit_path_px'],np.array(original)+np.array([9,-3])*self.fig.dpi/72)
 
     def test_invalid_marker_is_rejected(self):
         with self.assertRaises(ValueError):validate_components({'axes_0.collection_0.points_regular':{'marker_shape':'eval'}})

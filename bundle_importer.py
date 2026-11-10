@@ -185,6 +185,7 @@ def import_plot_bundle(
     mode: str,
     trusted: bool,
     runtime_source: Path = None,
+    projects_root: Path = None,
 ) -> Dict[str, Any]:
     if not project_id or not project_id.replace("_", "").replace("-", "").isalnum():
         raise ValueError("项目 ID 只能包含字母、数字、_ 或 -")
@@ -195,7 +196,7 @@ def import_plot_bundle(
 
     platform_root = Path(platform_root).resolve()
     source = Path(source).resolve(strict=True)
-    target = platform_root / "projects" / project_id
+    target = (Path(projects_root) if projects_root is not None else platform_root / "projects") / project_id
     if target.exists():
         raise ValueError("Project already exists")
 

@@ -9,7 +9,7 @@ def validate_components(value):
     allowed = {'dx', 'dy', 'scale', 'color', 'fill_color', 'edge_color', 'linewidth',
                'font_size', 'font_family', 'text', 'hidden', 'linestyle', 'alpha', 'fill_alpha', 'edge_alpha', 'xlim', 'ylim', 'width_scale', 'x_scale', 'y_scale', 'marker_size', 'marker_shape', 'x_tick_length', 'y_tick_length', 'x_tick_width', 'y_tick_width'}
     for key, spec in value.items():
-        if not isinstance(key, str) or not re.fullmatch(r'axes_\d+(?:\.(?:(?:box|violin|mean_error|bars|stem|group)_\d+|[xy]axis_text|(?:line_\d+|collection_\d+)(?:\.points_(?:(?:regular|outliers)(?:_g\d+)?|mean_\d+))?|collection_\d+\.segment_\d+|patch_\d+|image_\d+|xlabel|ylabel|title_[012]|annotation_\d+|legend|legend_text_\d+|spine_(?:left|right|top|bottom)|[xy]tick_(?:major|minor)_\d+_[12]|[xy]offset))?', key):
+        if not isinstance(key, str) or not (re.fullmatch(r'figure\.text_\d+',key) or re.fullmatch(r'axes_\d+(?:\.(?:(?:box|violin|mean_error|bars|stem|group)_\d+|[xy]axis_text|(?:line_\d+|collection_\d+)(?:\.points_(?:(?:regular|outliers)(?:_g\d+)?|mean_\d+))?|collection_\d+\.segment_\d+|patch_\d+|image_\d+|xlabel|ylabel|title_[012]|annotation_\d+|legend|legend_text_\d+|spine_(?:left|right|top|bottom)|[xy]tick_(?:major|minor)_\d+_[12]|[xy]offset))?', key)):
             raise ValueError('组件标识无效')
         if not isinstance(spec, dict) or set(spec) - allowed:
             raise ValueError('组件属性无效')
@@ -53,6 +53,9 @@ def validate_components(value):
 
 
 def resolve_component(figure, key):
+    if re.fullmatch(r'figure\.text_\d+', key):
+        index=int(key.rsplit('_',1)[1])
+        return figure.texts[index] if index<len(figure.texts) else None
     axis_key, _, name = key.partition('.')
     index = int(axis_key[5:])
     if index >= len(figure.axes):
@@ -94,29 +97,74 @@ def apply_components(figure, value):
     from matplotlib.text import Text
     from matplotlib.legend import Legend
     from matplotlib.collections import PathCollection
-    from matplotlib.transforms import Affine2D
+    from matplotlib.transforms import Affine2D, ScaledTranslation
     from matplotlib.patches import Patch
     value = validate_components(value)
     point_specs={key:dict(spec) for key,spec in value.items() if '.points_' in key}
     value={key:spec for key,spec in value.items() if '.points_' not in key}
+    from component_links import links, apply_linked_moves, capture_annotation_links
+    linkage = links(figure) if value or point_specs else None
+    from component_links import expand_point_movement
+    moving_connectors=expand_point_movement(figure,value,point_specs,linkage) if linkage else set()
+    if linkage:
+        for family in linkage[3]:
+            members = [item['key'] for item in family]
+            for item in family: item['artist']._component_connection_members = members
+    linked_styles = {key: dict(spec) for key, spec in value.items()} if linkage else None
     install_layout_tracking()
+    moving_axes={key:spec for key,spec in value.items() if re.fullmatch(r'axes_\d+',key) and {'dx','dy'}.intersection(spec)}
+    if moving_axes:
+        lock_range_layout(figure)
+        from subplot_layout import panel_text_links
+        value={key:dict(spec) for key,spec in value.items()}
+        for key,axis_key in panel_text_links(figure).items():
+            if axis_key not in moving_axes: continue
+            spec=value.setdefault(key,{})
+            for field in ('dx','dy'): spec[field]=spec.get(field,0)+moving_axes[axis_key].get(field,0)
+    moving_groups=any(re.search(r'\.(?:box|violin|mean_error|bars|group)_\d+$', key) and {'dx', 'dy'}.intersection(spec) for key, spec in value.items())
+    moving_points=any({'dx','dy'}.intersection(spec) for spec in point_specs.values())
+    if moving_groups or moving_points:
+        lock_range_layout(figure)
+    annotations=capture_annotation_links(figure,linkage[1]) if moving_groups and linkage else []
     # Change limits before constructing tick overrides, because the locator may
     # create a different set of ticks for the new interval.
-    from matplotlib.ticker import FixedLocator, MaxNLocator, LogLocator, AutoMinorLocator, NullLocator
+    from matplotlib.ticker import FixedLocator, FixedFormatter, LinearLocator, ScalarFormatter, FuncFormatter, AutoMinorLocator, NullLocator
+    if any(re.fullmatch(r'axes_\d+', key) and {'xlim', 'ylim'}.intersection(spec)
+           for key, spec in value.items()):
+        lock_range_layout(figure)
     for key,spec in value.items():
         if not re.fullmatch(r'axes_\d+',key): continue
         axis=resolve_component(figure,key)
         if axis is None: continue
+        if {'xlim', 'ylim'}.intersection(spec) and axis.name == 'rectilinear':
+            # A fixed data/box aspect would resize the frame or override limits.
+            position = axis.get_position().frozen()
+            axis.set_box_aspect(None)
+            axis.set_aspect('auto')
+            axis.set_position(position)
         for field in ('xlim','ylim'):
             if field not in spec: continue
             dimension=field[0];axis_obj=axis.xaxis if dimension=='x' else axis.yaxis
             log=getattr(axis,'get_'+dimension+'scale')()=='log'
             if log and min(spec[field])<=0: raise ValueError('对数坐标范围必须大于零')
-            old_locator=axis_obj.get_major_locator()
             count=max(2,min(10,len(axis_obj.get_majorticklocs())-1))
             getattr(axis,'set_'+field)(spec[field])
-            if isinstance(old_locator,FixedLocator):
-                axis_obj.set_major_locator(LogLocator() if log else MaxNLocator(nbins=count,steps=[1,2,2.5,5,10]))
+            # MaxNLocator prefers round numbers and may omit either requested
+            # boundary. Explicit ranges need both endpoints on a fixed frame.
+            if getattr(axis, 'get_'+dimension+'scale')() == 'linear':
+                axis_obj.set_major_locator(LinearLocator(numticks=count+1))
+                if isinstance(axis_obj.get_major_formatter(), FixedFormatter):
+                    axis_obj.set_major_formatter(ScalarFormatter())
+            else:
+                import numpy as np
+                transform = axis_obj.get_transform()
+                bounds = transform.transform(sorted(spec[field]))
+                ticks = transform.inverted().transform(np.linspace(bounds[0], bounds[1], count+1))
+                ticks[0], ticks[-1] = sorted(spec[field])
+                axis_obj.set_major_locator(FixedLocator(ticks))
+                # Log formatters often suppress labels that aren't powers of
+                # the base, including the explicitly requested endpoints.
+                axis_obj.set_major_formatter(FuncFormatter(lambda number, position: f'{number:g}'))
             if isinstance(axis_obj.get_minor_locator(),FixedLocator):
                 axis_obj.set_minor_locator(NullLocator() if log else AutoMinorLocator())
             for name in (('bottom','top') if dimension=='x' else ('left','right')):
@@ -144,19 +192,33 @@ def apply_components(figure, value):
             valid=[p[np.isfinite(p).all(axis=1)] for p in points if len(p)]
             all_points=np.concatenate(valid) if valid else np.zeros((1,2))
             center=(all_points.min(axis=0)+all_points.max(axis=0))/2/figure.dpi
+            curve_band = ('.group_' in key and
+                figure.axes[int(key.split('.')[0][5:])]._component_custom_groups[int(key.rsplit('_',1)[1])][1] == '曲线与填充区域')
             for obj in members:
                 member_key=artist_key(figure,obj)
                 if member_key is None: continue
                 local=dict(spec)
                 from matplotlib.collections import PathCollection
-                if 'marker_size' in local and not isinstance(obj,PathCollection) and not any(getattr(c,'lines',(None,))[0] is obj for c in obj.axes.containers): local.pop('marker_size')
+                from matplotlib.lines import Line2D
+                if curve_band and isinstance(obj, Line2D):
+                    local['_series_markers'] = True
+                    # Band opacity belongs to the uncertainty area, not its
+                    # center line or hollow mean markers.
+                    local.pop('fill_alpha', None); local.pop('fill_color', None)
+                if 'marker_size' in local and not isinstance(obj,PathCollection) and not curve_band and not any(getattr(c,'lines',(None,))[0] is obj for c in obj.axes.containers): local.pop('marker_size')
                 distribution='.box_' in key or '.violin_' in key
+                if distribution and 'color' in local:
+                    from matplotlib.patches import Patch
+                    from matplotlib.collections import PolyCollection
+                    color = local.pop('color')
+                    if isinstance(obj, (Patch, PolyCollection)):
+                        local.setdefault('fill_color', color)
                 orientation=getattr(obj.axes,'_component_violin_dimensions' if '.violin_' in key else '_component_box_dimensions',[])
                 horizontal=distribution and int(key.split('_')[-1])<len(orientation) and orientation[int(key.split('_')[-1])]=='y'
                 width=spec.get('width_scale',1) if distribution else 1
                 sx=spec.get('scale',1)*(1 if horizontal else width);sy=spec.get('scale',1)*(width if horizontal else 1)
-                local['_sx']=sx;local['_sy']=sy
                 if sx!=1 or sy!=1:
+                    local['_sx']=sx;local['_sy']=sy
                     pts=artist_points(obj,figure.canvas.get_renderer());pts=pts[np.isfinite(pts).all(axis=1)]
                     if len(pts):
                         c=(pts.min(axis=0)+pts.max(axis=0))/2/figure.dpi
@@ -171,20 +233,36 @@ def apply_components(figure, value):
     figure.canvas.draw()
     renderer = figure.canvas.get_renderer()
     for key, spec in sorted(value.items(), key=lambda item: '.segment_' in item[0]):
+        if key in moving_connectors: spec={field:item for field,item in spec.items() if field not in ('dx','dy')}
         obj = resolve_component(figure, key)
         if obj is None: continue
+        from matplotlib.lines import Line2D
+        marker_face = None
+        if isinstance(obj, Line2D) and spec.get('_series_markers'):
+            from matplotlib.colors import to_rgba
+            face = obj.get_markerfacecolor()
+            marker_face = to_rgba(obj.get_color() if isinstance(face,str) and face == 'auto' else face)
         if 'hidden' in spec: obj.set_visible(not spec['hidden'])
         if 'linestyle' in spec and hasattr(obj,'set_linestyle'): obj.set_linestyle(spec['linestyle'])
         for field, setter in (('color', 'set_color'), ('fill_color', 'set_facecolor'),
                               ('edge_color', 'set_edgecolor'), ('linewidth', 'set_linewidth')):
-            if field in spec and hasattr(obj, setter): getattr(obj, setter)(spec[field])
+            if field == 'fill_color' and field in spec and hasattr(obj, setter):
+                from matplotlib.colors import to_rgba, to_rgba_array
+                current = to_rgba_array(obj.get_facecolor())
+                colors = [to_rgba(spec[field], rgba[3]) for rgba in current]
+                if isinstance(obj, Patch): obj.set_facecolor(colors[0] if colors else spec[field])
+                else: obj.set_facecolor(colors if colors else spec[field])
+            elif field in spec and hasattr(obj, setter): getattr(obj, setter)(spec[field])
             elif field=='edge_color' and field in spec and hasattr(obj,'set_color'): obj.set_color(spec[field])
         from matplotlib.lines import Line2D
         if isinstance(obj,Line2D):
             cap_color=spec.get('edge_color',spec.get('color'))
             if cap_color is not None: obj.set_markeredgecolor(cap_color)
-            if 'color' in spec: obj.set_markerfacecolor(spec['color'])
+            if 'color' in spec:
+                hollow = marker_face is not None and (marker_face[3] == 0 or all(abs(c-1)<1e-7 for c in marker_face[:3]))
+                if not hollow: obj.set_markerfacecolor(spec['color'])
             if 'linewidth' in spec: obj.set_markeredgewidth(spec['linewidth'])
+            if 'marker_shape' in spec: obj.set_marker(spec['marker_shape'])
         if 'marker_size' in spec:
             if isinstance(obj,PathCollection): obj.set_sizes([spec['marker_size']**2])
             elif hasattr(obj,'set_markersize'): obj.set_markersize(spec['marker_size'])
@@ -207,6 +285,8 @@ def apply_components(figure, value):
                 apply_axis_layout(obj)
             continue
         if isinstance(obj, Legend):
+            if not any(name in spec for name in ('dx', 'dy', 'scale')):
+                continue
             box = obj.get_window_extent(renderer).transformed(figure.dpi_scale_trans.inverted())
             obj.set_bbox_to_anchor((box.x0 + dx, box.y0 + dy), transform=figure.dpi_scale_trans)
             obj.set_loc('lower left') if hasattr(obj, 'set_loc') else obj._set_loc(3)
@@ -216,7 +296,7 @@ def apply_components(figure, value):
         obj.set_clip_on(False)
         if isinstance(obj, Text):
             obj.set_fontsize(obj.get_fontsize()*scale)
-            affine = Affine2D().translate(dx, dy)
+            affine = ScaledTranslation(dx, dy, figure.dpi_scale_trans)
         else:
             if isinstance(obj, PathCollection):
                 points = obj.get_offset_transform().transform(obj.get_offsets())
@@ -227,13 +307,19 @@ def apply_components(figure, value):
                 if not len(points): continue
                 center=(points.min(axis=0)+points.max(axis=0))/2/figure.dpi
                 cx,cy=center
-            affine = Affine2D().translate(-cx, -cy).scale(spec.get('_sx',scale),spec.get('_sy',scale)).translate(cx+dx, cy+dy)
+            affine = (ScaledTranslation(-cx, -cy, figure.dpi_scale_trans)
+                      + Affine2D().scale(spec.get('_sx',scale),spec.get('_sy',scale))
+                      + ScaledTranslation(cx+dx, cy+dy, figure.dpi_scale_trans))
         original = obj.get_offset_transform() if isinstance(obj, PathCollection) else obj.get_data_transform() if isinstance(obj, Patch) else obj.get_transform()
-        transform = original + figure.dpi_scale_trans.inverted() + affine + figure.dpi_scale_trans
+        # Keep point/inch offsets tied to the live DPI. A cached inverse DPI
+        # becomes stale when savefig temporarily switches to export resolution.
+        transform = original + affine
         if isinstance(obj, PathCollection): obj.set_offset_transform(transform)
         else: obj.set_transform(transform)
 
 
+    if linkage:
+        apply_linked_moves(figure, linked_styles, point_specs, linkage,annotations)
     if point_specs:
         from point_components import apply_points
         apply_points(figure,point_specs)
@@ -273,11 +359,27 @@ def apply_axis_layout(axis):
     axis._component_axis_applied=tuple(axis.get_position().bounds)
 
 
+def lock_range_layout(figure):
+    """Keep the rendered panel rectangles while changing their data windows."""
+    if getattr(figure, '_component_range_layout_locked', False):
+        return
+    figure.canvas.draw()
+    positions = [(axis, axis.get_position().frozen()) for axis in figure.axes]
+    # Automatic layout on subsequent draws/exports must not move neighboring
+    # panels in response to different tick labels.
+    figure.set_layout_engine(None)
+    for axis, position in positions:
+        axis.set_position(position)
+    figure._component_range_layout_locked = True
+
+
 def install_layout_tracking():
     from matplotlib.figure import Figure
     if getattr(Figure.tight_layout,'_component_layout_tracking',False): return
     original=Figure.tight_layout
     def tight_layout(figure,*args,**kwargs):
+        if getattr(figure, '_component_range_layout_locked', False):
+            return
         for axis in figure.axes:
             if hasattr(axis,'_component_axis_layout') and tuple(axis.get_position().bounds)==getattr(axis,'_component_axis_applied',None):
                 axis.set_position(axis._component_axis_base)

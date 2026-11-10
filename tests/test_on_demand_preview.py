@@ -112,6 +112,20 @@ class OnDemandPreviewTests(unittest.TestCase):
             with urlopen(request) as response:self.assertEqual(response.status,200)
         self.assertEqual((self.project/'previews/one.png').read_bytes(),b'formal')
 
+    def test_zoom_edit_quality_is_separate_from_explicit_high_quality(self):
+        import json
+        from chart_naming import RenderedImage
+        source=self.set_source('fig1')
+        transient=RenderedImage(b'transient');transient.render_report={'interactive_seed_reused':True}
+        for high_quality,expected in ((False,160),(True,360)):
+            request=urllib.request.Request(self.url('fig1').replace('/preview','/style-preview'),
+                data=json.dumps({'base_revision':server.source_revision(source),'style':{},'zoomed':True,'high_quality':high_quality}).encode(),
+                headers={'Content-Type':'application/json','Origin':f'http://127.0.0.1:{self.port}'})
+            with patch('interactive_preview.render_preview',return_value=transient) as render:
+                with urlopen(request) as response:result=json.load(response)
+                self.assertEqual(result['preview_dpi'],expected)
+                self.assertEqual(render.call_args.kwargs['preview_dpi'],expected)
+
     def test_only_explicit_target_can_trigger_a_render(self):
         self.set_source('one'); self.set_source('two')
         with patch.object(server, 'render', return_value=b'selected-image') as render:
