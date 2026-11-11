@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plot Forge · 图表工坊</title><link rel="stylesheet" href="/static/legacy/app.css"></head>
+<title>GT · JILAB</title><link rel="stylesheet" href="/static/legacy/app.css?v=7"></head>
 <body>
-<header><div class="brand"><span class="logo">PF</span><span>Plot Forge</span><small>图表工坊</small></div><div class="headerRight"><a class="versionLink" href="/">新版多图</a><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
+<header><div class="brand"><span class="logo rgbAxesLogo" aria-label="参考 Matplotlib RGBAxes，以 RGB 通道绘制 GT 的 Logo"><svg viewBox="0 0 92 40" aria-hidden="true"><rect class="rgbPanel mainPanel" x="2" y="2" width="64" height="36" rx="3"/><g class="rgbLetters"><path class="channelR" d="M31 10 27 7H16l-5 5v16l5 5h11l5-5v-8H22M38 8h22M49 8v24"/><path class="channelG" d="M30 9 26 6H15l-5 5v16l5 5h11l5-5v-8H21M37 7h22M48 7v24"/><path class="channelB" d="M32 11 28 8H17l-5 5v16l5 5h11l5-5v-8H23M39 9h22M50 9v24"/></g><g class="channelPanels"><rect class="rgbPanel" x="69" y="2" width="21" height="10" rx="2"/><rect class="rgbPanel" x="69" y="15" width="21" height="10" rx="2"/><rect class="rgbPanel" x="69" y="28" width="21" height="10" rx="2"/><path class="redMini" d="M73 9h13M79.5 5v5"/><path class="greenMini" d="M73 22h13M79.5 18v5"/><path class="blueMini" d="M73 35h13M79.5 31v5"/></g></svg></span><small class="versionMark">v1</small></div><div class="headerRight"><a class="versionLink" href="/">新版多图</a><button id="themeToggle" class="themeToggle" type="button" title="切换明暗主题">☀ 浅色</button><span id="status">正在连接本地项目…</span><span class="local">● 本地运行</span></div></header>
 <div class="workspace">
   <aside class="left"><div class="paneHead"><span>项目资源</span><button class="mini" id="newProject" title="新建项目">＋</button></div><div id="tree"></div><div class="leftFoot"><div class="resourceActions"><button id="newChart">＋ 绘图</button><button id="uploadPackage">⬆ 上传项目</button><button id="importCsv">↑ CSV</button><input type="file" id="csvFile" accept=".csv,text/csv" hidden></div><strong>统一绘图规范</strong><p>字体 8 pt · CSV 数据源 · 可复现输出</p><button id="showSkill">查看绘图 Skill ↗</button></div></aside>
   <main><div class="topline"><div><div class="eyebrow" id="breadcrumb">PROJECT / CHART</div><h1 id="chartTitle">请选择一张图</h1><p id="description">从左侧项目目录中打开绘图文件。</p></div><div class="actions"><button id="refresh" disabled>重新渲染</button><a id="svg" class="button" hidden>导出 SVG</a><a id="pdf" class="button" hidden>导出 PDF</a></div></div>
@@ -31,4 +31,4 @@
   <button class="primary" id="startUpload" type="button">开始拆分并上传</button>
 </dialog>
 <dialog id="skillDialog"><div class="dialogHead"><strong>统一绘图 Skill</strong><button id="closeSkill">关闭</button></div><pre id="skillText"></pre></dialog>
-<script src="/static/legacy/app.js"></script></body></html>
+<script src="/static/legacy/app.js"></script><script src="/static/logo_rgb.js?v=1"></script></body></html>

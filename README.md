@@ -1,8 +1,8 @@
-# Plot Forge v0.3.0
+# GT · JILAB v1
 
-[v0.3.0 源码（lc 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/lc) · [v0.3.0 团队启动包](releases/v0.3.0/Plot-Forge-v0.3.0-team.zip) · [版本说明](docs/RELEASE-v0.3.0.zh-CN.md)
+[源码（lc 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/lc) · 正式版本 `1.0.0`
 
-# Plot Forge · 共享科研图表工坊
+# GT · JILAB · 共享科研图表工坊
 
 使用说明：[当前功能与操作指南](docs/Plot-Forge功能说明.zh-CN.md)。
 

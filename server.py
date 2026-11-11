@@ -693,7 +693,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.bytes_response((STATIC / "collaboration.js").read_bytes(), "text/javascript; charset=utf-8")
         if self.command == "GET" and path == "/static/app.js":
             return self.bytes_response((STATIC / "app.js").read_bytes(), "text/javascript; charset=utf-8")
-        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js', '/static/component_editor.js', '/static/plot_modes.js', '/static/subplot_zoom.js', '/static/drawing_items.js'):
+        if self.command == 'GET' and path in ('/static/workspace.js', '/static/workspace.css', '/static/upload_progress.js', '/static/panels.js', '/static/component_editor.js', '/static/plot_modes.js', '/static/subplot_zoom.js', '/static/drawing_items.js', '/static/logo_rgb.js'):
             return self.bytes_response((STATIC / Path(path).name).read_bytes(),
                 'text/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         if self.command == "GET" and path in ("/static/legacy/app.css", "/static/legacy/app.js"):
