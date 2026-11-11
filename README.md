@@ -1,13 +1,5 @@
 # GT · JILAB v1
 
-[源码（lc 分支）](https://github.com/Bonbonwjj/GraphicEditing/tree/lc) · 正式版本 `1.0.0`
-
-# GT · JILAB · 共享科研图表工坊
-
-使用说明：[当前功能与操作指南](docs/Plot-Forge功能说明.zh-CN.md)。
-
-GT v1 图文使用手册：[Word 版](docs/v1/GT_v1_User_Manual_zh-CN.docx) · [PDF 版](docs/v1/GT_v1_User_Manual_zh-CN.pdf)。涵盖软件启动、工程准备、已有工程复用、模型连接和常见问题。
-
 当前团队分发版直接读写公共文件夹 `X:\figure_DATA_code\projects` 中的同一份绘图工程；正式代码、数据、图片和历史都保存在这里。每位成员在本机运行程序、保留自己的账号配置。图表保存带跨进程文件锁与版本检查，旧页面不会直接覆盖其他成员的新版本。使用步骤见 [团队共享文件夹与打包](docs/团队共享文件夹与打包.md)。此源码启动包需要本机 Python，默认不需要 Docker。原有 GitHub 与手动文件夹同步实现仍保留，可由维护者修改团队配置切换。
 
 ## ChatGPT 订阅与本地工程准备
