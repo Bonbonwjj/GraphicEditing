@@ -18,6 +18,7 @@ const ctx=vm.createContext({document:{createElement:()=>new Element()},window:{i
   componentColorHex:()=>null,componentRgba:()=>null,drawComponentSelection(){},addRgbColorControls(){},updateComponents(){},
   stylePreviewData:{_rawTargets:[],component_groups:[]}
 });
+vm.runInContext(source.slice(source.indexOf('function componentMovementKeys('),source.indexOf('function componentDragKeys(')),ctx);
 vm.runInContext(source.slice(source.indexOf('function componentEditableFeatures('),source.indexOf('const attachBasicManipulation=')),ctx);
 function inspect(target,group){
   ctx.selectedSeriesKey=group?.key||target.key;ctx.componentSelection=new Set();
@@ -40,4 +41,7 @@ fields=inspect({key:'axes_0.collection_0.points_regular',kind:'scatter',point_ro
 const fill=fields.find(f=>f.dataset.componentProp==='fill_color'),shape=fields.find(f=>f.dataset.componentProp==='marker_shape');
 assert.equal(fill.closest('label').hidden,true);shape.value='o';shape.onchange();assert.equal(fill.closest('label').hidden,false);
 shape.value='x';shape.onchange();assert.equal(fill.closest('label').hidden,true);
+ctx.baseInteractiveStyle.component_styles={'axes_0.bar_item_0':{dx:18}};
+fields=inspect({key:'axes_0.patch_0',kind:'patch',movement_group:'axes_0.bar_item_0',style:{facecolor:[1,0,0,1]}});
+assert.equal(fields.find(field=>field.dataset.componentProp==='dx').value,18);
 console.log('PASS: actual inspector hides unsupported fill and marker controls, retains patch fill, and updates point fill availability with shape.');

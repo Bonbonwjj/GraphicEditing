@@ -256,7 +256,8 @@ openComponentInspector=function(event,title,ids,scope='axis'){
   const add=(name,property,type='number',initial='',constraints={},targetKeys=null)=>{
     const row=document.createElement('label'),label=document.createElement('span'),input=document.createElement(type==='multiline'?'textarea':'input');
     label.textContent=name;if(type!=='multiline')input.type=type;else input.rows=3;input.dataset.componentProp=property;
-    input.value=spec[property]??initial;for(const [attr,val]of Object.entries(constraints))input.setAttribute(attr,val);
+    const movementKey=['dx','dy'].includes(property)?componentMovementKeys(stylePreviewData,[key])[0]:null;
+    input.value=(movementKey?baseInteractiveStyle.component_styles?.[movementKey]?.[property]:spec[property])??initial;for(const [attr,val]of Object.entries(constraints))input.setAttribute(attr,val);
     input.addEventListener('input',()=>{
       if(type==='number'&&(input.value===''||!input.validity.valid))return;
       updateComponents(property,type==='number'?Number(input.value):input.value,targetKeys||undefined);
@@ -379,6 +380,7 @@ const attachBasicManipulation=attachDirectManipulation;
 function componentSelectionBounds(result,key){
   let box=result.component_groups?.find(item=>item.key===key)?.bbox||result.texts?.find(item=>item.key===key)?.bbox;
   const target=(result._rawTargets||result.targets||[]).find(item=>item.key===key);
+  if(!box&&target?.movement_group)box=result.component_groups?.find(group=>group.key===target.movement_group)?.bbox;
   if(!box&&target?.hit_path_px?.length){
     const xs=target.hit_path_px.map(p=>p[0]),ys=target.hit_path_px.map(p=>p[1]),radius=target.point_role?(target.style?.marker_size||6)*(result.dpi||100)/144:0;
     box=[Math.min(...xs)-radius,Math.min(...ys)-radius,Math.max(...xs)+radius,Math.max(...ys)+radius];
@@ -396,6 +398,8 @@ function componentMovementKeys(result,keys){
   const targets=result._rawTargets||result.targets||[],lookup=new Map(targets.map(target=>[target.key,target]));
   return [...new Set(keys.flatMap(key=>{
     const target=lookup.get(key);if(!target)return [key];
+    if(target.movement_group)return [target.movement_group];
+    if(target.movement_vertices)return target.movement_vertices.flat();
     const peers=target.point_move_members||(['regular','outliers'].includes(target.point_role)?targets.filter(peer=>['regular','outliers'].includes(peer.point_role)&&peer.point_group===target.point_group&&peer.point_group).map(peer=>peer.key):[]);
     return [key,...peers,...(target.move_connection_members||[])];
   }))];
@@ -406,6 +410,7 @@ function componentDragKeys(result,keys){
   return keys.filter(key=>axes.has(key)||!axes.has(result.texts?.find(t=>t.key===key)?.subplot_key||key.match(/^axes_\d+/)?.[0]));
 }
 function componentPendingDragOffset(img,key){
+  key=(img._componentResult?._rawTargets||img._componentResult?.targets||[]).find(target=>target.key===key)?.movement_group||key;
   const current=baseInteractiveStyle.component_styles?.[key]||{},rendered=img._componentRenderedOffsets?.[key]||{};
   return [(current.dx||0)-(rendered.dx||0),(current.dy||0)-(rendered.dy||0)];
 }
@@ -484,8 +489,10 @@ function createComponentDragPreview(img,result,keys){
   }
   for(const target of rawTargets){
     if(axisSelected(target.key))continue;
-    const linkedVertices=selected.has(target.key)?null:target.point_move_vertices?.map(peers=>peers.some(key=>selected.has(key)||members.has(key)));
-    if(!selected.has(target.key)&&!members.has(target.key)&&!members.has(target.owner_key)&&!selected.has(target.owner_key)&&!linkedVertices?.some(Boolean))continue;
+    if(target.movement_vertices&&['_','|'].includes(target.style?.marker)&&['none','',' '].includes(String(target.style?.linestyle??'none').toLowerCase()))continue;
+    const vertexOwners=target.movement_vertices||target.point_move_vertices;
+    const linkedVertices=selected.has(target.key)?null:vertexOwners?.map(peers=>peers.some(key=>selected.has(key)||members.has(key)));
+    if(!selected.has(target.key)&&!selected.has(target.movement_group)&&!members.has(target.key)&&!members.has(target.owner_key)&&!selected.has(target.owner_key)&&!linkedVertices?.some(Boolean))continue;
     if(!target.hit_path_px?.length)continue;
     if(target.kind==='scatter'&&!target.point_role&&pointOwners.has(target.key))continue;
     const style=target.style||{},point=!!target.point_role||target.kind==='scatter';
@@ -503,7 +510,15 @@ function createComponentDragPreview(img,result,keys){
   for(const model of annotationModels.values()){
     if(selected.has(model.key))continue;
     const target=targetLookup.get(model.key),text=result.texts?.find(t=>t.key===model.key);
-    if(target?.hit_path_px?.length){const node=addPath(target.hit_path_px,{stroke:componentColorHex(target.style?.color)||'#111',linewidth:target.style?.linewidth||1});nodes.push({node,model,points:target.hit_path_px});}
+    if(target?.hit_path_px?.length){
+      const style={stroke:componentColorHex(target.style?.color)||'#111',linewidth:target.style?.linewidth||1};
+      const node=addPath(target.hit_path_px,style);nodes.push({node,model,points:target.hit_path_px});
+      if(['_','|'].includes(target.style?.marker))target.hit_path_px.forEach((p,i)=>{
+        const radius=(target.style.markersize||6)*dpi/144,d=target.style.marker==='_'?0:1;
+        const points=[p.map((v,j)=>v-(j===d?radius:0)),p.map((v,j)=>v+(j===d?radius:0))];
+        nodes.push({node:addPath(points,style),model:{...model,weights:[model.weights[i],model.weights[i]]},points});
+      });
+    }
     else if(text)addText(text,(dx,dy)=>componentDragAnnotationDelta(model,keys,dx,dy)[0]);
   }
   for(const group of groups)for(const anchor of group.category_anchors||[]){
@@ -554,13 +569,16 @@ attachDirectManipulation=function(img,result){
   img.parentElement?.querySelectorAll('.componentDragPreview').forEach(node=>node.remove());
   img.parentElement?.querySelectorAll('.offlineComponentPreview').forEach(node=>node.remove());
   result._rawTargets??=result.targets||[];
+  img._componentResult=result;
   result._connectionGroups??=buildConnectionGroups(result);
   result.targets=result._rawTargets;
   {
-    const activeGroups=(result.component_groups||[]).filter(group=>componentSelectionMode==='group'||group.locked_selection);
+    const activeGroups=(result.component_groups||[]).filter(group=>!group.movement_only&&!group.selection_children?.length&&(componentSelectionMode==='group'||group.locked_selection));
     const members=new Map(activeGroups.flatMap(group=>[...(group.members||[]),...(group.move_members||[])].map(key=>[key,group])));
-    result.targets=result._rawTargets.map(target=>{
-      const group=members.get(target.key)||result.component_groups?.find(item=>item.key===target.group_key),key=group?.key||target.group_key;
+    result.targets=result._rawTargets.filter(target=>!(target.movement_vertices&&['_','|'].includes(target.style?.marker)&&['none','',' '].includes(String(target.style?.linestyle??'none').toLowerCase()))).map(target=>{
+      let group=members.get(target.key)||result.component_groups?.find(item=>item.key===target.group_key);
+      if(group?.movement_only||group?.selection_children?.length)group=null;
+      const key=group?.key;
       return key&&(componentSelectionMode==='group'||group?.locked_selection)?{...target,key,label:group?.label||'整体图形'}:target;
     });
     for(const group of activeGroups){for(const path of group.hit_paths_px||[])result.targets.push({key:group.key,label:group.label,kind:'line',hit_path_px:path});}

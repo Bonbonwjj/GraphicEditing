@@ -9,7 +9,7 @@ def validate_components(value):
     allowed = {'dx', 'dy', 'scale', 'color', 'fill_color', 'edge_color', 'linewidth',
                'font_size', 'font_family', 'text', 'hidden', 'linestyle', 'alpha', 'fill_alpha', 'edge_alpha', 'xlim', 'ylim', 'width_scale', 'x_scale', 'y_scale', 'marker_size', 'marker_shape', 'x_tick_length', 'y_tick_length', 'x_tick_width', 'y_tick_width'}
     for key, spec in value.items():
-        if not isinstance(key, str) or not (re.fullmatch(r'figure\.text_\d+',key) or re.fullmatch(r'axes_\d+(?:\.(?:(?:box|violin|mean_error|bars|stem|group)_\d+|[xy]axis_text|(?:line_\d+|collection_\d+)(?:\.points_(?:(?:regular|outliers)(?:_g\d+)?|mean_\d+))?|collection_\d+\.segment_\d+|patch_\d+|image_\d+|xlabel|ylabel|title_[012]|annotation_\d+|legend|legend_text_\d+|spine_(?:left|right|top|bottom)|[xy]tick_(?:major|minor)_\d+_[12]|[xy]offset))?', key)):
+        if not isinstance(key, str) or not (re.fullmatch(r'figure\.text_\d+',key) or re.fullmatch(r'axes_\d+(?:\.(?:(?:box|violin|mean_error|bars|bar_item|mean_item|stem|group)_\d+|[xy]axis_text|(?:line_\d+|collection_\d+)(?:\.points_(?:(?:regular|outliers)(?:_g\d+)?|mean_\d+))?|collection_\d+\.segment_\d+|line_\d+\.vertex_\d+|patch_\d+|image_\d+|xlabel|ylabel|title_[012]|annotation_\d+|legend|legend_text_\d+|spine_(?:left|right|top|bottom)|[xy]tick_(?:major|minor)_\d+_[12]|[xy]offset))?', key)):
             raise ValueError('组件标识无效')
         if not isinstance(spec, dict) or set(spec) - allowed:
             raise ValueError('组件属性无效')
@@ -61,6 +61,11 @@ def resolve_component(figure, key):
     if index >= len(figure.axes):
         return None
     axis = figure.axes[index]
+    vertex=re.fullmatch(r'line_(\d+)\.vertex_(\d+)',name)
+    if vertex:
+        from component_groups import LinePoint
+        li,vi=map(int,vertex.groups())
+        return LinePoint(axis.lines[li],vi) if li<len(axis.lines) and vi<len(axis.lines[li].get_xydata()) else None
     segment = re.fullmatch(r'collection_(\d+)\.segment_(\d+)', name)
     if segment:
         from matplotlib.collections import LineCollection
@@ -100,6 +105,9 @@ def apply_components(figure, value):
     from matplotlib.transforms import Affine2D, ScaledTranslation
     from matplotlib.patches import Patch
     value = validate_components(value)
+    if any({'dx','dy'}.intersection(spec) for spec in value.values()):
+        from component_groups import normalize_movement
+        value=normalize_movement(figure,value)
     point_specs={key:dict(spec) for key,spec in value.items() if '.points_' in key}
     value={key:spec for key,spec in value.items() if '.points_' not in key}
     from component_links import links, apply_linked_moves, capture_annotation_links
@@ -121,7 +129,7 @@ def apply_components(figure, value):
             if axis_key not in moving_axes: continue
             spec=value.setdefault(key,{})
             for field in ('dx','dy'): spec[field]=spec.get(field,0)+moving_axes[axis_key].get(field,0)
-    moving_groups=any(re.search(r'\.(?:box|violin|mean_error|bars|group)_\d+$', key) and {'dx', 'dy'}.intersection(spec) for key, spec in value.items())
+    moving_groups=any(re.search(r'\.(?:box|violin|mean_error|bars|bar_item|mean_item|group|stem)_\d+$', key) and {'dx', 'dy'}.intersection(spec) for key, spec in value.items())
     moving_points=any({'dx','dy'}.intersection(spec) for spec in point_specs.values())
     if moving_groups or moving_points:
         lock_range_layout(figure)
@@ -224,7 +232,7 @@ def apply_components(figure, value):
                         c=(pts.min(axis=0)+pts.max(axis=0))/2/figure.dpi
                         local['dx']=spec.get('dx',0)+(c[0]-center[0])*(sx-1)*72
                         local['dy']=spec.get('dy',0)+(c[1]-center[1])*(sy-1)*72
-                expanded[member_key]=local
+                expanded[member_key]={**expanded.get(member_key,{}),**local}
         else: expanded[key]={**expanded.get(key,{}),**spec}
     # Explicit individual text overrides take precedence over whole-axis defaults.
     for key,spec in value.items():
@@ -296,6 +304,11 @@ def apply_components(figure, value):
         obj.set_clip_on(False)
         if isinstance(obj, Text):
             obj.set_fontsize(obj.get_fontsize()*scale)
+            from matplotlib.text import Annotation
+            if isinstance(obj,Annotation):
+                from component_links import translate_annotation
+                translate_annotation(obj,figure,dx*72,dy*72)
+                continue
             affine = ScaledTranslation(dx, dy, figure.dpi_scale_trans)
         else:
             if isinstance(obj, PathCollection):

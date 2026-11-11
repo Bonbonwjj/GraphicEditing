@@ -100,6 +100,171 @@ class CollectionSegment:
         if not visible: self.set_alpha(0)
     def set_clip_on(self, value): self.collection.set_clip_on(value)
 
+    @property
+    def _component_annotation_link(self):return getattr(self.collection,'_component_annotation_links',{}).get(self.index)
+
+    @_component_annotation_link.setter
+    def _component_annotation_link(self,model):
+        links=getattr(self.collection,'_component_annotation_links',{});links[self.index]=model;self.collection._component_annotation_links=links
+
+
+class LinePoint:
+    """Move one marker/cap in a shared Line2D without changing its coordinates."""
+    def __init__(self,line,index):
+        self.line,self.index=line,index
+        self.axes,self.figure=line.axes,line.figure
+
+    def __getattr__(self,name):return getattr(self.line,name)
+
+    def get_path(self):
+        from matplotlib.path import Path
+        return Path(self.line.get_xydata()[self.index:self.index+1])
+
+    def get_transform(self):return self.line.get_transform()
+
+    def set_transform(self,transform):
+        from component_links import LinkedVertexTransform
+        vertices=self.get_path().vertices
+        base=self.line.get_transform()
+        shift=(transform.transform(vertices)-base.transform(vertices))*72/self.figure.dpi
+        self.line.set_transform(LinkedVertexTransform(base,self.figure,vertices,shift))
+
+
+def _errorbar_centers(error):
+    line,_caps,bars=error.lines
+    if line is not None:return np.asarray(line.get_xydata())
+    if hasattr(error,'_component_centers'):return error._component_centers
+    segments=next((bar.get_segments() for bar in bars if len(bar.get_segments())),[])
+    return np.asarray([np.mean(segment,axis=0) for segment in segments if len(segment)])
+
+
+def _errorbar_parts(error,index):
+    line,caps,bars=error.lines
+    result=[LinePoint(line,index)] if line is not None and index<len(line.get_xydata()) else []
+    endpoints=[p for bar in bars if index<len(bar.get_segments()) for p in bar.get_segments()[index]]
+    if endpoints:
+        endpoints=np.asarray(endpoints)
+        for cap in caps:
+            for vi,point in enumerate(cap.get_xydata()):
+                if np.isclose(point,endpoints,rtol=1e-7,atol=1e-9).all(axis=1).any():result.append(LinePoint(cap,vi))
+    result.extend(CollectionSegment(bar,index) for bar in bars if index<len(bar.get_segments()) and len(bar.get_segments()[index]))
+    return result
+
+
+def summary_items(axis):
+    """Individual categorical bars/means, including separately drawn error bars."""
+    from matplotlib.container import BarContainer,ErrorbarContainer
+    errors=[c for c in axis.containers if isinstance(c,ErrorbarContainer)]
+    used=set();items=[]
+    for ci,container in enumerate(c for c in axis.containers if isinstance(c,BarContainer)):
+        horizontal=container.orientation=='horizontal';dimension=0 if horizontal else 1
+        for patch in container.patches:
+            center=np.array([patch.get_x()+patch.get_width(),patch.get_y()+patch.get_height()/2] if horizontal else [patch.get_x()+patch.get_width()/2,patch.get_y()+patch.get_height()])
+            members=[patch]
+            for error in errors:
+                for index,value in enumerate(_errorbar_centers(error)):
+                    if np.allclose(value,center,rtol=1e-7,atol=1e-9):
+                        members.extend(_errorbar_parts(error,index));used.add((id(error),index))
+            items.append({'name':f'bar_item_{sum(i["kind"]=="bar" for i in items)}','kind':'bar','parent':f'bars_{ci}',
+                          'members':members,'region':{'dimension':dimension,'position':float(center[1-dimension]),'mean':float(center[dimension]),'low':None,'high':None,'rule':'display_iqr'}})
+    for ci,error in enumerate(errors):
+        dimension=0 if error.has_xerr and not error.has_yerr else 1
+        for index,center in enumerate(_errorbar_centers(error)):
+            if not np.isfinite(center).all():continue
+            if (id(error),index) in used:continue
+            items.append({'name':f'mean_item_{sum(i["kind"]=="mean" for i in items)}','kind':'mean','parent':f'mean_error_{ci}',
+                          'members':_errorbar_parts(error,index),'region':{'dimension':dimension,'position':float(center[1-dimension]),'mean':float(center[dimension]),'low':None,'high':None,'rule':'display_iqr'}})
+    from matplotlib.collections import PathCollection
+    for item in items:
+        r=item['region'];center=np.array([r['position'],r['mean']] if r['dimension']==1 else [r['mean'],r['position']])
+        for obj in axis.collections:
+            if isinstance(obj,PathCollection) and not getattr(obj,'_component_point_overlay',False):
+                offsets=np.asarray(obj.get_offsets())
+                if len(offsets)==1 and np.allclose(offsets[0],center,rtol=1e-7,atol=1e-9):
+                    obj._component_point_role='mean';item['members'].append(obj)
+    return items
+
+
+def movement_bindings(figure):
+    """Movement ownership is finer than container-wide color/style ownership."""
+    from matplotlib.container import ErrorbarContainer
+    groups=component_groups(figure);owners={};children={}
+    for ai,axis in enumerate(figure.axes):
+        items=summary_items(axis)
+        for item in items:
+            key=f'axes_{ai}.{item["name"]}'
+            children.setdefault(f'axes_{ai}.{item["parent"]}',[]).append(key)
+            for member in item['members']:
+                member_key=artist_key(figure,member)
+                if member_key:owners.setdefault(member_key,set()).add(key)
+                if isinstance(member,LinePoint):owners.setdefault(artist_key(figure,member.line),set()).add(key)
+                if isinstance(member,CollectionSegment):owners.setdefault(artist_key(figure,member.collection),set()).add(key)
+        for i,error in enumerate(c for c in axis.containers if isinstance(c,ErrorbarContainer)):
+            leaves=[f'axes_{ai}.{item["name"]}' for item in items if any(isinstance(obj,LinePoint) and obj.line in error.lines[1] or isinstance(obj,CollectionSegment) and obj.collection in error.lines[2] for obj in item['members'])]
+            if leaves:children[f'axes_{ai}.mean_error_{i}']=leaves
+    for key,members in groups.items():
+        if key in children or '.bar_item_' in key or '.mean_item_' in key:continue
+        for member in members:
+            name=artist_key(figure,member)
+            if name:owners.setdefault(name,set()).add(key)
+    for key,leaves in owners.items():
+        if len(leaves)>1 and all('.bar_item_' in leaf or '.mean_item_' in leaf for leaf in leaves):children.setdefault(key,sorted(leaves))
+    bindings={key:next(iter(values)) for key,values in owners.items() if len(values)==1}
+    from point_components import layers
+    for layer in layers(figure):
+        if layer['point_role']!='mean' and not any('.stem_' in key and layer['owner'] in members for key,members in groups.items()):continue
+        matches=[]
+        for key,members in groups.items():
+            if key in children:continue
+            if any(obj is layer['owner'] or isinstance(obj,LinePoint) and obj.line is layer['owner'] and obj.index in layer['indices'] for obj in members):matches.append(key)
+        if len(matches)==1:bindings[layer['key']]=matches[0]
+    for key,leaves in children.items():
+        if len(leaves)==1:bindings[key]=leaves[0]
+    return bindings,children
+
+
+def normalize_movement(figure,styles):
+    bindings,children=movement_bindings(figure)
+    result={key:dict(spec) for key,spec in styles.items()}
+    groups=component_groups(figure);aliases={}
+    for key,spec in list(result.items()):
+        target=bindings.get(key)
+        if not target or target==key or key in children:continue
+        primary=artist_key(figure,groups[target][0]) if groups.get(target) else None
+        rank=0 if key==primary else 1 if '.points_mean_' in key else 2
+        for field in ('dx','dy'):
+            if field in spec:
+                candidate=(rank,key,spec.pop(field));identity=(target,field)
+                if identity not in aliases or candidate[:2]<aliases[identity][:2]:aliases[identity]=candidate
+    for (target,field),(_rank,_key,value) in aliases.items():
+        group=result.setdefault(target,{});group[field]=group.get(field,0)+value
+    inherited={}
+    # Prefer a bar's container over its separately drawn errorbar container.
+    for key in sorted(children,key=lambda key:('.bars_' not in key,key)):
+        for leaf in children[key]:
+            for field in ('dx','dy'):
+                if field in result.get(key,{}):inherited.setdefault((leaf,field),result[key][field])
+    for (leaf,field),value in inherited.items():
+        if (leaf,field) not in aliases:
+            spec=result.setdefault(leaf,{});spec[field]=spec.get(field,0)+value
+    for key in children:
+        if key in result:
+            for field in ('dx','dy'):result[key].pop(field,None)
+    return {key:spec for key,spec in result.items() if spec}
+
+
+def summary_vertex_links(figure):
+    result={}
+    for ai,axis in enumerate(figure.axes):
+        for item in summary_items(axis):
+            group=f'axes_{ai}.{item["name"]}'
+            for member in item['members']:
+                if not isinstance(member,LinePoint):continue
+                key=artist_key(figure,member.line)
+                vertices=result.setdefault(key,[[] for _ in member.line.get_xydata()])
+                vertices[member.index].append(group)
+    return result
+
 
 def _orientation(original, axis, args, kwargs):
     import inspect
@@ -131,6 +296,20 @@ def _line_matches_fill(line, band, x, lower, upper):
 
 def install_group_tracking():
     from matplotlib.axes import Axes
+    if not getattr(Axes.errorbar,'_component_center_tracking',False):
+        original_errorbar=Axes.errorbar
+        @wraps(original_errorbar)
+        def errorbar(axis,*args,**kwargs):
+            result=original_errorbar(axis,*args,**kwargs)
+            try:
+                import inspect
+                values=inspect.signature(original_errorbar).bind(axis,*args,**kwargs).arguments
+                x,y=np.broadcast_arrays(np.asarray(axis.convert_xunits(values['x']),dtype=float),np.asarray(axis.convert_yunits(values['y']),dtype=float))
+                result._component_centers=np.column_stack((x.ravel(),y.ravel()))
+            except (KeyError,TypeError,ValueError):pass
+            return result
+        errorbar._component_center_tracking=True
+        Axes.errorbar=errorbar
     for method in ('boxplot','violinplot'):
         original=getattr(Axes,method)
         if getattr(original,'_plot_forge_orientation_compat',False):continue
@@ -257,14 +436,14 @@ def register_component_group(axis, members, label='自定义图形'):
 
 def summary_group_regions(axis):
     """Categorical anchors for means/error bars and bar containers."""
-    from matplotlib.container import ErrorbarContainer, BarContainer
+    from matplotlib.container import ErrorbarContainer, BarContainer,StemContainer
     result = {}
     bar_errors = {id(c.errorbar) for c in axis.containers if isinstance(c, BarContainer) and c.errorbar is not None}
     for i, container in enumerate(c for c in axis.containers if isinstance(c, ErrorbarContainer)):
         if id(container) in bar_errors: continue
         dimension = 0 if container.has_xerr and not container.has_yerr else 1
         line, _caps, bars = container.lines
-        centers = line.get_xydata() if line is not None else [np.mean(s,axis=0) for bar in bars for s in bar.get_segments() if len(s)]
+        centers = _errorbar_centers(container)
         result[f'mean_error_{i}'] = [{'dimension':dimension,'position':float(p[1-dimension]),
             'mean':float(p[dimension]),'low':None,'high':None,'rule':'display_iqr'} for p in centers]
     for i, container in enumerate(c for c in axis.containers if isinstance(c, BarContainer)):
@@ -273,6 +452,12 @@ def summary_group_regions(axis):
             'position':float(p.get_y()+p.get_height()/2 if horizontal else p.get_x()+p.get_width()/2),
             'mean':float(p.get_x()+p.get_width() if horizontal else p.get_y()+p.get_height()),
             'low':None,'high':None,'rule':'display_iqr'} for p in container.patches]
+    for item in summary_items(axis):result[item['name']]=[item['region']]
+    for i,container in enumerate(c for c in axis.containers if isinstance(c,StemContainer)):
+        marker,stems,_baseline=container.lines if hasattr(container,'lines') else tuple(container)
+        segments=stems.get_segments() if hasattr(stems,'get_segments') else [stem.get_xydata() for stem in stems]
+        dimension=next((int(np.argmax(np.ptp(segment,axis=0))) for segment in segments if len(segment) and np.any(np.ptp(segment,axis=0)>0)),1)
+        result[f'stem_{i}']=[{'dimension':dimension,'position':float(p[1-dimension]),'mean':float(p[dimension]),'low':None,'high':None,'rule':'display_iqr'} for p in marker.get_xydata() if np.isfinite(p).all()]
     return result
 
 
@@ -314,10 +499,14 @@ def component_groups(figure):
             groups[f'axes_{ai}.stem_{i}'] = list(container)
         for i, (members, label) in enumerate(getattr(axis, '_component_custom_groups', [])):
             groups[f'axes_{ai}.group_{i}'] = members
+        for item in summary_items(axis):groups[f'axes_{ai}.{item["name"]}']=item['members']
     return groups
 
 
 def artist_key(figure, obj):
+    if isinstance(obj,LinePoint):
+        parent=artist_key(figure,obj.line)
+        return f'{parent}.vertex_{obj.index}' if parent else None
     if isinstance(obj, CollectionSegment):
         parent = artist_key(figure, obj.collection)
         return f'{parent}.segment_{obj.index}' if parent else None
@@ -360,8 +549,13 @@ def group_report(figure, records):
                 for part in candidates:
                     part_key = artist_key(figure, part)
                     if not isinstance(part, CollectionSegment) and any(r['key'] == part_key and r.get('hit_path_px') for r in records): continue
+                    if isinstance(part,LinePoint) and str(part.get_marker()).lower() not in ('_','|','none','',' '):continue
                     p = artist_points(part, renderer)
                     if not len(p) or not np.isfinite(p).all(): continue
+                    if isinstance(part,LinePoint) and part.get_marker() in ('_','|'):
+                        radius=part.get_markersize()*figure.dpi/144
+                        vector=np.array([radius,0] if part.get_marker()=='_' else [0,radius])
+                        p=np.array([p[0]-vector,p[0]+vector])
                     style = {}
                     for field in ('color', 'edgecolor', 'facecolor', 'linewidth'):
                         getter = getattr(part, 'get_'+field, None)
@@ -370,16 +564,23 @@ def group_report(figure, records):
                                   'label': '小提琴主体' if isinstance(part, PolyCollection) else '统计图组成线条',
                                   'style': style, 'hit_path_px': p.tolist()})
         for record in records:
-            if record['key'] in keys: record['group_key'] = key
+            if record['key'] in keys and not any(part in key for part in ('.bar_item_','.mean_item_')): record['group_key'] = key
         if paths:
             points = np.concatenate(paths)
             kind=key.split('.')[1].rsplit('_',1)[0]
-            label={'box':'箱型图','violin':'小提琴图','mean_error':'均值与 error bar','bars':'柱形系列','stem':'茎状图'}.get(kind)
+            label={'box':'箱型图','violin':'小提琴图','mean_error':'均值与 error bar','bars':'柱形系列','bar_item':'柱形与误差棒','mean_item':'均值与误差棒','stem':'茎状图'}.get(kind)
             if kind=='group': label=figure.axes[int(key.split('.')[0][5:])]._component_custom_groups[int(key.rsplit('_',1)[1])][1]
             locked_selection=label=='曲线与填充区域'
             result.append({'key': key, 'kind': 'statistical_group', 'plot_type': kind, 'label': label,
                            'locked_selection': locked_selection,
-                           'linked_properties': ['color'] if locked_selection else [],
+                           'linked_properties': ['color'] if locked_selection else [],'movement_only':kind in ('bar_item','mean_item'),
                            'members': keys, 'part_targets': parts, 'hit_paths_px': paths,
                            'bbox': [*points.min(axis=0).tolist(), *points.max(axis=0).tolist()]})
+    bindings,children=movement_bindings(figure)
+    for record in records:
+        if record['key'] in bindings:record['movement_group']=bindings[record['key']]
+    for group in result:
+        group['selection_children']=children.get(group['key'],[])
+        for part in group['part_targets']:
+            if part['key'] in bindings:part['movement_group']=bindings[part['key']]
     return result

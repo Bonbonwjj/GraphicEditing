@@ -48,7 +48,9 @@ def links(figure):
             category = layer['point_group'].rsplit('.category_', 1)
             if len(category) == 2:
                 for key, region in regions.get((ai, int(category[1])), []):
-                    if layer['owner'] not in groups[key]: attached.setdefault(key, []).append(layer)
+                    from component_groups import LinePoint
+                    owned=any(obj is layer['owner'] or isinstance(obj,LinePoint) and obj.line is layer['owner'] and obj.index in layer['indices'] for obj in groups[key])
+                    if not owned: attached.setdefault(key, []).append(layer)
     excluded = {artist_key(figure, obj) for members in groups.values() for obj in members}
     candidates = []
     for ai, axis in enumerate(figure.axes):
@@ -216,8 +218,11 @@ def apply_linked_moves(figure, styles, point_specs, linkage, annotations=None):
 def capture_annotation_links(figure, regions):
     """Bind statistical labels and brackets by their rendered category anchors."""
     import re
-    from component_groups import artist_key, component_groups
+    from component_groups import artist_key, component_groups,CollectionSegment
+    from matplotlib.collections import LineCollection
     statistical_members={id(obj) for members in component_groups(figure).values() for obj in members}
+    from subplot_layout import panel_text_links
+    figure_text_owners=panel_text_links(figure)
     result=[]
     for ai,axis in enumerate(figure.axes):
         anchors={}
@@ -227,12 +232,19 @@ def capture_annotation_links(figure, regions):
             p=np.array([axis.get_xlim()[0],axis.get_ylim()[0]],dtype=float);p[d]=r['position']
             anchors.setdefault(d,[]).append((axis.transData.transform(p)[d],[key for key,_ in entries]))
         texts=[]
-        for i,text in enumerate(axis.texts):
+        text_items=[(text,f'axes_{ai}.annotation_{i}') for i,text in enumerate(axis.texts)]
+        text_items.extend((text,f'figure.text_{i}') for i,text in enumerate(figure.texts) if figure_text_owners.get(f'figure.text_{i}')==f'axes_{ai}')
+        for text,key in text_items:
             value=re.sub(r'\\(?:mathrm|mathregular|text)\s*','',text.get_text())
             value=value.replace('$','').replace('\\ast','*').replace('{','').replace('}','').replace('^','').strip()
             if re.fullmatch(r'[*✱✳]+|n\s*\.?\s*s\.?|[pP]\s*(?:[<=>≤≥]|\\[lg]eq).+',value,re.I):
-                texts.append((text,f'axes_{ai}.annotation_{i}',text.get_transform().transform(text.get_position())))
+                texts.append((text,key,text.get_transform().transform(text.get_position())))
         if not texts:continue
+        candidates=list(axis.lines)
+        for collection in axis.collections:
+            if isinstance(collection,LineCollection) and id(collection) not in statistical_members:
+                candidates.extend(CollectionSegment(collection,i) for i in range(len(collection.get_segments())))
+        def raw_vertices(artist):return artist.get_xydata() if hasattr(artist,'get_xydata') else artist.get_path().vertices
         used=set()
         for d,items in anchors.items():
             q=1-d;items=sorted(items,key=lambda item:item[0])
@@ -242,14 +254,14 @@ def capture_annotation_links(figure, regions):
                 anchor=min(items,key=lambda item:abs(item[0]-value))
                 return anchor[1] if abs(anchor[0]-value)<=tolerance else None
             def priority(line):
-                vertices=line.get_xydata()
+                vertices=raw_vertices(line)
                 if len(vertices) not in (2,4):return (2,float('inf'))
                 p=line.get_transform().transform(vertices).mean(axis=0)
                 distance=min(abs(pos[q]-p[q])+abs(pos[d]-p[d]) for _,_,pos in texts)
                 return (0 if len(vertices)==4 else 1,distance)
-            for line in sorted(axis.lines,key=priority):
-                if id(line) in statistical_members or getattr(line,'_component_point_overlay',False) or not line.get_visible():continue
-                vertices=line.get_xydata()
+            for line in sorted(candidates,key=priority):
+                if id(getattr(line,'collection',line)) in statistical_members or getattr(line,'_component_point_overlay',False) or not line.get_visible():continue
+                vertices=raw_vertices(line)
                 if len(vertices) not in (2,4) or not np.isfinite(vertices).all():continue
                 p=line.get_transform().transform(vertices)
                 bracket=(len(p)==4 and np.isclose(p[0,d],p[1,d]) and np.isclose(p[2,d],p[3,d]) and np.isclose(p[1,q],p[2,q]))
@@ -268,6 +280,30 @@ def capture_annotation_links(figure, regions):
                 model={'category_dimension':d,'participants':ends,'quantitative_side':side,'shared_quantitative':True}
                 result.append({'artist':line,'key':artist_key(figure,line),'vertices':vertices.copy(),'weights':weights,**model})
                 result.append({'artist':text,'key':text_key,'weights':[.5],**model})
+            # A bracket is often drawn as a horizontal stroke plus independent
+            # short vertical end ticks (plot/vlines/LineCollection).
+            bound={item['key'] for item in result}
+            brackets=[item for item in result if 'vertices' in item and item['category_dimension']==d and item['artist'].axes is axis]
+            for line in candidates:
+                key=artist_key(figure,line)
+                if key in bound or id(getattr(line,'collection',line)) in statistical_members or not line.get_visible():continue
+                vertices=raw_vertices(line)
+                if len(vertices)!=2 or not np.isfinite(vertices).all():continue
+                p=line.get_transform().transform(vertices)
+                if np.ptp(p[:,d])>max(1,figure.dpi*.01) or not 0<np.ptp(p[:,q])<=figure.dpi*.4:continue
+                matches=[]
+                for bracket in brackets:
+                    bp=bracket['artist'].get_transform().transform(bracket['vertices'])
+                    for side,index in ((0,int(np.argmin(bp[:,d]))),(1,int(np.argmax(bp[:,d])))):
+                        endpoint=bp[index].copy()
+                        if len(bp)==4:endpoint[q]=max(bp[:,q]) if bracket['quantitative_side']>0 else min(bp[:,q])
+                        distance=np.min(np.linalg.norm(p-endpoint,axis=1))
+                        if distance<=max(2,figure.dpi*.035):matches.append((distance,bracket,side))
+                if matches:
+                    _,bracket,side=min(matches,key=lambda item:item[0])
+                    result.append({'artist':line,'key':key,'vertices':vertices.copy(),'weights':[float(side)]*2,
+                        **{field:bracket[field] for field in ('category_dimension','participants','quantitative_side','shared_quantitative')}})
+                    bound.add(key)
             for text,key,pos in texts:
                 if key in used:continue
                 group=closest(pos[d])
@@ -288,9 +324,23 @@ def _annotation_model(item, styles):
     return model
 
 
-def _move_annotations(figure,styles,annotations):
-    from matplotlib.text import Text
+def translate_annotation(artist,figure,dx,dy):
+    """Annotation recomputes its transforms on every draw, including exports."""
     from matplotlib.transforms import ScaledTranslation
+    xycoords,anncoords=artist.xycoords,artist.anncoords
+    offset_axes=getattr(artist,'_component_ann_offset_axes',None)
+    if offset_axes is None:
+        coords=anncoords if isinstance(anncoords,tuple) else (anncoords,anncoords)
+        offset_axes=tuple(isinstance(c,str) and c.startswith('offset ') for c in coords)
+        artist._component_ann_offset_axes=offset_axes
+    artist.xycoords=lambda renderer:artist._get_xy_transform(renderer,xycoords)+ScaledTranslation(dx/72,dy/72,figure.dpi_scale_trans)
+    artist.anncoords=lambda renderer:artist._get_xy_transform(renderer,anncoords)+ScaledTranslation(0 if offset_axes[0] else dx/72,0 if offset_axes[1] else dy/72,figure.dpi_scale_trans)
+
+
+def _move_annotations(figure,styles,annotations):
+    from matplotlib.text import Text,Annotation
+    from matplotlib.transforms import ScaledTranslation,Affine2D
+    from component_groups import CollectionSegment
     for item in annotations:
         model=_annotation_model(item,styles);shifts=np.asarray(model['participant_shifts']);d=item['category_dimension'];q=1-d
         item['artist']._component_annotation_link=model
@@ -299,8 +349,16 @@ def _move_annotations(figure,styles,annotations):
         moves=np.zeros((len(item['weights']),2))
         moves[:,d]=[(1-w)*shifts[0,d]+w*shifts[1,d] for w in item['weights']];moves[:,q]=quantitative
         artist=item['artist']
-        if isinstance(artist,Text):
+        if isinstance(artist,Annotation):translate_annotation(artist,figure,*moves[0])
+        elif isinstance(artist,Text):
             artist.set_transform(artist.get_transform()+ScaledTranslation(moves[0,0]/72,moves[0,1]/72,figure.dpi_scale_trans))
+        elif isinstance(artist,CollectionSegment):
+            original=artist.get_transform();p=original.transform(item['vertices'])/figure.dpi
+            first,last=int(np.argmin(p[:,d])),int(np.argmax(p[:,d]));span=np.ptp(p[:,d]);origin=np.zeros(2);origin[d]=p[first,d]
+            ratio=1+(moves[last,d]-moves[first,d])/72/span if span>1e-12 else 1
+            scale=[1.,1.];scale[d]=ratio
+            transform=ScaledTranslation(*(-origin),figure.dpi_scale_trans)+Affine2D().scale(*scale)+ScaledTranslation(*(origin+moves[first]/72),figure.dpi_scale_trans)
+            artist.set_transform(original+transform)
         else:artist.set_transform(LinkedVertexTransform(artist.get_transform(),figure,item['vertices'],moves))
         artist.set_clip_on(False)
 
@@ -347,18 +405,37 @@ def report_links(figure, records, grouped):
     linkage=links(figure)
     attached, regions, _connectors, families = linkage
     point_members,connector_members,vertices=point_movement_links(figure,linkage)
+    from component_groups import movement_bindings,summary_vertex_links
+    movement,_children=movement_bindings(figure)
+    summary_vertices=summary_vertex_links(figure)
     for record in records:
+        if record['key'] in movement:record['movement_group']=movement[record['key']]
+        if record['key'] in summary_vertices:record['movement_vertices']=summary_vertices[record['key']]
         if record['key'] in point_members: record['point_move_members']=point_members[record['key']]
         if record['key'] in connector_members: record['move_connection_members']=connector_members[record['key']]
         if record['key'] in vertices: record['point_move_vertices']=vertices[record['key']]
     annotations={item['key']:_annotation_model(item,{}) for item in capture_annotation_links(figure,regions)}
+    for text in figure.texts:
+        model=getattr(text,'_component_annotation_link',None)
+        if model:annotations[model['key']]=model
     for axis in figure.axes:
+        for collection in axis.collections:
+            for model in getattr(collection,'_component_annotation_links',{}).values():annotations[model['key']]=model
         for artist in [*axis.lines,*axis.texts]:
             model=getattr(artist,'_component_annotation_link',None)
             if model:annotations[model['key']]=model
     for group in grouped:
         group['move_members'] = [layer['key'] for layer in attached.get(group['key'], [])]
         group['annotation_links']=[model for model in annotations.values() if any(group['key'] in keys for keys in model['participants'])]
+        group['annotation_targets']=[]
+        from component_editor import resolve_component
+        from component_groups import CollectionSegment,artist_points
+        for model in group['annotation_links']:
+            artist=resolve_component(figure,model['key'])
+            if not isinstance(artist,CollectionSegment):continue
+            group['annotation_targets'].append({'key':model['key'],'kind':'line','label':'显著性比较线',
+                'style':{'color':list(artist.get_color()),'linewidth':artist.get_linewidth()},
+                'hit_path_px':artist_points(artist,figure.canvas.get_renderer()).tolist()})
         group['category_anchors']=[{'dimension':1-entries[0][1]['dimension'],'position':entries[0][1]['position']}
                                  for entries in regions.values() if any(key==group['key'] for key,_ in entries)]
         axis=figure.axes[int(group['key'].split('.')[0][5:])]

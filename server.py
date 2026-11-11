@@ -249,11 +249,13 @@ def interaction_payload(report):
     # Candidate reports retain their marks under candidate_artists. They must
     # remain selectable after applying the preview, just like direct renders.
     artists=report.get('artists',report.get('candidate_artists',[]))
-    targets=[{k:item.get(k) for k in ('key','kind','label','style','hit_path_px','group_key','added_id','connection_members','point_move_members','move_connection_members','point_move_vertices')}
+    targets=[{k:item.get(k) for k in ('key','kind','label','style','hit_path_px','group_key','added_id','connection_members','point_move_members','move_connection_members','point_move_vertices','movement_group','movement_vertices')}
              for item in artists if item.get('hit_path_px')]
     targets.extend(part for group in report.get('component_groups',[]) for part in group.get('part_targets',[]))
+    targets.extend(part for group in report.get('component_groups',[]) for part in group.get('annotation_targets',[]))
+    targets=list({target['key']:target for target in targets}.values())
     targets.extend(report.get('point_targets',[]))
-    return {'schema_version':11,'plot_mode_axes':report.get('plot_mode_axes',[]),'point_editing_ready':'point_targets' in report,
+    return {'schema_version':12,'plot_mode_axes':report.get('plot_mode_axes',[]),'point_editing_ready':'point_targets' in report,
             'point_group_editing_ready':'point_targets' in report and all('point_group' in t for t in report['point_targets']),
             'render_size_px':report.get('render_size_px'),
             'targets':targets,
@@ -952,7 +954,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Older applied candidates could contain only labels/axes.
                     # Let the selected-chart preview rebuild that incomplete
                     # cache instead of falsely claiming all marks are ready.
-                    if not payload or payload.get('schema_version', 0)<11 or not payload.get('axes') or not payload.get('axis_ranges') or not payload.get('point_group_editing_ready'):
+                    if not payload or payload.get('schema_version', 0)<12 or not payload.get('axes') or not payload.get('axis_ranges') or not payload.get('point_group_editing_ready'):
                         return self.json_response({'ready':False})
                     return self.json_response({'ready':True,**payload})
                 if action == 'style-preview' and self.command == 'POST':

@@ -121,3 +121,20 @@ assert(descendants(linkedSvg).some(node=>node.attrs.d==='M20 160 L120 140'&&tran
 console.log('PASS: subplot and panel-letter selection, live bitmap and selection frame, isolated commits, cancellation, and statistical annotation previews.');
 console.log('PASS: selected-box and handle grabs skip reselection; 100 moves coalesce to one frame; pending renders allow continuous dragging; final frame and cancellation stay correct.');
 console.log('PASS: sample movement expands to same-group outliers and stretches only matching connector endpoints; dragging a connector moves its family and endpoint clouds.');
+const summary='axes_0.bar_item_0';
+const summaryResult={dpi:72,render_size_px:[200,200],texts:[],component_groups:[{key:summary,movement_only:true,members:['axes_0.patch_0','axes_0.collection_0.segment_0','axes_0.line_0.vertex_0'],bbox:[10,20,30,70]}],_rawTargets:[
+ {key:'axes_0.patch_0',movement_group:summary,kind:'patch',hit_path_px:[[10,20],[30,20],[30,60],[10,60]],style:{facecolor:[0,1,0,1]}},
+ {key:'axes_0.collection_0.segment_0',movement_group:summary,kind:'line',hit_path_px:[[20,50],[20,70]],style:{color:'#111'}},
+ {key:'axes_0.line_0.vertex_0',movement_group:summary,kind:'line',hit_path_px:[[17,70],[23,70]],style:{color:'#111'}},
+ {key:'axes_0.line_1.points_mean_0',movement_group:summary,point_role:'mean',kind:'scatter',hit_path_px:[[20,60]],style:{marker_shape:'o'}},
+ {key:'axes_0.line_1',kind:'line',movement_vertices:[[summary],['axes_0.bar_item_1']],hit_path_px:[[20,60],[120,80]],style:{color:'#111'}}]};
+const summaryKeys=ctx.componentDragKeys(summaryResult,['axes_0.patch_0']);assert.deepEqual(Array.from(summaryKeys),[summary]);
+assert.deepEqual(Array.from(ctx.componentSelectionBounds(summaryResult,'axes_0.patch_0')),[10,20,30,70]);
+const summaryPreview=ctx.createComponentDragPreview(img,summaryResult,summaryKeys);summaryPreview.update(12,6);
+const summarySvg=host.children.find(node=>node.classList.values.has('componentDragPreview'));
+assert(descendants(summarySvg).some(node=>node.attrs.d==='M17 130 L23 130'&&translation(node)==='translate(12 -6)'));
+assert(descendants(summarySvg).some(node=>node.attrs.d==='M32 134 L120 120'));summaryPreview.remove();
+summaryResult._rawTargets.push({key:'axes_0.line_5',kind:'line',movement_vertices:[[summary],['axes_0.bar_item_1']],hit_path_px:[[20,70],[120,90]],style:{marker:'_',linestyle:'None'}});
+ctx.componentSelection.clear();ctx.attachDirectManipulation(img,summaryResult);
+assert(!summaryResult.targets.some(target=>target.key==='axes_0.line_5'));
+console.log('PASS: bar-part movement uses the summary group, follows error stems/caps and mean points, and stretches only the moved mean-line endpoint.');
